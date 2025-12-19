@@ -1,0 +1,42 @@
+# 编译产物
+/uepcap
+/server
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# 测试文件
+*.test
+*.out
+coverage.html
+coverage.txt
+
+# 依赖目录
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 临时数据目录
+data/tmp/
+data/*.pcap
+
+# 前端
+web/node_modules/
+web/dist/
+cmd/server/dist/
+
+# 日志
+*.log
+
+# 环境配置
+.env
+.env.local
+.env.*.local
