@@ -837,7 +837,7 @@ MCP server 使用 **stdio transport**（标准输入/输出），适配主流 AI
 
 #### 2. `uepcap_imsi_brief` - 获取 IMSI 简要信息
 
-根据 IMSI 解析关联协议的 Wireshark display filter，并返回简要 JSON。
+根据 IMSI 解析关联协议的 Wireshark display filter，并返回简要 JSON（包含 filter 和简化的包数据）。
 
 **输入参数：**
 
@@ -860,8 +860,31 @@ MCP server 使用 **stdio transport**（标准输入/输出），适配主流 AI
     "pfcp": "pfcp.seid == 0x1234567890ABCDEF || pfcp.seid == 0xFEDCBA0987654321",
     "ueip": "ip.addr == 10.0.0.100"
   },
-  "combined_filter": "(ngap.AMF_UE_NGAP_ID == 12345 || ngap.RAN_UE_NGAP_ID == 67890) || (pfcp.seid == 0x1234567890ABCDEF || pfcp.seid == 0xFEDCBA0987654321) || (ip.addr == 10.0.0.100)",
-  "ue_ipv4": "10.0.0.100"
+  "combined_filter": "(ngap.AMF_UE_NGAP_ID == 12345 || ...) || (ip.addr == 10.0.0.100)",
+  "ue_ipv4": "10.0.0.100",
+  "packets": [
+    {
+      "frame": {
+        "number": "1",
+        "time": "0.000000000",
+        "time_absolute": "1734567890.123456",
+        "len": "256",
+        "protocols": "eth:ip:sctp:ngap"
+      },
+      "layers": {
+        "src_ip": "192.168.1.1",
+        "dst_ip": "192.168.1.2",
+        "proto": "sctp"
+      },
+      "application": {
+        "ngap": {
+          "procedureCode": "15",
+          "procedure": "InitialUEMessage"
+        }
+      }
+    }
+  ],
+  "packet_count": 42
 }
 ```
 
@@ -872,6 +895,8 @@ MCP server 使用 **stdio transport**（标准输入/输出），适配主流 AI
 | `filters` | 各协议的独立 display filter（key 为小写协议名） |
 | `combined_filter` | 所有协议 filter 的 OR 组合，可直接用于 Wireshark |
 | `ue_ipv4` | 从 `ueip` filter 中提取的 UE IPv4 地址（如有） |
+| `packets` | 简化的包数据数组，包含帧信息、网络层和应用层摘要 |
+| `packet_count` | 匹配的包总数 |
 
 ### 客户端配置示例
 
@@ -884,7 +909,7 @@ MCP server 使用 **stdio transport**（标准输入/输出），适配主流 AI
   "mcpServers": {
     "uepcap": {
       "command": "/path/to/uepcap-mcp",
-      "args": []
+      "args": ["--data-dir", "/path/to/uepcap/data"]
     }
   }
 }
@@ -899,7 +924,7 @@ MCP server 使用 **stdio transport**（标准输入/输出），适配主流 AI
   "mcpServers": {
     "uepcap": {
       "command": "/path/to/uepcap-mcp",
-      "args": []
+      "args": ["--data-dir", "/path/to/uepcap/data"]
     }
   }
 }
@@ -908,14 +933,15 @@ MCP server 使用 **stdio transport**（标准输入/输出），适配主流 AI
 #### 通用配置说明
 
 - `command`：MCP server 二进制的绝对路径（通过 `make build-mcp` 构建后位于项目根目录）
-- `args`：可选命令行参数，如 `-name uepcap-mcp -version v0.1.0`
+- `args`：**必须指定 `--data-dir` 参数**，指向项目的 `data` 目录绝对路径，确保 MCP 能访问 Web 上传的 PCAP 文件
+- 其他可选参数：`-name uepcap-mcp -version v0.1.0`
 - **前置依赖**：运行 MCP server 需要系统已安装 `tshark` 和 `mergecap`
 
 ### 典型使用场景
 
-1. **让 AI 分析抓包**：用户提供 PCAP 文件路径，AI 调用 `uepcap_list_imsis` 获取所有 IMSI，再针对感兴趣的 IMSI 调用 `uepcap_imsi_brief` 获取过滤器
+1. **让 AI 分析抓包**：用户提供 PCAP 文件路径，AI 调用 `uepcap_list_imsis` 获取所有 IMSI，再针对感兴趣的 IMSI 调用 `uepcap_imsi_brief` 获取过滤器和包数据
 2. **快速定位 UE**：AI 根据 `combined_filter` 生成 Wireshark 命令，或直接解读 `ue_ipv4` 识别用户面流量
-3. **自动化报告**：结合 AI 的文本生成能力，自动产出"某 IMSI 的信令摘要"
+3. **自动化报告**：AI 基于 `packets` 中的简化包数据，自动产出"某 IMSI 的信令摘要"
 
 ---
 

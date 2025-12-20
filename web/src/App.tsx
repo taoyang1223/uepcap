@@ -147,7 +147,7 @@ function App() {
               className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all duration-200"
             >
               <BookOpen className="w-4 h-4" />
-              <span>安装部署</span>
+              <span>MCP配置指南</span>
             </button>
             {currentJob && (
               <button

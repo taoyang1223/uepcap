@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"uepcap/internal/packet"
 	"uepcap/internal/protocol"
 	"uepcap/internal/tshark"
 )
@@ -286,7 +287,7 @@ func (h *Handler) preGenerateCompactJSON(jobID, mergedPcap, filter string) {
 	}
 
 	// 简化 JSON 输出
-	compactJSON, err := simplifyPacketsJSON(result.Stdout)
+	compactJSON, err := packet.SimplifyPacketsJSON(result.Stdout)
 	if err != nil {
 		log.Printf("[PreGenJSON] Failed to simplify JSON for job %s: %v", jobID, err)
 		compactJSON = result.Stdout
@@ -1401,7 +1402,7 @@ func (h *Handler) ExportPacketsText(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 简化 JSON 输出
-	compactJSON, err := simplifyPacketsJSON(result.Stdout)
+	compactJSON, err := packet.SimplifyPacketsJSON(result.Stdout)
 	if err != nil {
 		log.Printf("[ExportText] Failed to simplify JSON, using raw output: %v", err)
 		compactJSON = result.Stdout
@@ -1468,7 +1469,7 @@ func (h *Handler) DownloadPacketsText(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// 简化 JSON 输出
-		compactJSON, err = simplifyPacketsJSON(result.Stdout)
+		compactJSON, err = packet.SimplifyPacketsJSON(result.Stdout)
 		if err != nil {
 			log.Printf("[DownloadText] Failed to simplify JSON, using raw output: %v", err)
 			compactJSON = result.Stdout

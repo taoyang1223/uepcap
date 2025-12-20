@@ -1,4 +1,4 @@
-.PHONY: all build build-frontend build-backend build-mcp run run-mcp dev test clean check-deps install-tshark install-npm ensure-tshark ensure-npm ensure-deps kill
+.PHONY: all build build-frontend build-backend build-mcp run run-mcp dev test clean check-deps install-tshark install-npm ensure-tshark ensure-npm ensure-deps kill install-mcp mcp-config mcp-config-claude mcp-config-cursor
 
 # Detect OS
 UNAME_S := $(shell uname -s)
@@ -155,6 +155,85 @@ check-deps:
 	@which node > /dev/null || (echo "node not found. Run 'make install-npm' to install." && exit 1)
 	@echo "All dependencies OK!"
 
+# Install MCP server (build and show config)
+install-mcp: ensure-tshark build-mcp
+	@echo ""
+	@echo "========================================"
+	@echo "✅ MCP Server 安装完成!"
+	@echo "========================================"
+	@echo ""
+	@echo "二进制文件: $(PWD)/uepcap-mcp"
+	@echo "数据目录:   $(PWD)/data"
+	@echo ""
+	@echo "⚠️  重要: 配置时必须指定 --data-dir 参数指向数据目录"
+	@echo "   这样 MCP 才能访问 Web 上传的 PCAP 文件"
+	@echo ""
+	@echo "运行 'make mcp-config' 查看配置示例"
+	@echo ""
+
+# Get absolute paths for MCP binary and data directory
+MCP_PATH := $(shell pwd)/uepcap-mcp
+DATA_DIR := $(shell pwd)/data
+
+# Show MCP config for Claude Desktop
+mcp-config-claude:
+	@echo ""
+	@echo "========================================"
+	@echo "Claude Desktop 配置"
+	@echo "========================================"
+	@echo "配置文件路径:"
+	@echo "  macOS: ~/Library/Application Support/Claude/claude_desktop_config.json"
+	@echo "  Windows: %APPDATA%/Claude/claude_desktop_config.json"
+	@echo ""
+	@echo "添加以下内容到配置文件:"
+	@echo ""
+	@echo '{'
+	@echo '  "mcpServers": {'
+	@echo '    "uepcap": {'
+	@echo '      "command": "$(MCP_PATH)",'
+	@echo '      "args": ["--data-dir", "$(DATA_DIR)"]'
+	@echo '    }'
+	@echo '  }'
+	@echo '}'
+	@echo ""
+
+# Show MCP config for Cursor
+mcp-config-cursor:
+	@echo ""
+	@echo "========================================"
+	@echo "Cursor 配置"
+	@echo "========================================"
+	@echo "配置文件路径:"
+	@echo "  macOS: ~/.cursor/mcp.json"
+	@echo "  Windows: %USERPROFILE%/.cursor/mcp.json"
+	@echo ""
+	@echo "添加以下内容到配置文件:"
+	@echo ""
+	@echo '{'
+	@echo '  "mcpServers": {'
+	@echo '    "uepcap": {'
+	@echo '      "command": "$(MCP_PATH)",'
+	@echo '      "args": ["--data-dir", "$(DATA_DIR)"]'
+	@echo '    }'
+	@echo '  }'
+	@echo '}'
+	@echo ""
+
+# Show all MCP configs
+mcp-config: mcp-config-claude mcp-config-cursor
+	@echo "========================================"
+	@echo "通用说明"
+	@echo "========================================"
+	@echo ""
+	@echo "前置依赖: tshark, mergecap (已自动检查)"
+	@echo ""
+	@echo "提供的工具 (Tools):"
+	@echo "  1. uepcap_list_imsis  - 扫描 PCAP 中的 IMSI 列表"
+	@echo "  2. uepcap_imsi_brief  - 获取 IMSI 的简要信息（filter + 包数据）"
+	@echo ""
+	@echo "配置完成后重启 Claude Desktop 或 Cursor 即可使用"
+	@echo ""
+
 # Help
 help:
 	@echo "Available targets:"
@@ -171,3 +250,7 @@ help:
 	@echo "  make check-deps     - Check system dependencies"
 	@echo "  make install-tshark - Install tshark for current platform"
 	@echo "  make install-npm    - Install Node.js and npm for current platform"
+	@echo "  make install-mcp    - Build MCP server and show installation info"
+	@echo "  make mcp-config     - Show MCP configuration for all clients"
+	@echo "  make mcp-config-claude - Show MCP config for Claude Desktop"
+	@echo "  make mcp-config-cursor - Show MCP config for Cursor"

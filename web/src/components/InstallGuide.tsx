@@ -1,4 +1,4 @@
-import { ArrowLeft, ExternalLink, Copy, Check, Terminal, Server, Globe, Box, Info } from 'lucide-react'
+import { ArrowLeft, ExternalLink, Copy, Check, Terminal, Server, Globe, Box, Info, Cpu, Sparkles } from 'lucide-react'
 import { useState } from 'react'
 
 interface InstallGuideProps {
@@ -36,6 +36,71 @@ const CodeBlock = ({ code, label }: { code: string; label?: string }) => {
             <Copy className="w-4 h-4" />
           )}
         </button>
+      </div>
+    </div>
+  )
+}
+
+// MCP 配置复制组件
+const MCPConfigCard = ({ 
+  title, 
+  subtitle, 
+  configPath, 
+  config 
+}: { 
+  title: string
+  subtitle: string
+  configPath: string
+  config: string 
+}) => {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(config)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm hover:shadow-md transition-all duration-300">
+      <div className="flex items-start justify-between mb-4">
+        <div>
+          <h4 className="font-bold text-slate-900 text-lg">{title}</h4>
+          <p className="text-sm text-slate-500 mt-1">{subtitle}</p>
+        </div>
+        <button
+          onClick={handleCopy}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all duration-200 ${
+            copied 
+              ? 'bg-emerald-100 text-emerald-700' 
+              : 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200'
+          }`}
+        >
+          {copied ? (
+            <>
+              <Check className="w-4 h-4" />
+              已复制
+            </>
+          ) : (
+            <>
+              <Copy className="w-4 h-4" />
+              复制配置
+            </>
+          )}
+        </button>
+      </div>
+      
+      <div className="mb-4">
+        <div className="text-xs font-medium text-slate-500 mb-2">配置文件路径</div>
+        <code className="block px-3 py-2 bg-slate-100 rounded-lg text-sm font-mono text-slate-700 break-all">
+          {configPath}
+        </code>
+      </div>
+      
+      <div className="relative group">
+        <pre className="p-4 bg-slate-900 rounded-xl overflow-x-auto text-sm font-mono text-slate-300 leading-relaxed">
+          <code>{config}</code>
+        </pre>
       </div>
     </div>
   )
@@ -255,6 +320,118 @@ docker build -t uepcap .
 # 启动容器
 docker run -d -p 8080:8080 --name uepcap uepcap`} />
                 </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* MCP Server Section */}
+        <div className="mt-20">
+          <div className="text-center mb-12">
+            <div className="inline-flex items-center justify-center p-2 bg-violet-50 rounded-2xl mb-4">
+              <div className="px-3 py-1 bg-white rounded-xl shadow-sm border border-violet-100 text-xs font-semibold text-violet-600 tracking-wide uppercase flex items-center gap-2">
+                <Sparkles className="w-3 h-3" />
+                AI Integration
+              </div>
+            </div>
+            <h2 className="text-3xl md:text-4xl font-extrabold text-slate-900 tracking-tight mb-4">
+              MCP Server <span className="text-transparent bg-clip-text bg-gradient-to-r from-violet-600 to-purple-600">配置</span>
+            </h2>
+            <p className="text-lg text-slate-600 max-w-2xl mx-auto leading-relaxed">
+              通过 MCP (Model Context Protocol)，让 Claude Desktop、Cursor 等 AI 工具直接分析 PCAP 文件
+            </p>
+          </div>
+
+          {/* MCP Build Steps */}
+          <div className="bg-gradient-to-br from-violet-50 to-purple-50 rounded-3xl p-8 mb-10 border border-violet-100">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 bg-violet-100 rounded-xl flex items-center justify-center">
+                <Cpu className="w-5 h-5 text-violet-600" />
+              </div>
+              <h3 className="text-xl font-bold text-slate-900">构建 MCP Server</h3>
+            </div>
+            
+            <div className="space-y-4">
+              <CodeBlock label="Terminal" code={`# 一键安装 MCP Server（自动构建并显示配置）
+make install-mcp
+
+# 或仅构建 MCP Server 二进制
+make build-mcp
+
+# 查看配置示例
+make mcp-config`} />
+              
+              <div className="bg-white/80 rounded-xl p-4 border border-violet-100">
+                <div className="flex gap-3">
+                  <Info className="w-5 h-5 text-violet-600 flex-shrink-0 mt-0.5" />
+                  <div className="text-sm text-slate-700 leading-relaxed">
+                    构建完成后，MCP 二进制文件位于项目根目录：<code className="px-1.5 py-0.5 bg-violet-100 rounded text-violet-700 font-mono">./uepcap-mcp</code>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* MCP Tools Info */}
+          <div className="mb-10 bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+            <h3 className="font-bold text-slate-900 text-lg mb-4">提供的 AI 工具</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
+                <div className="font-mono text-sm text-indigo-600 font-semibold mb-2">uepcap_list_imsis</div>
+                <p className="text-sm text-slate-600">从 PCAP 文件中扫描并返回所有 IMSI（去重、排序）</p>
+              </div>
+              <div className="p-4 bg-slate-50 rounded-xl border border-slate-100">
+                <div className="font-mono text-sm text-indigo-600 font-semibold mb-2">uepcap_imsi_brief</div>
+                <p className="text-sm text-slate-600">根据 IMSI 解析关联协议的 filter 并返回简化的包数据</p>
+              </div>
+            </div>
+          </div>
+
+          {/* MCP Config Cards */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <MCPConfigCard
+              title="Claude Desktop"
+              subtitle="官方 Claude 桌面客户端"
+              configPath="~/Library/Application Support/Claude/claude_desktop_config.json"
+              config={`{
+  "mcpServers": {
+    "uepcap": {
+      "command": "/path/to/uepcap-mcp",
+      "args": []
+    }
+  }
+}`}
+            />
+            
+            <MCPConfigCard
+              title="Cursor"
+              subtitle="AI 代码编辑器"
+              configPath="~/.cursor/mcp.json"
+              config={`{
+  "mcpServers": {
+    "uepcap": {
+      "command": "/path/to/uepcap-mcp",
+      "args": []
+    }
+  }
+}`}
+            />
+          </div>
+
+          {/* Usage Tips */}
+          <div className="mt-8 bg-amber-50 rounded-2xl border border-amber-100 p-6">
+            <div className="flex gap-4">
+              <div className="w-10 h-10 bg-amber-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                <Info className="w-5 h-5 text-amber-600" />
+              </div>
+              <div>
+                <h4 className="font-bold text-amber-900 mb-2">使用说明</h4>
+                <ul className="text-sm text-amber-800 space-y-2 leading-relaxed">
+                  <li>• 将配置中的 <code className="px-1.5 py-0.5 bg-amber-100 rounded text-amber-900 font-mono">/path/to/uepcap-mcp</code> 替换为实际的二进制路径</li>
+                  <li>• 运行 <code className="px-1.5 py-0.5 bg-amber-100 rounded text-amber-900 font-mono">make mcp-config</code> 可以获取带有实际路径的配置</li>
+                  <li>• 配置完成后需要重启 Claude Desktop 或 Cursor</li>
+                  <li>• 前置依赖：系统需要已安装 <code className="px-1.5 py-0.5 bg-amber-100 rounded text-amber-900 font-mono">tshark</code> 和 <code className="px-1.5 py-0.5 bg-amber-100 rounded text-amber-900 font-mono">mergecap</code></li>
+                </ul>
               </div>
             </div>
           </div>
