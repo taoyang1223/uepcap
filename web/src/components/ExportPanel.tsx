@@ -1,10 +1,44 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { Loader2, BadgeCheck, FileArchive, RefreshCw, Copy, CopyCheck, Download, Clock, PackageOpen } from 'lucide-react'
+import { Loader2, BadgeCheck, FileArchive, RefreshCw, Copy, CopyCheck, Download, Clock, PackageOpen, FileText, ClipboardCopy, Eye } from 'lucide-react'
+
+// 安全的剪贴板复制函数，带 fallback
+async function copyToClipboard(text: string): Promise<boolean> {
+  // 首先尝试使用现代 Clipboard API
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch (err) {
+      console.warn('Clipboard API failed, trying fallback:', err)
+    }
+  }
+  
+  // Fallback: 使用传统的 execCommand 方法
+  const textArea = document.createElement('textarea')
+  textArea.value = text
+  textArea.style.position = 'fixed'
+  textArea.style.left = '-999999px'
+  textArea.style.top = '-999999px'
+  document.body.appendChild(textArea)
+  textArea.focus()
+  textArea.select()
+  
+  try {
+    const success = document.execCommand('copy')
+    document.body.removeChild(textArea)
+    return success
+  } catch (err) {
+    console.error('Fallback copy failed:', err)
+    document.body.removeChild(textArea)
+    return false
+  }
+}
 
 interface ExportPanelProps {
   jobId: string
   selectedIMSIs: string[]
   selectedProtocols: string[]
+  onViewTimeline?: (packets: any[]) => void
 }
 
 interface ExportResult {
@@ -18,13 +52,19 @@ interface ExportResult {
   cached?: boolean
 }
 
-export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols }: ExportPanelProps) {
+export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols, onViewTimeline }: ExportPanelProps) {
   const [exporting, setExporting] = useState(false)
   const [result, setResult] = useState<ExportResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [pcapGenerating, setPcapGenerating] = useState(false)
   const pollingRef = useRef<number | null>(null)
+
+  // 数据包文本相关状态
+  const [textExporting, setTextExporting] = useState(false)
+  const [textCopied, setTextCopied] = useState(false)
+  const [textCached, setTextCached] = useState(false)
+  const [viewLoading, setViewLoading] = useState(false)
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -129,12 +169,12 @@ export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols }: ExportP
   const handleCopyFilter = useCallback(async () => {
     if (!result?.filter) return
     
-    try {
-      await navigator.clipboard.writeText(result.filter)
+    const success = await copyToClipboard(result.filter)
+    if (success) {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
-    } catch (err) {
-      console.error('Failed to copy filter:', err)
+    } else {
+      setError('复制失败，请手动选择文本复制')
     }
   }, [result])
 
@@ -147,7 +187,128 @@ export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols }: ExportP
     setResult(null)
     setPcapGenerating(false)
     setError(null)
+    setTextCopied(false)
+    setTextCached(false)
   }, [])
+
+  // 获取数据包文本（JSON格式）- 复用函数
+  const fetchPacketText = useCallback(async (): Promise<{ text: string; cached: boolean } | null> => {
+    if (!result?.filter) return null
+    
+    try {
+      const response = await fetch(`/api/jobs/${jobId}/export/text`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filter: result.filter }),
+      })
+      
+      const data = await response.json()
+      
+      if (data.success && data.data?.text) {
+        return { text: data.data.text, cached: data.data.cached === true }
+      } else {
+        throw new Error(data.error || '导出数据包文本失败')
+      }
+    } catch (err) {
+      throw err
+    }
+  }, [jobId, result])
+
+  // 复制数据包文本（JSON格式）
+  const handleCopyPacketText = useCallback(async () => {
+    if (!result?.filter) return
+    
+    setTextExporting(true)
+    setError(null)
+    
+    try {
+      const data = await fetchPacketText()
+      if (data) {
+        const success = await copyToClipboard(data.text)
+        if (success) {
+          setTextCopied(true)
+          setTextCached(data.cached)
+          setTimeout(() => setTextCopied(false), 2000)
+        } else {
+          setError('复制失败，请使用下载功能')
+        }
+      }
+    } catch (err) {
+      setError('导出失败: ' + (err as Error).message)
+    } finally {
+      setTextExporting(false)
+    }
+  }, [result, fetchPacketText])
+
+  // 下载数据包文本（JSON格式）
+  const handleDownloadPacketText = useCallback(async () => {
+    if (!result?.filter) return
+    
+    setTextExporting(true)
+    setError(null)
+    
+    try {
+      const response = await fetch(`/api/jobs/${jobId}/export/text/download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filter: result.filter }),
+      })
+      
+      if (!response.ok) {
+        const data = await response.json()
+        setError(data.error || '下载失败')
+        return
+      }
+      
+      // 获取文件名
+      const contentDisposition = response.headers.get('Content-Disposition')
+      let filename = 'packets_export.json'
+      if (contentDisposition) {
+        const match = contentDisposition.match(/filename="?([^"]+)"?/)
+        if (match) filename = match[1]
+      }
+      
+      // 下载文件
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+    } catch (err) {
+      setError('下载失败: ' + (err as Error).message)
+    } finally {
+      setTextExporting(false)
+    }
+  }, [jobId, result])
+
+  // 查看时间线可视化
+  const handleViewTimeline = useCallback(async () => {
+    if (!result?.filter || !onViewTimeline) return
+    
+    setViewLoading(true)
+    setError(null)
+    
+    try {
+      const data = await fetchPacketText()
+      if (data) {
+        // 解析 JSON 字符串为数组
+        const packets = JSON.parse(data.text)
+        if (Array.isArray(packets)) {
+          onViewTimeline(packets)
+        } else {
+          setError('数据格式错误')
+        }
+      }
+    } catch (err) {
+      setError('加载失败: ' + (err as Error).message)
+    } finally {
+      setViewLoading(false)
+    }
+  }, [result, fetchPacketText, onViewTimeline])
 
   const isComplete = result?.status === 'completed' || result?.cached
 
@@ -269,6 +430,57 @@ export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols }: ExportP
                 <Download className="w-4 h-4" />
                 立即下载
               </button>
+
+              {/* 数据包文本操作按钮 */}
+              <div className="grid grid-cols-2 gap-3 mt-4 border-t border-slate-100 pt-4">
+                <button
+                  onClick={handleCopyPacketText}
+                  disabled={textExporting || viewLoading}
+                  className={`group py-2.5 px-3 font-medium text-sm rounded-xl transition-all duration-200 flex items-center justify-center gap-2 border active:scale-[0.98] ${
+                    textCopied
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200 shadow-sm'
+                      : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300 hover:text-indigo-600 hover:shadow-md hover:shadow-indigo-500/5'
+                  }`}
+                >
+                  {textExporting ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : textCopied ? (
+                    <CopyCheck className="w-4 h-4" />
+                  ) : (
+                    <ClipboardCopy className="w-4 h-4 text-slate-400 group-hover:text-indigo-500 transition-colors" />
+                  )}
+                  <span>{textCopied ? (textCached ? '已复制(缓存)' : '已复制文本') : '复制简要 JSON'}</span>
+                </button>
+                
+                <button
+                  onClick={handleDownloadPacketText}
+                  disabled={textExporting || viewLoading}
+                  className="group py-2.5 px-3 bg-white text-slate-600 hover:text-indigo-600 border border-slate-200 hover:border-indigo-300 font-medium text-sm rounded-xl transition-all duration-200 flex items-center justify-center gap-2 hover:shadow-md hover:shadow-indigo-500/5 active:scale-[0.98]"
+                >
+                  {textExporting ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <FileText className="w-4 h-4 text-slate-400 group-hover:text-indigo-500 transition-colors" />
+                  )}
+                  <span>下载 JSON 文本</span>
+                </button>
+              </div>
+
+              {/* 内容展示按钮 */}
+              {onViewTimeline && (
+                <button
+                  onClick={handleViewTimeline}
+                  disabled={textExporting || viewLoading}
+                  className="w-full mt-3 py-2.5 px-3 bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700 disabled:from-slate-300 disabled:to-slate-400 text-white font-semibold text-sm rounded-xl transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-purple-500/20 active:scale-[0.98]"
+                >
+                  {viewLoading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Eye className="w-4 h-4" />
+                  )}
+                  <span>{viewLoading ? '加载中...' : '内容展示'}</span>
+                </button>
+              )}
             </>
           )}
         </div>
@@ -279,17 +491,19 @@ export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols }: ExportP
         <button
           onClick={handleExport}
           disabled={exporting || selectedIMSIs.length === 0 || selectedProtocols.length === 0}
-          className="w-full py-3.5 bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 disabled:from-slate-300 disabled:to-slate-400 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/25 hover:shadow-indigo-500/35 active:scale-[0.98]"
+          className="group w-full py-2.5 bg-gradient-to-r from-indigo-500 to-blue-600 hover:from-indigo-400 hover:to-blue-500 disabled:from-slate-300 disabled:to-slate-400 disabled:cursor-not-allowed text-white font-bold text-sm rounded-lg transition-all duration-200 flex items-center justify-center gap-2 active:scale-[0.98]"
         >
           {exporting ? (
             <>
-              <Loader2 className="w-5 h-5 animate-spin" />
-              正在解析过滤条件...
+              <Loader2 className="w-4 h-4 animate-spin text-white/90" />
+              <span className="tracking-wide">正在解析...</span>
             </>
           ) : (
             <>
-              <PackageOpen className="w-5 h-5" />
-              开始导出
+              <div className="p-1 bg-white/20 rounded-md group-hover:bg-white/30 transition-colors backdrop-blur-sm">
+                <PackageOpen className="w-4 h-4" />
+              </div>
+              <span className="tracking-wide">开始导出</span>
             </>
           )}
         </button>

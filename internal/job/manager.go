@@ -29,17 +29,18 @@ type ExportTask struct {
 
 // Job represents a pcap processing job
 type Job struct {
-	ID            string                 `json:"id"`
-	CreatedAt     time.Time              `json:"created_at"`
-	MergedPcap    string                 `json:"merged_pcap"`
-	OriginalFiles []string               `json:"original_files"`
-	IMSIList      []string               `json:"imsi_list,omitempty"`
-	IMSIScanned   bool                   `json:"imsi_scanned"`
-	Status        string                 `json:"status"` // created, scanning, ready, exporting, error
-	Error         string                 `json:"error,omitempty"`
-	ExportCache   map[string]string      `json:"-"` // key: imsi+protocols hash, value: exported pcap path
-	ExportTasks   map[string]*ExportTask `json:"-"` // key: task_id
-	mu            sync.RWMutex
+	ID              string                 `json:"id"`
+	CreatedAt       time.Time              `json:"created_at"`
+	MergedPcap      string                 `json:"merged_pcap"`
+	OriginalFiles   []string               `json:"original_files"`
+	IMSIList        []string               `json:"imsi_list,omitempty"`
+	IMSIScanned     bool                   `json:"imsi_scanned"`
+	Status          string                 `json:"status"` // created, scanning, ready, exporting, error
+	Error           string                 `json:"error,omitempty"`
+	ExportCache     map[string]string      `json:"-"` // key: imsi+protocols hash, value: exported pcap path
+	TextExportCache map[string]string      `json:"-"` // key: filter hash, value: compact JSON text
+	ExportTasks     map[string]*ExportTask `json:"-"` // key: task_id
+	mu              sync.RWMutex
 }
 
 // Manager manages job lifecycle and storage
@@ -72,11 +73,12 @@ func (m *Manager) CreateJob() (*Job, error) {
 	}
 
 	job := &Job{
-		ID:          id,
-		CreatedAt:   time.Now(),
-		Status:      "created",
-		ExportCache: make(map[string]string),
-		ExportTasks: make(map[string]*ExportTask),
+		ID:              id,
+		CreatedAt:       time.Now(),
+		Status:          "created",
+		ExportCache:     make(map[string]string),
+		TextExportCache: make(map[string]string),
+		ExportTasks:     make(map[string]*ExportTask),
 	}
 
 	m.mu.Lock()
@@ -212,6 +214,35 @@ func (m *Manager) GetCachedExport(jobID, cacheKey string) (string, bool) {
 	defer job.mu.RUnlock()
 	path, ok := job.ExportCache[cacheKey]
 	return path, ok
+}
+
+// CacheTextExport caches a text export result
+func (m *Manager) CacheTextExport(jobID, cacheKey, text string) {
+	m.mu.RLock()
+	job, ok := m.jobs[jobID]
+	m.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	job.mu.Lock()
+	job.TextExportCache[cacheKey] = text
+	job.mu.Unlock()
+}
+
+// GetCachedTextExport gets a cached text export
+func (m *Manager) GetCachedTextExport(jobID, cacheKey string) (string, bool) {
+	m.mu.RLock()
+	job, ok := m.jobs[jobID]
+	m.mu.RUnlock()
+	if !ok {
+		return "", false
+	}
+
+	job.mu.RLock()
+	defer job.mu.RUnlock()
+	text, ok := job.TextExportCache[cacheKey]
+	return text, ok
 }
 
 // CreateExportTask creates a new export task

@@ -1,5 +1,6 @@
 # 编译产物
 /uepcap
+/uepcap-mcp
 /server
 *.exe
 *.exe~

@@ -4,13 +4,17 @@ import { IMSIList } from './components/IMSIList'
 import { ProtocolSelect } from './components/ProtocolSelect'
 import { ExportPanel } from './components/ExportPanel'
 import { JobInfo } from './components/JobInfo'
-import { Network } from 'lucide-react'
+import { TimelineViewer } from './components/TimelineViewer'
+import { InstallGuide } from './components/InstallGuide'
+import { Network, BookOpen } from 'lucide-react'
 
 interface Job {
   id: string
   status: string
   file_count?: number
 }
+
+type ViewMode = 'main' | 'timeline' | 'guide'
 
 function App() {
   const [currentJob, setCurrentJob] = useState<Job | null>(null)
@@ -19,6 +23,10 @@ function App() {
   const [selectedProtocols, setSelectedProtocols] = useState<string[]>(['ngap', 'pfcp', 's1ap', 'gtpv2', 'gtpu'])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  
+  // 视图模式和时间线数据
+  const [viewMode, setViewMode] = useState<ViewMode>('main')
+  const [timelinePackets, setTimelinePackets] = useState<any[]>([])
 
   const handleUploadComplete = useCallback((jobId: string, fileCount: number) => {
     setCurrentJob({ id: jobId, status: 'ready', file_count: fileCount })
@@ -71,6 +79,29 @@ function App() {
     setImsiList([])
     setSelectedIMSIs([])
     setError(null)
+    setViewMode('main')
+    setTimelinePackets([])
+  }, [])
+
+  // 切换到时间线视图
+  const handleViewTimeline = useCallback((packets: any[]) => {
+    setTimelinePackets(packets)
+    setViewMode('timeline')
+  }, [])
+
+  // 从时间线返回主视图
+  const handleBackFromTimeline = useCallback(() => {
+    setViewMode('main')
+  }, [])
+
+  // 切换到安装指南视图
+  const handleShowGuide = useCallback(() => {
+    setViewMode('guide')
+  }, [])
+
+  // 从安装指南返回主视图
+  const handleBackFromGuide = useCallback(() => {
+    setViewMode('main')
   }, [])
 
   // Auto-trigger IMSI scan when job is ready
@@ -86,6 +117,16 @@ function App() {
     }
   }, [currentJob, loading, imsiList.length, handleScanIMSIs])
 
+  // 如果是时间线视图，渲染 TimelineViewer
+  if (viewMode === 'timeline') {
+    return <TimelineViewer packets={timelinePackets} onBack={handleBackFromTimeline} />
+  }
+
+  // 如果是安装指南视图，渲染 InstallGuide
+  if (viewMode === 'guide') {
+    return <InstallGuide onBack={handleBackFromGuide} />
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-indigo-100 selection:text-indigo-900">
       {/* Header */}
@@ -100,14 +141,23 @@ function App() {
               <p className="text-xs text-slate-500 font-medium">IMSI 关联数据包过滤工具</p>
             </div>
           </div>
-          {currentJob && (
+          <div className="flex items-center gap-3">
             <button
-              onClick={handleReset}
-              className="px-4 py-2 text-sm font-medium text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all duration-200"
+              onClick={handleShowGuide}
+              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all duration-200"
             >
-              新建任务
+              <BookOpen className="w-4 h-4" />
+              <span>安装部署</span>
             </button>
-          )}
+            {currentJob && (
+              <button
+                onClick={handleReset}
+                className="px-4 py-2 text-sm font-medium text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all duration-200"
+              >
+                新建任务
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
@@ -158,6 +208,7 @@ function App() {
                 jobId={currentJob.id}
                 selectedIMSIs={selectedIMSIs}
                 selectedProtocols={selectedProtocols}
+                onViewTimeline={handleViewTimeline}
               />
               
               <ProtocolSelect

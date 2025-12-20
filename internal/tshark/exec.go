@@ -144,3 +144,48 @@ func TsharkCount(ctx context.Context, pcapFile string, filter string) (int, erro
 	}
 	return len(lines), nil
 }
+
+// ASN.1 编码的协议列表（NGAP/S1AP 等），这些协议使用 -J 参数会截断深层 IE
+var asn1Protocols = map[string]bool{
+	"ngap":    true,
+	"s1ap":    true,
+	"nas-5gs": true, // NAS 嵌套在 NGAP 中，也需要完整输出
+	"nas-eps": true, // NAS 嵌套在 S1AP 中
+}
+
+// hasASN1Protocol checks if the protocol list contains ASN.1 encoded protocols
+func hasASN1Protocol(protocols []string) bool {
+	for _, p := range protocols {
+		if asn1Protocols[p] {
+			return true
+		}
+	}
+	return false
+}
+
+// TsharkCompactJSON runs tshark with JSON output, extracting only essential fields
+// For ASN.1 protocols (NGAP/S1AP), -J parameter is NOT used to preserve nested IE fields
+// For TLV protocols (PFCP/GTPv2), -J parameter is used to limit output size
+func TsharkCompactJSON(ctx context.Context, pcapFile string, filter string, protocols []string) (*ExecResult, error) {
+	var args []string
+
+	// 检查是否包含 ASN.1 协议
+	// ASN.1 协议（NGAP/S1AP）的 IE 使用深层嵌套结构，-J 参数会截断这些字段
+	// 所以对于 ASN.1 协议，不使用 -J 参数，让后处理阶段裁剪
+	if hasASN1Protocol(protocols) {
+		// 不使用 -J 参数，输出完整 JSON
+		args = []string{"-r", pcapFile, "-T", "json"}
+	} else {
+		// TLV 协议（PFCP/GTPv2/GTP）可以使用 -J 参数优化输出大小
+		protoList := "frame ip ipv6 udp tcp sctp"
+		for _, p := range protocols {
+			protoList += " " + p
+		}
+		args = []string{"-r", pcapFile, "-T", "json", "-J", protoList}
+	}
+
+	if filter != "" {
+		args = append(args, "-Y", filter)
+	}
+	return Exec(ctx, "tshark", args...)
+}

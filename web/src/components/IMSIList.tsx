@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { Radar, Search, CheckSquare, Square, Smartphone, Check } from 'lucide-react'
+import { Radar, Search, CheckSquare, Square, Smartphone, Check, Copy } from 'lucide-react'
 
 interface IMSIListProps {
   imsiList: string[]
@@ -9,6 +9,7 @@ interface IMSIListProps {
 
 export function IMSIList({ imsiList, selectedIMSIs, onSelectionChange }: IMSIListProps) {
   const [searchTerm, setSearchTerm] = useState('')
+  const [copiedId, setCopiedId] = useState<string | null>(null)
 
   const filteredList = useMemo(() => {
     if (!searchTerm) return imsiList
@@ -29,6 +30,13 @@ export function IMSIList({ imsiList, selectedIMSIs, onSelectionChange }: IMSILis
     } else {
       onSelectionChange([...filteredList])
     }
+  }
+
+  const handleCopy = (e: React.MouseEvent, imsi: string) => {
+    e.stopPropagation()
+    navigator.clipboard.writeText(imsi)
+    setCopiedId(imsi)
+    setTimeout(() => setCopiedId(null), 2000)
   }
 
   const formatIMSI = (imsi: string) => {
@@ -107,7 +115,7 @@ export function IMSIList({ imsiList, selectedIMSIs, onSelectionChange }: IMSILis
                 key={imsi}
                 onClick={() => toggleIMSI(imsi)}
                 className={`
-                  flex items-center gap-3 p-3.5 rounded-xl cursor-pointer transition-all group
+                  flex items-center gap-3 p-3.5 rounded-xl cursor-pointer transition-all group relative
                   ${isSelected 
                     ? 'bg-indigo-50 shadow-sm' 
                     : 'bg-slate-50/50 hover:bg-indigo-50/50 hover:shadow-md hover:-translate-y-0.5'
@@ -130,6 +138,24 @@ export function IMSIList({ imsiList, selectedIMSIs, onSelectionChange }: IMSILis
                     <span className={`font-bold ${isSelected ? 'text-indigo-700' : 'text-slate-800'}`}>{formatted.msin}</span>
                   </p>
                 </div>
+
+                <button
+                  onClick={(e) => handleCopy(e, imsi)}
+                  className={`
+                    p-1.5 rounded-lg transition-all
+                    ${copiedId === imsi 
+                      ? 'text-emerald-500 bg-emerald-50' 
+                      : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-100 opacity-0 group-hover:opacity-100'
+                    }
+                  `}
+                  title="复制 IMSI"
+                >
+                  {copiedId === imsi ? (
+                    <Check className="w-4 h-4" />
+                  ) : (
+                    <Copy className="w-4 h-4" />
+                  )}
+                </button>
               </div>
             )
           })

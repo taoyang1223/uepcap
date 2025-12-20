@@ -33,6 +33,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/jobs/{id}/export", h.ExportPackets)
 	mux.HandleFunc("GET /api/jobs/{id}/export/{taskId}/status", h.GetExportStatus)
 	mux.HandleFunc("GET /api/jobs/{id}/download/{filename}", h.DownloadExport)
+
+	// Export packets as text (JSON)
+	mux.HandleFunc("POST /api/jobs/{id}/export/text", h.ExportPacketsText)
+	mux.HandleFunc("POST /api/jobs/{id}/export/text/download", h.DownloadPacketsText)
 }
 
 // APIResponse represents a standard API response

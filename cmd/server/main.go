@@ -77,9 +77,12 @@ func main() {
 		}
 	}()
 
-	log.Printf("Starting server on :%d", *port)
 	log.Printf("Data directory: %s", *dataDir)
 	log.Printf("Job TTL: %v", *ttl)
+	log.Println("========================================")
+	log.Printf("🚀 Server started on port %d", *port)
+	log.Printf("👉 Access URL: http://localhost:%d", *port)
+	log.Println("========================================")
 	if err := server.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("Server error: %v", err)
 	}
