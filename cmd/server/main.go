@@ -25,6 +25,7 @@ func main() {
 	port := flag.Int("port", 8080, "HTTP server port")
 	dataDir := flag.String("data", "./data", "Data directory for temporary files")
 	ttl := flag.Duration("ttl", 1*time.Hour, "Job TTL (e.g., 1h, 30m)")
+	maxJobs := flag.Int("max-jobs", 3, "Maximum number of jobs to keep (0 = unlimited)")
 	flag.Parse()
 
 	// Check dependencies
@@ -33,7 +34,7 @@ func main() {
 	}
 
 	// Initialize job manager
-	jobMgr := job.NewManager(*dataDir, *ttl)
+	jobMgr := job.NewManagerWithLimit(*dataDir, *ttl, *maxJobs)
 
 	// Start TTL cleanup goroutine
 	ctx, cancel := context.WithCancel(context.Background())
@@ -79,6 +80,11 @@ func main() {
 
 	log.Printf("Data directory: %s", *dataDir)
 	log.Printf("Job TTL: %v", *ttl)
+	if *maxJobs > 0 {
+		log.Printf("Max jobs: %d (auto-cleanup enabled)", *maxJobs)
+	} else {
+		log.Printf("Max jobs: unlimited")
+	}
 	log.Println("========================================")
 	log.Printf("🚀 Server started on port %d", *port)
 	log.Printf("👉 Access URL: http://localhost:%d", *port)

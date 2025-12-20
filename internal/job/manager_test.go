@@ -140,3 +140,85 @@ func TestManagerExportCache(t *testing.T) {
 		t.Errorf("unexpected cached path: %s", path)
 	}
 }
+
+func TestManagerAutoCleanupOldJobs(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "uepcap-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Create manager with max 3 jobs limit
+	mgr := NewManagerWithLimit(tmpDir, 1*time.Hour, 3)
+
+	// Create 3 jobs
+	var jobIDs []string
+	for i := 0; i < 3; i++ {
+		job, err := mgr.CreateJob()
+		if err != nil {
+			t.Fatalf("CreateJob %d failed: %v", i, err)
+		}
+		jobIDs = append(jobIDs, job.ID)
+		// Small delay to ensure different creation times
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Verify 3 jobs exist
+	jobs := mgr.ListJobs()
+	if len(jobs) != 3 {
+		t.Errorf("expected 3 jobs, got %d", len(jobs))
+	}
+
+	// Create 4th job - should trigger cleanup of oldest job
+	job4, err := mgr.CreateJob()
+	if err != nil {
+		t.Fatalf("CreateJob 4th failed: %v", err)
+	}
+
+	// Verify still 3 jobs (oldest was cleaned)
+	jobs = mgr.ListJobs()
+	if len(jobs) != 3 {
+		t.Errorf("expected 3 jobs after cleanup, got %d", len(jobs))
+	}
+
+	// Verify oldest job was deleted
+	if _, ok := mgr.GetJob(jobIDs[0]); ok {
+		t.Error("oldest job should have been deleted")
+	}
+
+	// Verify newer jobs still exist
+	if _, ok := mgr.GetJob(jobIDs[1]); !ok {
+		t.Error("2nd job should still exist")
+	}
+	if _, ok := mgr.GetJob(jobIDs[2]); !ok {
+		t.Error("3rd job should still exist")
+	}
+	if _, ok := mgr.GetJob(job4.ID); !ok {
+		t.Error("4th job should exist")
+	}
+}
+
+func TestManagerUnlimitedJobs(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "uepcap-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Create manager with no limit (maxJobs = 0)
+	mgr := NewManagerWithLimit(tmpDir, 1*time.Hour, 0)
+
+	// Create 5 jobs
+	for i := 0; i < 5; i++ {
+		_, err := mgr.CreateJob()
+		if err != nil {
+			t.Fatalf("CreateJob %d failed: %v", i, err)
+		}
+	}
+
+	// All 5 jobs should exist
+	jobs := mgr.ListJobs()
+	if len(jobs) != 5 {
+		t.Errorf("expected 5 jobs, got %d", len(jobs))
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -47,12 +48,18 @@ type Job struct {
 type Manager struct {
 	dataDir string
 	ttl     time.Duration
+	maxJobs int // Maximum number of jobs to keep (0 = unlimited)
 	jobs    map[string]*Job
 	mu      sync.RWMutex
 }
 
 // NewManager creates a new job manager
 func NewManager(dataDir string, ttl time.Duration) *Manager {
+	return NewManagerWithLimit(dataDir, ttl, 3) // Default: keep max 3 jobs
+}
+
+// NewManagerWithLimit creates a new job manager with custom job limit
+func NewManagerWithLimit(dataDir string, ttl time.Duration, maxJobs int) *Manager {
 	// Ensure data directory exists
 	tmpDir := filepath.Join(dataDir, "tmp")
 	os.MkdirAll(tmpDir, 0755)
@@ -60,12 +67,16 @@ func NewManager(dataDir string, ttl time.Duration) *Manager {
 	return &Manager{
 		dataDir: dataDir,
 		ttl:     ttl,
+		maxJobs: maxJobs,
 		jobs:    make(map[string]*Job),
 	}
 }
 
 // CreateJob creates a new job
 func (m *Manager) CreateJob() (*Job, error) {
+	// Clean up old jobs if we've reached the limit
+	m.cleanupOldJobs()
+
 	id := uuid.New().String()
 	jobDir := filepath.Join(m.dataDir, "tmp", id)
 	if err := os.MkdirAll(jobDir, 0755); err != nil {
@@ -86,6 +97,45 @@ func (m *Manager) CreateJob() (*Job, error) {
 	m.mu.Unlock()
 
 	return job, nil
+}
+
+// cleanupOldJobs removes the oldest jobs when exceeding maxJobs limit
+func (m *Manager) cleanupOldJobs() {
+	if m.maxJobs <= 0 {
+		return // No limit
+	}
+
+	m.mu.RLock()
+	jobCount := len(m.jobs)
+	if jobCount < m.maxJobs {
+		m.mu.RUnlock()
+		return
+	}
+
+	// Collect jobs and sort by creation time
+	jobs := make([]*Job, 0, len(m.jobs))
+	for _, job := range m.jobs {
+		jobs = append(jobs, job)
+	}
+	m.mu.RUnlock()
+
+	// Sort by CreatedAt (oldest first)
+	sort.Slice(jobs, func(i, j int) bool {
+		return jobs[i].CreatedAt.Before(jobs[j].CreatedAt)
+	})
+
+	// Calculate how many jobs to delete (keep maxJobs - 1 to make room for the new one)
+	deleteCount := jobCount - m.maxJobs + 1
+	if deleteCount <= 0 {
+		return
+	}
+
+	// Delete the oldest jobs
+	for i := 0; i < deleteCount && i < len(jobs); i++ {
+		jobID := jobs[i].ID
+		fmt.Printf("[JobManager] Auto-cleaning old job: %s (created: %s)\n", jobID, jobs[i].CreatedAt.Format(time.RFC3339))
+		m.DeleteJob(jobID)
+	}
 }
 
 // GetJob returns a job by ID
