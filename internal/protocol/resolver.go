@@ -121,8 +121,9 @@ func NewNGAPResolver() *NGAPResolver {
 }
 
 // ResolveFilter resolves NGAP display filter for an IMSI
+// Enhanced: Supports both SUCI-based (initial) and 5G-GUTI-based (periodic/mobility) registrations
 func (r *NGAPResolver) ResolveFilter(ctx context.Context, pcapFile, imsi string) (string, error) {
-	// Step 1: Find RAN-UE-NGAP-ID from InitialUEMessage containing MSIN
+	// Step 1: Find RAN-UE-NGAP-ID from InitialUEMessage containing MSIN (initial registration)
 	msin := getMSIN(imsi)
 
 	// Search InitialUEMessage for MSIN (multiple registrations = multiple RAN_UE_NGAP_IDs)
@@ -139,6 +140,44 @@ func (r *NGAPResolver) ResolveFilter(ctx context.Context, pcapFile, imsi string)
 
 	// Step 2: Find all AMF_UE_NGAP_IDs associated with these RAN_UE_NGAP_IDs
 	amfIDs := r.findAMFIDsForRanIDs(ctx, pcapFile, ranIDs)
+
+	// Step 3: Extract 5G-TMSI from RegistrationAccept for this UE
+	// This allows us to track subsequent registrations using 5G-GUTI
+	fiveGTMSIs := r.extract5GTMSIsFromContext(ctx, pcapFile, ranIDs, amfIDs)
+
+	// Step 4: Find additional RAN_UE_NGAP_IDs from InitialUEMessage with matching 5G-S-TMSI
+	// (These are periodic/mobility/emergency registrations using 5G-GUTI)
+	if len(fiveGTMSIs) > 0 {
+		additionalRanIDs := r.findRanIDsBy5GTMSI(result.Stdout, fiveGTMSIs)
+		for _, ranID := range additionalRanIDs {
+			// Avoid duplicates
+			found := false
+			for _, existing := range ranIDs {
+				if existing == ranID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				ranIDs = append(ranIDs, ranID)
+			}
+		}
+
+		// Find additional AMF IDs for new RAN IDs
+		additionalAMFIDs := r.findAMFIDsForRanIDs(ctx, pcapFile, additionalRanIDs)
+		for _, amfID := range additionalAMFIDs {
+			found := false
+			for _, existing := range amfIDs {
+				if existing == amfID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				amfIDs = append(amfIDs, amfID)
+			}
+		}
+	}
 
 	// Build filter using both RAN_UE_NGAP_ID and AMF_UE_NGAP_ID
 	// For accurate filtering, we should use (RAN_ID && AMF_ID) pairs when both are available
@@ -244,6 +283,135 @@ func (r *NGAPResolver) findAMFIDsForRanIDs(ctx context.Context, pcapFile string,
 		amfIDs = append(amfIDs, id)
 	}
 	return amfIDs
+}
+
+// extract5GTMSIsFromContext extracts 5G-TMSI values allocated to the UE from RegistrationAccept
+// The 5G-TMSI is assigned by AMF and included in 5G-GUTI IE of Registration Accept message
+// This is used to track subsequent registrations using 5G-GUTI (periodic/mobility/emergency)
+func (r *NGAPResolver) extract5GTMSIsFromContext(ctx context.Context, pcapFile string, ranIDs, amfIDs []string) []string {
+	tmsiSet := make(map[string]bool)
+
+	// Build filter for UE context messages (DownlinkNASTransport containing RegistrationAccept)
+	// RegistrationAccept is NAS message, transmitted via NGAP DownlinkNASTransport
+	var filterParts []string
+	for _, amfID := range amfIDs {
+		filterParts = append(filterParts, fmt.Sprintf("ngap.AMF_UE_NGAP_ID == %s", amfID))
+	}
+	for _, ranID := range ranIDs {
+		filterParts = append(filterParts, fmt.Sprintf("ngap.RAN_UE_NGAP_ID == %s", ranID))
+	}
+
+	if len(filterParts) == 0 {
+		return nil
+	}
+
+	filter := strings.Join(filterParts, " || ")
+	result, err := tshark.TsharkVerbose(ctx, pcapFile, filter)
+	if err != nil {
+		return nil
+	}
+
+	// Extract 5G-TMSI from verbose output
+	// Look for patterns like:
+	// - "5G-TMSI: 0xXXXXXXXX" or "5G-TMSI: NNNNNNNN"
+	// - "fiveG-TMSI: 0xXXXXXXXX"
+	// These appear in RegistrationAccept NAS message within 5G-GUTI IE
+	tmsiPatterns := []*regexp.Regexp{
+		regexp.MustCompile(`5G-TMSI:\s*(0x[0-9a-fA-F]+|\d+)`),
+		regexp.MustCompile(`fiveG-TMSI:\s*(0x[0-9a-fA-F]+|\d+)`),
+		regexp.MustCompile(`5G-S-TMSI.*?5G-TMSI:\s*(0x[0-9a-fA-F]+|\d+)`),
+	}
+
+	lines := strings.Split(result.Stdout, "\n")
+	for _, line := range lines {
+		for _, pattern := range tmsiPatterns {
+			if match := pattern.FindStringSubmatch(line); len(match) > 1 {
+				tmsi := match[1]
+				// Normalize to consistent format
+				if strings.HasPrefix(tmsi, "0x") {
+					tmsiSet[tmsi] = true
+				} else {
+					// Convert decimal to hex for consistency
+					tmsiSet[tmsi] = true
+				}
+			}
+		}
+	}
+
+	var tmsiList []string
+	for tmsi := range tmsiSet {
+		tmsiList = append(tmsiList, tmsi)
+	}
+	return tmsiList
+}
+
+// findRanIDsBy5GTMSI finds RAN_UE_NGAP_IDs from InitialUEMessage containing matching 5G-S-TMSI
+// This is used to capture periodic/mobility/emergency registrations using 5G-GUTI
+// When UE uses 5G-GUTI for registration, InitialUEMessage contains 5G-S-TMSI (not SUCI/MSIN)
+func (r *NGAPResolver) findRanIDsBy5GTMSI(initialUEOutput string, fiveGTMSIs []string) []string {
+	ranIDSet := make(map[string]bool)
+
+	// Build TMSI lookup set (normalize values)
+	tmsiLookup := make(map[string]bool)
+	for _, tmsi := range fiveGTMSIs {
+		// Store both original and normalized forms
+		tmsiLookup[tmsi] = true
+		// Also store without 0x prefix if hex
+		if strings.HasPrefix(tmsi, "0x") {
+			tmsiLookup[strings.TrimPrefix(tmsi, "0x")] = true
+			tmsiLookup[strings.ToLower(strings.TrimPrefix(tmsi, "0x"))] = true
+			tmsiLookup[strings.ToUpper(strings.TrimPrefix(tmsi, "0x"))] = true
+		}
+	}
+
+	ranPattern := regexp.MustCompile(`RAN-UE-NGAP-ID:\s*(\d+)`)
+	// 5G-S-TMSI contains AMF Set ID + AMF Pointer + 5G-TMSI
+	// We need to match the 5G-TMSI part
+	tmsiInFramePattern := regexp.MustCompile(`5G-TMSI:\s*(0x[0-9a-fA-F]+|[0-9a-fA-F]+|\d+)`)
+	framePattern := regexp.MustCompile(`^Frame \d+:`)
+
+	lines := strings.Split(initialUEOutput, "\n")
+	var currentRanID string
+	var foundMatchingTMSI bool
+
+	for _, line := range lines {
+		if framePattern.MatchString(line) {
+			// New frame, check if previous frame had our TMSI
+			if foundMatchingTMSI && currentRanID != "" {
+				ranIDSet[currentRanID] = true
+			}
+			currentRanID = ""
+			foundMatchingTMSI = false
+		}
+
+		if match := ranPattern.FindStringSubmatch(line); len(match) > 1 {
+			currentRanID = match[1]
+		}
+
+		if match := tmsiInFramePattern.FindStringSubmatch(line); len(match) > 1 {
+			tmsiValue := match[1]
+			// Check if this TMSI matches any of our known TMSIs
+			if tmsiLookup[tmsiValue] {
+				foundMatchingTMSI = true
+			}
+			// Also try normalized forms
+			normalized := strings.TrimPrefix(strings.ToLower(tmsiValue), "0x")
+			if tmsiLookup[normalized] {
+				foundMatchingTMSI = true
+			}
+		}
+	}
+
+	// Check last frame
+	if foundMatchingTMSI && currentRanID != "" {
+		ranIDSet[currentRanID] = true
+	}
+
+	var ranIDs []string
+	for id := range ranIDSet {
+		ranIDs = append(ranIDs, id)
+	}
+	return ranIDs
 }
 
 // PFCPResolver resolves PFCP filters for an IMSI

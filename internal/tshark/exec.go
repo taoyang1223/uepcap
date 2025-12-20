@@ -66,6 +66,8 @@ func TsharkFields(ctx context.Context, pcapFile string, filter string, fields []
 	if filter != "" {
 		args = append(args, "-Y", filter)
 	}
+	// 添加 NAS 解密偏好设置
+	args = appendNASDecryptPrefs(args, filter, nil)
 	return Exec(ctx, "tshark", args...)
 }
 
@@ -78,6 +80,8 @@ func TsharkJSON(ctx context.Context, pcapFile string, filter string, protocols s
 	if filter != "" {
 		args = append(args, "-Y", filter)
 	}
+	// 添加 NAS 解密偏好设置
+	args = appendNASDecryptPrefs(args, filter, strings.Fields(protocols))
 	return Exec(ctx, "tshark", args...)
 }
 
@@ -87,6 +91,8 @@ func TsharkVerbose(ctx context.Context, pcapFile string, filter string) (*ExecRe
 	if filter != "" {
 		args = append(args, "-Y", filter)
 	}
+	// 添加 NAS 解密偏好设置
+	args = appendNASDecryptPrefs(args, filter, nil)
 	return Exec(ctx, "tshark", args...)
 }
 
@@ -153,6 +159,43 @@ var asn1Protocols = map[string]bool{
 	"nas-eps": true, // NAS 嵌套在 S1AP 中
 }
 
+// NAS 5G/EPS 解密相关的 tshark 偏好设置
+// 这些设置允许 tshark 尝试解码使用空加密(NEA0/EEA0)的 NAS 消息
+// 注意: nas-5gs.dissect_plain_nas 在某些 tshark 版本中不存在，已移除
+var nas5gsDecryptPrefs = []string{
+	"-o", "nas-5gs.null_decipher:TRUE", // 启用 NAS 5G 空加密解码
+}
+
+var nasEpsDecryptPrefs = []string{
+	"-o", "nas-eps.null_decipher:TRUE", // 启用 NAS EPS 空加密解码
+}
+
+// appendNASDecryptPrefs appends NAS decryption preferences based on filter or protocols
+func appendNASDecryptPrefs(args []string, filter string, protocols []string) []string {
+	// 检查是否需要添加 NAS 5G 解密偏好
+	needNas5gs := strings.Contains(filter, "ngap") || strings.Contains(filter, "nas-5gs")
+	needNasEps := strings.Contains(filter, "s1ap") || strings.Contains(filter, "nas-eps")
+
+	// 也检查协议列表
+	for _, p := range protocols {
+		if p == "ngap" || p == "nas-5gs" {
+			needNas5gs = true
+		}
+		if p == "s1ap" || p == "nas-eps" {
+			needNasEps = true
+		}
+	}
+
+	if needNas5gs {
+		args = append(args, nas5gsDecryptPrefs...)
+	}
+	if needNasEps {
+		args = append(args, nasEpsDecryptPrefs...)
+	}
+
+	return args
+}
+
 // hasASN1Protocol checks if the protocol list contains ASN.1 encoded protocols
 func hasASN1Protocol(protocols []string) bool {
 	for _, p := range protocols {
@@ -187,5 +230,8 @@ func TsharkCompactJSON(ctx context.Context, pcapFile string, filter string, prot
 	if filter != "" {
 		args = append(args, "-Y", filter)
 	}
+
+	// 添加 NAS 解密偏好设置
+	args = appendNASDecryptPrefs(args, filter, protocols)
 	return Exec(ctx, "tshark", args...)
 }

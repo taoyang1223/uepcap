@@ -117,118 +117,125 @@ function App() {
     }
   }, [currentJob, loading, imsiList.length, handleScanIMSIs])
 
-  // 如果是时间线视图，渲染 TimelineViewer
-  if (viewMode === 'timeline') {
-    return <TimelineViewer packets={timelinePackets} onBack={handleBackFromTimeline} />
-  }
-
-  // 如果是安装指南视图，渲染 InstallGuide
-  if (viewMode === 'guide') {
-    return <InstallGuide onBack={handleBackFromGuide} />
-  }
-
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-indigo-100 selection:text-indigo-900">
-      {/* Header */}
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-50 bg-opacity-90 backdrop-blur-md">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-600/20 transform hover:rotate-6 transition-transform duration-300">
-              <Network className="w-6 h-6 text-white" />
-            </div>
-            <div>
-              <h1 className="text-xl font-bold text-slate-900 tracking-tight">UE PCAP Filter</h1>
-              <p className="text-xs text-slate-500 font-medium">IMSI 关联数据包过滤工具</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={handleShowGuide}
-              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all duration-200"
-            >
-              <BookOpen className="w-4 h-4" />
-              <span>MCP配置指南</span>
-            </button>
-            {currentJob && (
-              <button
-                onClick={handleReset}
-                className="px-4 py-2 text-sm font-medium text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all duration-200"
-              >
-                新建任务
-              </button>
-            )}
-          </div>
-        </div>
-      </header>
-
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {error && (
-          <div className="mb-8 p-4 bg-red-50 rounded-xl text-red-700 flex items-center shadow-sm animate-fade-in">
-            <span className="bg-red-100 p-1.5 rounded-xl mr-3 flex-shrink-0">
-              <svg className="w-4 h-4 text-red-600" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" /></svg>
-            </span>
-            <span className="font-medium">{error}</span>
-          </div>
+    <>
+      {/* Timeline View - 使用 CSS 控制显示/隐藏，避免组件卸载导致的状态丢失 */}
+      <div className={viewMode === 'timeline' ? '' : 'hidden'}>
+        {timelinePackets.length > 0 && (
+          <TimelineViewer packets={timelinePackets} onBack={handleBackFromTimeline} />
         )}
+      </div>
 
-        {!currentJob ? (
-          /* Upload Section */
-          <div className="max-w-2xl mx-auto mt-12 animate-fade-in-up">
-            <div className="text-center mb-10">
-              <h2 className="text-3xl font-extrabold text-slate-900 mb-4 tracking-tight">
-                上传抓包文件
-              </h2>
-              <p className="text-lg text-slate-500 max-w-lg mx-auto leading-relaxed">
-                支持 .pcap, .pcapng 格式，自动合并并提取 UE 关键信息
+      {/* Install Guide View */}
+      <div className={viewMode === 'guide' ? '' : 'hidden'}>
+        <InstallGuide onBack={handleBackFromGuide} />
+      </div>
+
+      {/* Main View */}
+      <div className={viewMode === 'main' ? '' : 'hidden'}>
+        <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-indigo-100 selection:text-indigo-900">
+          {/* Header */}
+          <header className="bg-white border-b border-slate-200 sticky top-0 z-50 bg-opacity-90 backdrop-blur-md">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-600/20 transform hover:rotate-6 transition-transform duration-300">
+                  <Network className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <h1 className="text-xl font-bold text-slate-900 tracking-tight">UE PCAP Filter</h1>
+                  <p className="text-xs text-slate-500 font-medium">IMSI 关联数据包过滤工具</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleShowGuide}
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all duration-200"
+                >
+                  <BookOpen className="w-4 h-4" />
+                  <span>MCP配置指南</span>
+                </button>
+                {currentJob && (
+                  <button
+                    onClick={handleReset}
+                    className="px-4 py-2 text-sm font-medium text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all duration-200"
+                  >
+                    新建任务
+                  </button>
+                )}
+              </div>
+            </div>
+          </header>
+
+          {/* Main Content */}
+          <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            {error && (
+              <div className="mb-8 p-4 bg-red-50 rounded-xl text-red-700 flex items-center shadow-sm animate-fade-in">
+                <span className="bg-red-100 p-1.5 rounded-xl mr-3 flex-shrink-0">
+                  <svg className="w-4 h-4 text-red-600" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" /></svg>
+                </span>
+                <span className="font-medium">{error}</span>
+              </div>
+            )}
+
+            {!currentJob ? (
+              /* Upload Section */
+              <div className="max-w-2xl mx-auto mt-12 animate-fade-in-up">
+                <div className="text-center mb-10">
+                  <h2 className="text-3xl font-extrabold text-slate-900 mb-4 tracking-tight">
+                    上传抓包文件
+                  </h2>
+                  <p className="text-lg text-slate-500 max-w-lg mx-auto leading-relaxed">
+                    支持 .pcap, .pcapng 格式，自动合并并提取 UE 关键信息
+                  </p>
+                </div>
+                <FileUpload onUploadComplete={handleUploadComplete} />
+              </div>
+            ) : (
+              /* Job Processing Section */
+              <div className="space-y-6 animate-fade-in">
+                {/* Row 1: Job Info */}
+                <JobInfo job={currentJob} onScanIMSIs={handleScanIMSIs} loading={loading} />
+                
+                {/* Row 2: IMSI List - Right below Job Info */}
+                <div className="transition-all duration-500 ease-in-out">
+                  {(imsiList.length > 0 || loading) && (
+                    <IMSIList
+                      imsiList={imsiList}
+                      selectedIMSIs={selectedIMSIs}
+                      onSelectionChange={setSelectedIMSIs}
+                    />
+                  )}
+                </div>
+                
+                {/* Row 3: Export Panel & Protocol Select - Side by side */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  <ExportPanel
+                    jobId={currentJob.id}
+                    selectedIMSIs={selectedIMSIs}
+                    selectedProtocols={selectedProtocols}
+                    onViewTimeline={handleViewTimeline}
+                  />
+                  
+                  <ProtocolSelect
+                    selectedProtocols={selectedProtocols}
+                    onSelectionChange={setSelectedProtocols}
+                  />
+                </div>
+              </div>
+            )}
+          </main>
+
+          {/* Footer */}
+          <footer className="mt-auto border-t border-slate-200 py-8 bg-white">
+            <div className="max-w-7xl mx-auto px-4 text-center">
+              <p className="text-sm text-slate-500">
+                基于 <span className="font-semibold text-slate-700">tshark</span> 实现 · 支持 NGAP / PFCP / S1AP / GTPv2 / GTP-U 协议
               </p>
             </div>
-            <FileUpload onUploadComplete={handleUploadComplete} />
-          </div>
-        ) : (
-          /* Job Processing Section */
-          <div className="space-y-6 animate-fade-in">
-            {/* Row 1: Job Info */}
-            <JobInfo job={currentJob} onScanIMSIs={handleScanIMSIs} loading={loading} />
-            
-            {/* Row 2: IMSI List - Right below Job Info */}
-            <div className="transition-all duration-500 ease-in-out">
-              {(imsiList.length > 0 || loading) && (
-                <IMSIList
-                  imsiList={imsiList}
-                  selectedIMSIs={selectedIMSIs}
-                  onSelectionChange={setSelectedIMSIs}
-                />
-              )}
-            </div>
-            
-            {/* Row 3: Export Panel & Protocol Select - Side by side */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <ExportPanel
-                jobId={currentJob.id}
-                selectedIMSIs={selectedIMSIs}
-                selectedProtocols={selectedProtocols}
-                onViewTimeline={handleViewTimeline}
-              />
-              
-              <ProtocolSelect
-                selectedProtocols={selectedProtocols}
-                onSelectionChange={setSelectedProtocols}
-              />
-            </div>
-          </div>
-        )}
-      </main>
-
-      {/* Footer */}
-      <footer className="mt-auto border-t border-slate-200 py-8 bg-white">
-        <div className="max-w-7xl mx-auto px-4 text-center">
-          <p className="text-sm text-slate-500">
-            基于 <span className="font-semibold text-slate-700">tshark</span> 实现 · 支持 NGAP / PFCP / S1AP / GTPv2 / GTP-U 协议
-          </p>
+          </footer>
         </div>
-      </footer>
-    </div>
+      </div>
+    </>
   )
 }
 

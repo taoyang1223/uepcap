@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"context"
+	"log"
 	"regexp"
 	"sort"
 	"strings"
@@ -69,6 +70,7 @@ func (s *IMSIScanner) ScanIMSIs(ctx context.Context, pcapFile string) ([]string,
 // scanByFieldsFast extracts IMSI using a single tshark call with all known fields
 func (s *IMSIScanner) scanByFieldsFast(ctx context.Context, pcapFile string) map[string]bool {
 	imsiSet := make(map[string]bool)
+	log.Printf("[IMSIScanner] scanByFieldsFast starting, pcapFile: %s", pcapFile)
 
 	// Comprehensive IMSI fields - extracted in one call
 	// Note: gtpv2.imsi is NOT a valid field, GTPv2 IMSI is extracted via e212.imsi
@@ -82,13 +84,24 @@ func (s *IMSIScanner) scanByFieldsFast(ctx context.Context, pcapFile string) map
 
 	// Single tshark call with combined filter for signaling protocols
 	filter := "gtpv2 or s1ap or ngap or nas_5gs or nas_eps or diameter or pfcp"
+	log.Printf("[IMSIScanner] scanByFieldsFast tshark filter: %s", filter)
+	log.Printf("[IMSIScanner] scanByFieldsFast tshark fields: %v", fields)
+
 	result, err := tshark.TsharkFields(ctx, pcapFile, filter, fields)
 	if err != nil {
+		log.Printf("[IMSIScanner] scanByFieldsFast tshark error: %v", err)
 		return imsiSet
+	}
+
+	log.Printf("[IMSIScanner] scanByFieldsFast tshark exitCode: %d, stderr: %s", result.ExitCode, result.Stderr)
+	if result.ExitCode != 0 {
+		log.Printf("[IMSIScanner] scanByFieldsFast tshark non-zero exit code")
 	}
 
 	// Parse field output efficiently
 	lines := strings.Split(result.Stdout, "\n")
+	log.Printf("[IMSIScanner] scanByFieldsFast got %d lines of output", len(lines))
+
 	for _, line := range lines {
 		if line == "" {
 			continue
@@ -102,12 +115,14 @@ func (s *IMSIScanner) scanByFieldsFast(ctx context.Context, pcapFile string) map
 		}
 	}
 
+	log.Printf("[IMSIScanner] scanByFieldsFast found %d IMSIs", len(imsiSet))
 	return imsiSet
 }
 
 // scanVerboseCombined uses a single verbose tshark call with combined filter
 func (s *IMSIScanner) scanVerboseCombined(ctx context.Context, pcapFile string) map[string]bool {
 	imsiSet := make(map[string]bool)
+	log.Printf("[IMSIScanner] scanVerboseCombined starting, pcapFile: %s", pcapFile)
 
 	// Combined filter for all protocols that may contain IMSI
 	// Focus on messages that typically contain IMSI:
@@ -115,10 +130,18 @@ func (s *IMSIScanner) scanVerboseCombined(ctx context.Context, pcapFile string) 
 	// - Initial UE Message (ngap.procedureCode==15)
 	// - Attach Request, etc.
 	filter := "pfcp.msg_type == 50 or ngap.procedureCode == 15 or s1ap.procedureCode == 12 or gtpv2.message_type == 32"
+	log.Printf("[IMSIScanner] scanVerboseCombined tshark filter: %s", filter)
 
 	result, err := tshark.TsharkVerbose(ctx, pcapFile, filter)
 	if err != nil {
+		log.Printf("[IMSIScanner] scanVerboseCombined tshark error: %v", err)
 		return imsiSet
+	}
+
+	log.Printf("[IMSIScanner] scanVerboseCombined tshark exitCode: %d, stderr len: %d, stdout len: %d",
+		result.ExitCode, len(result.Stderr), len(result.Stdout))
+	if result.ExitCode != 0 {
+		log.Printf("[IMSIScanner] scanVerboseCombined tshark stderr: %s", result.Stderr)
 	}
 
 	// Compile patterns once and reuse
@@ -137,6 +160,7 @@ func (s *IMSIScanner) scanVerboseCombined(ctx context.Context, pcapFile string) 
 		}
 	}
 
+	log.Printf("[IMSIScanner] scanVerboseCombined found %d IMSIs", len(imsiSet))
 	return imsiSet
 }
 
@@ -184,6 +208,8 @@ func (s *IMSIScanner) ScanIMSIsStream(ctx context.Context, pcapFile string, imsi
 
 // scanByFieldsStream extracts IMSI using field extraction and streams results
 func (s *IMSIScanner) scanByFieldsStream(ctx context.Context, pcapFile string, sendIMSI func(string)) {
+	log.Printf("[IMSIScanner] scanByFieldsStream starting, pcapFile: %s", pcapFile)
+
 	// Note: gtpv2.imsi is NOT a valid field, GTPv2 IMSI is extracted via e212.imsi
 	fields := []string{
 		"e212.imsi",
@@ -194,12 +220,20 @@ func (s *IMSIScanner) scanByFieldsStream(ctx context.Context, pcapFile string, s
 	}
 
 	filter := "gtpv2 or s1ap or ngap or nas_5gs or nas_eps or diameter or pfcp"
+	log.Printf("[IMSIScanner] scanByFieldsStream tshark filter: %s", filter)
+
 	result, err := tshark.TsharkFields(ctx, pcapFile, filter, fields)
 	if err != nil {
+		log.Printf("[IMSIScanner] scanByFieldsStream tshark error: %v", err)
 		return
 	}
 
+	log.Printf("[IMSIScanner] scanByFieldsStream tshark exitCode: %d, stderr: %s", result.ExitCode, result.Stderr)
+
 	lines := strings.Split(result.Stdout, "\n")
+	log.Printf("[IMSIScanner] scanByFieldsStream got %d lines", len(lines))
+
+	foundCount := 0
 	for _, line := range lines {
 		if line == "" {
 			continue
@@ -208,19 +242,31 @@ func (s *IMSIScanner) scanByFieldsStream(ctx context.Context, pcapFile string, s
 		for _, part := range parts {
 			part = strings.TrimSpace(part)
 			if s.isValidIMSI(part) {
+				foundCount++
 				sendIMSI(part)
 			}
 		}
 	}
+	log.Printf("[IMSIScanner] scanByFieldsStream completed, found %d IMSIs", foundCount)
 }
 
 // scanVerboseStream uses verbose output and streams IMSI results
 func (s *IMSIScanner) scanVerboseStream(ctx context.Context, pcapFile string, sendIMSI func(string)) {
+	log.Printf("[IMSIScanner] scanVerboseStream starting, pcapFile: %s", pcapFile)
+
 	filter := "pfcp.msg_type == 50 or ngap.procedureCode == 15 or s1ap.procedureCode == 12 or gtpv2.message_type == 32"
+	log.Printf("[IMSIScanner] scanVerboseStream tshark filter: %s", filter)
 
 	result, err := tshark.TsharkVerbose(ctx, pcapFile, filter)
 	if err != nil {
+		log.Printf("[IMSIScanner] scanVerboseStream tshark error: %v", err)
 		return
+	}
+
+	log.Printf("[IMSIScanner] scanVerboseStream tshark exitCode: %d, stderr len: %d, stdout len: %d",
+		result.ExitCode, len(result.Stderr), len(result.Stdout))
+	if result.ExitCode != 0 {
+		log.Printf("[IMSIScanner] scanVerboseStream tshark stderr: %s", result.Stderr)
 	}
 
 	patterns := []*regexp.Regexp{
@@ -229,14 +275,17 @@ func (s *IMSIScanner) scanVerboseStream(ctx context.Context, pcapFile string, se
 		regexp.MustCompile(`SUPI:\s*imsi-([0-9]{14,15})`),
 	}
 
+	foundCount := 0
 	for _, pattern := range patterns {
 		matches := pattern.FindAllStringSubmatch(result.Stdout, -1)
 		for _, match := range matches {
 			if len(match) > 1 && s.isValidIMSI(match[1]) {
+				foundCount++
 				sendIMSI(match[1])
 			}
 		}
 	}
+	log.Printf("[IMSIScanner] scanVerboseStream completed, found %d IMSIs", foundCount)
 }
 
 // isValidIMSI checks if a string looks like a valid IMSI

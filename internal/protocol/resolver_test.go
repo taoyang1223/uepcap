@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"sort"
 	"testing"
 )
 
@@ -120,6 +121,160 @@ func TestExtractUEIPv4(t *testing.T) {
 			result := resolver.extractUEIPv4(test.input)
 			if result != test.expected {
 				t.Errorf("extractUEIPv4() = %q, expected %q", result, test.expected)
+			}
+		})
+	}
+}
+
+func TestFindRanIDsBy5GTMSI(t *testing.T) {
+	resolver := &NGAPResolver{}
+
+	tests := []struct {
+		name       string
+		input      string
+		fiveGTMSIs []string
+		expected   []string
+	}{
+		{
+			name: "Match 5G-TMSI in InitialUEMessage (hex format)",
+			input: `Frame 100:
+    RAN-UE-NGAP-ID: 48
+    5G-S-TMSI
+        AMF Set ID: 1
+        AMF Pointer: 0
+        5G-TMSI: 0x12345678
+Frame 101:
+    RAN-UE-NGAP-ID: 49
+    MSIN: 9000000004`,
+			fiveGTMSIs: []string{"0x12345678"},
+			expected:   []string{"48"},
+		},
+		{
+			name: "Match 5G-TMSI in InitialUEMessage (decimal format)",
+			input: `Frame 200:
+    RAN-UE-NGAP-ID: 50
+    5G-TMSI: 305419896
+Frame 201:
+    RAN-UE-NGAP-ID: 51
+    MSIN: 9000000005`,
+			fiveGTMSIs: []string{"305419896"},
+			expected:   []string{"50"},
+		},
+		{
+			name: "Multiple registrations with same 5G-TMSI",
+			input: `Frame 300:
+    RAN-UE-NGAP-ID: 60
+    5G-TMSI: 0xAABBCCDD
+Frame 301:
+    RAN-UE-NGAP-ID: 61
+    5G-TMSI: 0xAABBCCDD
+Frame 302:
+    RAN-UE-NGAP-ID: 62
+    MSIN: 9000000006`,
+			fiveGTMSIs: []string{"0xAABBCCDD"},
+			expected:   []string{"60", "61"},
+		},
+		{
+			name: "No matching 5G-TMSI",
+			input: `Frame 400:
+    RAN-UE-NGAP-ID: 70
+    5G-TMSI: 0x99999999
+Frame 401:
+    RAN-UE-NGAP-ID: 71
+    MSIN: 9000000007`,
+			fiveGTMSIs: []string{"0x12345678"},
+			expected:   []string{},
+		},
+		{
+			name: "Match case-insensitive hex",
+			input: `Frame 500:
+    RAN-UE-NGAP-ID: 80
+    5G-TMSI: 0xabcdef12`,
+			fiveGTMSIs: []string{"0xABCDEF12"},
+			expected:   []string{"80"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := resolver.findRanIDsBy5GTMSI(test.input, test.fiveGTMSIs)
+
+			// Sort for comparison
+			sort.Strings(result)
+			sort.Strings(test.expected)
+
+			if len(result) != len(test.expected) {
+				t.Errorf("findRanIDsBy5GTMSI() returned %d items, expected %d. Got: %v, Expected: %v",
+					len(result), len(test.expected), result, test.expected)
+				return
+			}
+
+			for i := range result {
+				if result[i] != test.expected[i] {
+					t.Errorf("findRanIDsBy5GTMSI() = %v, expected %v", result, test.expected)
+					break
+				}
+			}
+		})
+	}
+}
+
+func TestExtractRanIDsFromInitialUE(t *testing.T) {
+	resolver := &NGAPResolver{}
+
+	tests := []struct {
+		name     string
+		input    string
+		msin     string
+		expected []string
+	}{
+		{
+			name: "Single registration with MSIN",
+			input: `Frame 1:
+    RAN-UE-NGAP-ID: 100
+    MSIN: 9000000001`,
+			msin:     "9000000001",
+			expected: []string{"100"},
+		},
+		{
+			name: "Multiple registrations same MSIN",
+			input: `Frame 1:
+    RAN-UE-NGAP-ID: 100
+    MSIN: 9000000001
+Frame 2:
+    RAN-UE-NGAP-ID: 101
+    MSIN: 9000000001`,
+			msin:     "9000000001",
+			expected: []string{"100", "101"},
+		},
+		{
+			name: "Different MSIN - no match",
+			input: `Frame 1:
+    RAN-UE-NGAP-ID: 100
+    MSIN: 9000000002`,
+			msin:     "9000000001",
+			expected: []string{},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := resolver.extractRanIDsFromInitialUE(test.input, test.msin)
+
+			sort.Strings(result)
+			sort.Strings(test.expected)
+
+			if len(result) != len(test.expected) {
+				t.Errorf("extractRanIDsFromInitialUE() returned %d items, expected %d. Got: %v",
+					len(result), len(test.expected), result)
+				return
+			}
+
+			for i := range result {
+				if result[i] != test.expected[i] {
+					t.Errorf("extractRanIDsFromInitialUE() = %v, expected %v", result, test.expected)
+					break
+				}
 			}
 		})
 	}
