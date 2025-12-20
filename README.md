@@ -732,6 +732,17 @@ Job TTL: 1h0m0s
 
 ![导出配置界面](docs/images/export-panel.png)
 
+### 3. 导出结果
+
+点击「开始导出」后，系统会自动解析所选 IMSI 的关联标识符并生成 Wireshark 过滤条件：
+
+- **Wireshark 过滤条件**：可直接复制到 Wireshark 中使用，包含 NGAP、PFCP、GTPv2 等协议的关联 ID
+- **立即下载**：下载过滤后的 PCAP 文件
+- **复制简要 JSON / 下载 JSON 文本**：导出 UE 信令的结构化数据
+- **内容展示**：在线查看信令流程时序图
+
+![导出结果](docs/images/export-result.png)
+
 ---
 
 ### 开发模式
