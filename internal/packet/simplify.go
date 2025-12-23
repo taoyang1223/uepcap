@@ -730,6 +730,55 @@ func extractNestedNASInfo(data map[string]any) map[string]any {
 					info["mnc"] = s
 				}
 			}
+			// PDU Session 相关字段
+			if k == "nas_5gs.sm.dnn" || k == "nas-5gs.sm.dnn" {
+				if s, ok := v.(string); ok {
+					info["dnn"] = s
+				}
+			}
+			if k == "nas_5gs.pdu_session_id" || k == "nas-5gs.pdu_session_id" {
+				if s, ok := v.(string); ok {
+					info["pdu_session_id"] = s
+				}
+			}
+			if k == "nas_5gs.sm.pdu_session_type" || k == "nas-5gs.sm.pdu_session_type" {
+				if s, ok := v.(string); ok {
+					info["pdu_session_type"] = s
+				}
+			}
+			if k == "nas_5gs.sm.pdu_address_ipv4" || k == "nas-5gs.sm.pdu_address_ipv4" {
+				if s, ok := v.(string); ok {
+					info["ue_ipv4"] = s
+				}
+			}
+			if k == "nas_5gs.sm.pdu_address_ipv6" || k == "nas-5gs.sm.pdu_address_ipv6" {
+				if s, ok := v.(string); ok {
+					info["ue_ipv6"] = s
+				}
+			}
+			// S-NSSAI 相关
+			if k == "nas_5gs.mm.sst" || k == "nas-5gs.mm.sst" {
+				if s, ok := v.(string); ok {
+					info["sst"] = s
+				}
+			}
+			if k == "nas_5gs.mm.sd" || k == "nas-5gs.mm.sd" {
+				if s, ok := v.(string); ok {
+					info["sd"] = s
+				}
+			}
+			// QFI 相关
+			if k == "nas_5gs.sm.qfi" || k == "nas-5gs.sm.qfi" {
+				if s, ok := v.(string); ok {
+					info["qfi"] = s
+				}
+			}
+			// 5G-GUTI 相关
+			if k == "nas_5gs.5g_guti" || k == "nas-5gs.5g_guti" {
+				if s, ok := v.(string); ok {
+					info["5g_guti"] = s
+				}
+			}
 
 			if nested, ok := v.(map[string]any); ok {
 				searchNAS(nested)
@@ -801,6 +850,43 @@ func extractNASLayerInfo(nasLayer map[string]any) map[string]any {
 			case "nas-5gs.mm.5gs_reg_type":
 				if s, ok := v.(string); ok {
 					info["reg_type"] = s
+				}
+			// PDU Session 相关字段
+			case "nas_5gs.sm.dnn", "nas-5gs.sm.dnn":
+				if s, ok := v.(string); ok {
+					info["dnn"] = s
+				}
+			case "nas_5gs.pdu_session_id", "nas-5gs.pdu_session_id":
+				if s, ok := v.(string); ok {
+					info["pdu_session_id"] = s
+				}
+			case "nas_5gs.sm.pdu_session_type", "nas-5gs.sm.pdu_session_type":
+				if s, ok := v.(string); ok {
+					info["pdu_session_type"] = s
+				}
+			case "nas_5gs.sm.pdu_address_ipv4", "nas-5gs.sm.pdu_address_ipv4":
+				if s, ok := v.(string); ok {
+					info["ue_ipv4"] = s
+				}
+			case "nas_5gs.sm.pdu_address_ipv6", "nas-5gs.sm.pdu_address_ipv6":
+				if s, ok := v.(string); ok {
+					info["ue_ipv6"] = s
+				}
+			case "nas_5gs.mm.sst", "nas-5gs.mm.sst":
+				if s, ok := v.(string); ok {
+					info["sst"] = s
+				}
+			case "nas_5gs.mm.sd", "nas-5gs.mm.sd":
+				if s, ok := v.(string); ok {
+					info["sd"] = s
+				}
+			case "nas_5gs.sm.qfi", "nas-5gs.sm.qfi":
+				if s, ok := v.(string); ok {
+					info["qfi"] = s
+				}
+			case "nas_5gs.5g_guti", "nas-5gs.5g_guti":
+				if s, ok := v.(string); ok {
+					info["5g_guti"] = s
 				}
 			}
 

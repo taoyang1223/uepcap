@@ -6,6 +6,7 @@ import { ExportPanel } from './components/ExportPanel'
 import { JobInfo } from './components/JobInfo'
 import { TimelineViewer } from './components/TimelineViewer'
 import { InstallGuide } from './components/InstallGuide'
+import { FlowViewer } from './components/FlowViewer'
 import { Network, BookOpen } from 'lucide-react'
 
 interface Job {
@@ -14,19 +15,20 @@ interface Job {
   file_count?: number
 }
 
-type ViewMode = 'main' | 'timeline' | 'guide'
+type ViewMode = 'main' | 'timeline' | 'guide' | 'flow'
 
 function App() {
   const [currentJob, setCurrentJob] = useState<Job | null>(null)
   const [imsiList, setImsiList] = useState<string[]>([])
   const [selectedIMSIs, setSelectedIMSIs] = useState<string[]>([])
-  const [selectedProtocols, setSelectedProtocols] = useState<string[]>(['ngap', 'pfcp', 's1ap', 'gtpv2', 'gtpu'])
+  const [selectedProtocols, setSelectedProtocols] = useState<string[]>(['pfcp', 'ngap', 's1ap'])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   
   // 视图模式和时间线数据
   const [viewMode, setViewMode] = useState<ViewMode>('main')
   const [timelinePackets, setTimelinePackets] = useState<any[]>([])
+  const [flowFilter, setFlowFilter] = useState<string>('')
 
   const handleUploadComplete = useCallback((jobId: string, fileCount: number) => {
     setCurrentJob({ id: jobId, status: 'ready', file_count: fileCount })
@@ -81,6 +83,7 @@ function App() {
     setError(null)
     setViewMode('main')
     setTimelinePackets([])
+    setFlowFilter('')
   }, [])
 
   // 切换到时间线视图
@@ -101,6 +104,17 @@ function App() {
 
   // 从安装指南返回主视图
   const handleBackFromGuide = useCallback(() => {
+    setViewMode('main')
+  }, [])
+
+  // 切换到流程视图
+  const handleViewFlow = useCallback((filter: string) => {
+    setFlowFilter(filter)
+    setViewMode('flow')
+  }, [])
+
+  // 从流程视图返回主视图
+  const handleBackFromFlow = useCallback(() => {
     setViewMode('main')
   }, [])
 
@@ -129,6 +143,17 @@ function App() {
       {/* Install Guide View */}
       <div className={viewMode === 'guide' ? '' : 'hidden'}>
         <InstallGuide onBack={handleBackFromGuide} />
+      </div>
+
+      {/* Flow Viewer */}
+      <div className={viewMode === 'flow' ? '' : 'hidden'}>
+        {currentJob && flowFilter && (
+          <FlowViewer
+            jobId={currentJob.id}
+            filter={flowFilter}
+            onBack={handleBackFromFlow}
+          />
+        )}
       </div>
 
       {/* Main View */}
@@ -214,6 +239,7 @@ function App() {
                     selectedIMSIs={selectedIMSIs}
                     selectedProtocols={selectedProtocols}
                     onViewTimeline={handleViewTimeline}
+                    onViewFlow={handleViewFlow}
                   />
                   
                   <ProtocolSelect

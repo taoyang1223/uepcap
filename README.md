@@ -745,6 +745,18 @@ Job TTL: 1h0m0s
 
 ---
 
+### 可选：配置 Kimi（Moonshot）用于流程/时序图智能生成
+
+项目在 `POST /api/jobs/{id}/flow/generate` 中会调用 Moonshot（Kimi）Chat API 来生成结构化流程 JSON（用于前端的流程/时序图展示）。如需启用，请设置以下环境变量：
+
+- **MOONSHOT_API_KEY**：必填，Moonshot 平台 API Key
+- **MOONSHOT_BASE_URL**：可选，默认 `https://api.moonshot.cn/v1`
+- **MOONSHOT_MODEL**：可选，默认 `kimi-k2-thinking`
+
+未配置 `MOONSHOT_API_KEY` 时，流程生成接口会返回“API key not configured”的错误提示。
+
+---
+
 ### 开发模式
 
 如果需要修改代码并实时预览：

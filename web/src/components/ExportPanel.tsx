@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { Loader2, BadgeCheck, FileArchive, RefreshCw, Copy, CopyCheck, Download, Clock, PackageOpen, FileText, ClipboardCopy, Eye } from 'lucide-react'
+import { FlowSummaryCard } from './FlowSummaryCard'
 
 // 安全的剪贴板复制函数，带 fallback
 async function copyToClipboard(text: string): Promise<boolean> {
@@ -39,6 +40,7 @@ interface ExportPanelProps {
   selectedIMSIs: string[]
   selectedProtocols: string[]
   onViewTimeline?: (packets: any[]) => void
+  onViewFlow?: (filter: string) => void
 }
 
 interface ExportResult {
@@ -52,7 +54,7 @@ interface ExportResult {
   cached?: boolean
 }
 
-export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols, onViewTimeline }: ExportPanelProps) {
+export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols, onViewTimeline, onViewFlow }: ExportPanelProps) {
   const [exporting, setExporting] = useState(false)
   const [result, setResult] = useState<ExportResult | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -480,6 +482,15 @@ export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols, onViewTim
                   )}
                   <span>{viewLoading ? '加载中...' : '内容展示'}</span>
                 </button>
+              )}
+
+              {/* 流程分析摘要卡片 */}
+              {result.filter && onViewFlow && (
+                <FlowSummaryCard
+                  jobId={jobId}
+                  filter={result.filter}
+                  onViewFlow={() => onViewFlow(result.filter!)}
+                />
               )}
             </>
           )}

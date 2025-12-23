@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -23,9 +24,12 @@ type FilterResolver struct {
 func NewFilterResolver() *FilterResolver {
 	ngap := NewNGAPResolver()
 	s1ap := NewS1APResolver()
+	pfcp := NewPFCPResolver()
+	// Inject PFCP resolver into NGAP resolver for TEID-based primary resolution
+	ngap.SetPFCPResolver(pfcp)
 	return &FilterResolver{
 		ngapResolver:  ngap,
-		pfcpResolver:  NewPFCPResolver(),
+		pfcpResolver:  pfcp,
 		s1apResolver:  s1ap,
 		gtpv2Resolver: NewGTPv2Resolver(),
 		ueipResolver:  NewUEIPResolver(ngap, s1ap),
@@ -113,16 +117,215 @@ func (r *FilterResolver) ResolveFilter(ctx context.Context, pcapFile, imsi strin
 }
 
 // NGAPResolver resolves NGAP filters for an IMSI
-type NGAPResolver struct{}
+type NGAPResolver struct {
+	pfcpResolver *PFCPResolver // Used for PFCP→TEID primary resolution path
+}
 
 // NewNGAPResolver creates a new NGAP resolver
 func NewNGAPResolver() *NGAPResolver {
 	return &NGAPResolver{}
 }
 
+// SetPFCPResolver injects the PFCP resolver for TEID-based NGAP resolution
+func (r *NGAPResolver) SetPFCPResolver(pfcp *PFCPResolver) {
+	r.pfcpResolver = pfcp
+}
+
 // ResolveFilter resolves NGAP display filter for an IMSI
-// Enhanced: Supports both SUCI-based (initial) and 5G-GUTI-based (periodic/mobility) registrations
+// Uses a primary-backup strategy:
+// - Primary: PFCP→TEID→NGAP(procedureCode=29)→RAN_UE_NGAP_ID→5G-TMSI expansion
+// - Backup: MSIN-based InitialUEMessage matching (existing approach)
 func (r *NGAPResolver) ResolveFilter(ctx context.Context, pcapFile, imsi string) (string, error) {
+	// Try primary path first: PFCP→TEID→NGAP(29)→RANID
+	if r.pfcpResolver != nil {
+		filter, err := r.resolveByPfcpTeid(ctx, pcapFile, imsi)
+		if err == nil && filter != "" {
+			return filter, nil
+		}
+		// Primary path failed or returned empty, fall through to backup
+	}
+
+	// Backup path: MSIN-based approach (existing logic)
+	return r.resolveByMSIN(ctx, pcapFile, imsi)
+}
+
+// normalize5GTMSIToDecimal converts a 5G-TMSI string (hex like 0x1234 or decimal like 305419896)
+// to a decimal string suitable for Wireshark display filter (nas_5gs.5g_tmsi == N).
+func normalize5GTMSIToDecimal(tmsi string) (string, bool) {
+	tmsi = strings.TrimSpace(tmsi)
+	if tmsi == "" {
+		return "", false
+	}
+	var val uint64
+	var err error
+	if strings.HasPrefix(tmsi, "0x") || strings.HasPrefix(tmsi, "0X") {
+		val, err = strconv.ParseUint(tmsi[2:], 16, 32)
+	} else {
+		val, err = strconv.ParseUint(tmsi, 10, 32)
+	}
+	if err != nil {
+		return "", false
+	}
+	return strconv.FormatUint(val, 10), true
+}
+
+// expandRanIDsBy5GTMSI iteratively expands RAN_UE_NGAP_IDs using discovered 5G-TMSIs:
+// - Start with seed RAN IDs
+// - Extract 5G-TMSIs from context for current RAN/AMF IDs
+// - Use those 5G-TMSIs to find more RAN IDs from InitialUEMessage output
+// Repeat until no new RAN IDs / TMSIs (or max iterations).
+func (r *NGAPResolver) expandRanIDsBy5GTMSI(ctx context.Context, pcapFile string, initialUEOutput string, seedRanIDs []string) (ranIDs []string, amfIDs []string, fiveGTMSIs []string) {
+	ranSet := make(map[string]bool)
+	for _, rid := range seedRanIDs {
+		if rid != "" {
+			ranSet[rid] = true
+		}
+	}
+	tmsiSet := make(map[string]bool)
+
+	const maxIters = 5
+	for iter := 0; iter < maxIters; iter++ {
+		// Snapshot current RAN IDs
+		var currentRanIDs []string
+		for rid := range ranSet {
+			currentRanIDs = append(currentRanIDs, rid)
+		}
+		if len(currentRanIDs) == 0 {
+			break
+		}
+
+		// Find AMF IDs for current RAN IDs
+		currentAMFIDs := r.findAMFIDsForRanIDs(ctx, pcapFile, currentRanIDs)
+
+		// Extract 5G-TMSIs from context of current IDs
+		newTMSIs := r.extract5GTMSIsFromContext(ctx, pcapFile, currentRanIDs, currentAMFIDs)
+		anyNewTMSI := false
+		for _, t := range newTMSIs {
+			if t == "" || t == "0x00000000" || t == "0" {
+				continue
+			}
+			if !tmsiSet[t] {
+				tmsiSet[t] = true
+				anyNewTMSI = true
+			}
+		}
+
+		// Expand RAN IDs using all known TMSIs
+		anyNewRan := false
+		if initialUEOutput != "" && len(tmsiSet) > 0 {
+			var allTMSIs []string
+			for t := range tmsiSet {
+				allTMSIs = append(allTMSIs, t)
+			}
+			additionalRanIDs := r.findRanIDsBy5GTMSI(initialUEOutput, allTMSIs)
+			for _, rid := range additionalRanIDs {
+				if rid == "" {
+					continue
+				}
+				if !ranSet[rid] {
+					ranSet[rid] = true
+					anyNewRan = true
+				}
+			}
+		}
+
+		if !anyNewRan && !anyNewTMSI {
+			break
+		}
+	}
+
+	for rid := range ranSet {
+		ranIDs = append(ranIDs, rid)
+	}
+
+	amfIDs = r.findAMFIDsForRanIDs(ctx, pcapFile, ranIDs)
+
+	for t := range tmsiSet {
+		fiveGTMSIs = append(fiveGTMSIs, t)
+	}
+	return ranIDs, amfIDs, fiveGTMSIs
+}
+
+// resolveByPfcpTeid implements the primary NGAP resolution path:
+// 1. Get TEIDs from PFCP Session Establishment Response (msg_type=51)
+// 2. Use ngap.gTP_TEID + procedureCode=29 to find seed RAN_UE_NGAP_IDs
+// 3. From InitialUEMessage (procedureCode=15), extract 5G-TMSIs for seed RAN IDs
+// 4. Use 5G-TMSIs to expand and find all related RAN_UE_NGAP_IDs
+// 5. Find associated AMF_UE_NGAP_IDs and build the final filter
+func (r *NGAPResolver) resolveByPfcpTeid(ctx context.Context, pcapFile, imsi string) (string, error) {
+	// Step 1: Get TEIDs from PFCP
+	teids, err := r.pfcpResolver.ResolveSessionTEIDs(ctx, pcapFile, imsi)
+	if err != nil || len(teids) == 0 {
+		return "", err
+	}
+
+	// Step 2: Build filter for NGAP procedureCode=29 with matching gTP_TEID
+	// Convert TEIDs to ngap.gTP_TEID format (xx:xx:xx:xx)
+	var teidFilters []string
+	for _, teid := range teids {
+		teidBytes, ok := teidToNgapBytes(teid)
+		if !ok {
+			continue
+		}
+		teidFilters = append(teidFilters, fmt.Sprintf("(ngap.gTP_TEID == %s && ngap.procedureCode == 29)", teidBytes))
+	}
+
+	if len(teidFilters) == 0 {
+		return "", nil
+	}
+
+	// Query NGAP with TEID filter to get seed RAN IDs
+	ngapTeidFilter := strings.Join(teidFilters, " || ")
+	ngap29Result, err := tshark.TsharkVerbose(ctx, pcapFile, ngapTeidFilter)
+	if err != nil {
+		return "", err
+	}
+
+	seedRanIDs := r.extractRanIDsFromNGAPVerbose(ngap29Result.Stdout)
+	if len(seedRanIDs) == 0 {
+		return "", nil
+	}
+
+	// Step 3: Get InitialUEMessage output for 5G-TMSI extraction
+	initialUEResult, err := tshark.TsharkVerbose(ctx, pcapFile, "ngap.procedureCode == 15")
+	initialUEOutput := ""
+	if err == nil {
+		initialUEOutput = initialUEResult.Stdout
+	}
+
+	// Step 4/5: Iteratively expand by 5G-TMSI
+	ranIDs, allAMFIDs, fiveGTMSIs := r.expandRanIDsBy5GTMSI(ctx, pcapFile, initialUEOutput, seedRanIDs)
+
+	// Build filter
+	var parts []string
+	for _, amfID := range allAMFIDs {
+		parts = append(parts, fmt.Sprintf("ngap.AMF_UE_NGAP_ID == %s", amfID))
+	}
+	for _, ranID := range ranIDs {
+		parts = append(parts, fmt.Sprintf("ngap.RAN_UE_NGAP_ID == %s", ranID))
+	}
+	// Also include NAS 5G-TMSI filters (decimal form)
+	tmsiDecSet := make(map[string]bool)
+	for _, t := range fiveGTMSIs {
+		dec, ok := normalize5GTMSIToDecimal(t)
+		if !ok || dec == "0" {
+			continue
+		}
+		if !tmsiDecSet[dec] {
+			tmsiDecSet[dec] = true
+			parts = append(parts, fmt.Sprintf("nas_5gs.5g_tmsi == %s", dec))
+		}
+	}
+
+	if len(parts) == 0 {
+		return "", nil
+	}
+
+	return strings.Join(parts, " || "), nil
+}
+
+// resolveByMSIN implements the backup NGAP resolution path (original MSIN-based approach)
+func (r *NGAPResolver) resolveByMSIN(ctx context.Context, pcapFile, imsi string) (string, error) {
 	// Step 1: Find RAN-UE-NGAP-ID from InitialUEMessage containing MSIN (initial registration)
 	msin := getMSIN(imsi)
 
@@ -132,52 +335,14 @@ func (r *NGAPResolver) ResolveFilter(ctx context.Context, pcapFile, imsi string)
 		return "", err
 	}
 
-	ranIDs := r.extractRanIDsFromInitialUE(result.Stdout, msin)
+	seedRanIDs := r.extractRanIDsFromInitialUE(result.Stdout, msin)
 
-	if len(ranIDs) == 0 {
+	if len(seedRanIDs) == 0 {
 		return "", nil
 	}
 
-	// Step 2: Find all AMF_UE_NGAP_IDs associated with these RAN_UE_NGAP_IDs
-	amfIDs := r.findAMFIDsForRanIDs(ctx, pcapFile, ranIDs)
-
-	// Step 3: Extract 5G-TMSI from RegistrationAccept for this UE
-	// This allows us to track subsequent registrations using 5G-GUTI
-	fiveGTMSIs := r.extract5GTMSIsFromContext(ctx, pcapFile, ranIDs, amfIDs)
-
-	// Step 4: Find additional RAN_UE_NGAP_IDs from InitialUEMessage with matching 5G-S-TMSI
-	// (These are periodic/mobility/emergency registrations using 5G-GUTI)
-	if len(fiveGTMSIs) > 0 {
-		additionalRanIDs := r.findRanIDsBy5GTMSI(result.Stdout, fiveGTMSIs)
-		for _, ranID := range additionalRanIDs {
-			// Avoid duplicates
-			found := false
-			for _, existing := range ranIDs {
-				if existing == ranID {
-					found = true
-					break
-				}
-			}
-			if !found {
-				ranIDs = append(ranIDs, ranID)
-			}
-		}
-
-		// Find additional AMF IDs for new RAN IDs
-		additionalAMFIDs := r.findAMFIDsForRanIDs(ctx, pcapFile, additionalRanIDs)
-		for _, amfID := range additionalAMFIDs {
-			found := false
-			for _, existing := range amfIDs {
-				if existing == amfID {
-					found = true
-					break
-				}
-			}
-			if !found {
-				amfIDs = append(amfIDs, amfID)
-			}
-		}
-	}
+	// Step 2+: Iteratively expand by 5G-TMSI using InitialUEMessage output
+	ranIDs, amfIDs, fiveGTMSIs := r.expandRanIDsBy5GTMSI(ctx, pcapFile, result.Stdout, seedRanIDs)
 
 	// Build filter using both RAN_UE_NGAP_ID and AMF_UE_NGAP_ID
 	// For accurate filtering, we should use (RAN_ID && AMF_ID) pairs when both are available
@@ -193,7 +358,40 @@ func (r *NGAPResolver) ResolveFilter(ctx context.Context, pcapFile, imsi string)
 		parts = append(parts, fmt.Sprintf("ngap.RAN_UE_NGAP_ID == %s", ranID))
 	}
 
+	// Also include NAS 5G-TMSI filters (decimal form)
+	tmsiDecSet := make(map[string]bool)
+	for _, t := range fiveGTMSIs {
+		dec, ok := normalize5GTMSIToDecimal(t)
+		if !ok || dec == "0" {
+			continue
+		}
+		if !tmsiDecSet[dec] {
+			tmsiDecSet[dec] = true
+			parts = append(parts, fmt.Sprintf("nas_5gs.5g_tmsi == %s", dec))
+		}
+	}
+
 	return strings.Join(parts, " || "), nil
+}
+
+// extractRanIDsFromNGAPVerbose extracts RAN_UE_NGAP_IDs from NGAP verbose output
+// This is used for extracting RAN IDs from procedureCode=29 (PDUSessionResourceSetup) messages
+func (r *NGAPResolver) extractRanIDsFromNGAPVerbose(output string) []string {
+	ranIDSet := make(map[string]bool)
+
+	ranPattern := regexp.MustCompile(`RAN-UE-NGAP-ID:\s*(\d+)`)
+	matches := ranPattern.FindAllStringSubmatch(output, -1)
+	for _, match := range matches {
+		if len(match) > 1 {
+			ranIDSet[match[1]] = true
+		}
+	}
+
+	var ranIDs []string
+	for id := range ranIDSet {
+		ranIDs = append(ranIDs, id)
+	}
+	return ranIDs
 }
 
 // extractRanIDsFromInitialUE extracts RAN_UE_NGAP_IDs from InitialUEMessage output for a specific MSIN
@@ -599,6 +797,109 @@ func (r *PFCPResolver) extractUPSEIDsFromResponse(output string, smfSEIDs []stri
 		seids = append(seids, seid)
 	}
 	return seids
+}
+
+// ResolveSessionTEIDs extracts TEIDs from PFCP Session Establishment Response (msg_type=51)
+// for a given IMSI. This is used by NGAPResolver to correlate NGAP messages via gTP_TEID.
+// Returns TEIDs from F-TEID IE in responses where the header SEID matches a session for this IMSI.
+func (r *PFCPResolver) ResolveSessionTEIDs(ctx context.Context, pcapFile, imsi string) ([]string, error) {
+	// Step 1: Get SMF SEIDs from Request (msg_type=50) for this IMSI
+	reqResult, err := tshark.TsharkVerbose(ctx, pcapFile, "pfcp.msg_type == 50")
+	if err != nil {
+		return nil, err
+	}
+
+	smfSEIDs := r.extractSMFSEIDsFromRequest(reqResult.Stdout, imsi)
+	if len(smfSEIDs) == 0 {
+		return nil, nil
+	}
+
+	// Step 2: From Response (msg_type=51), extract TEIDs from F-TEID IE
+	// where the header SEID matches one of the SMF SEIDs
+	respResult, err := tshark.TsharkVerbose(ctx, pcapFile, "pfcp.msg_type == 51")
+	if err != nil {
+		return nil, err
+	}
+
+	teids := r.extractTEIDsFromSessionEstResp(respResult.Stdout, smfSEIDs)
+	return teids, nil
+}
+
+// extractTEIDsFromSessionEstResp extracts TEIDs from F-TEID IE in Session Establishment Response
+// Only processes frames where the header pfcp.seid matches one of the smfSEIDs
+func (r *PFCPResolver) extractTEIDsFromSessionEstResp(output string, smfSEIDs []string) []string {
+	// Build lookup set for SMF SEIDs
+	smfSEIDSet := make(map[string]bool)
+	for _, seid := range smfSEIDs {
+		smfSEIDSet[seid] = true
+	}
+
+	teidSet := make(map[string]bool)
+
+	lines := strings.Split(output, "\n")
+	var headerSEID string
+	var inFTEIDIE bool
+	var currentFrameTEIDs []string
+
+	// Pattern to match header SEID (pfcp.seid) - first SEID in frame
+	seidPattern := regexp.MustCompile(`SEID:\s*(0x[0-9a-fA-F]+|\d+)`)
+	// Pattern to match F-TEID IE section (note: F-TEID is different from F-SEID)
+	fteidIEPattern := regexp.MustCompile(`F-TEID`)
+	// Pattern to match TEID value inside F-TEID IE
+	teidValuePattern := regexp.MustCompile(`TEID:\s*(0x[0-9a-fA-F]+|\d+)`)
+	framePattern := regexp.MustCompile(`^Frame \d+:`)
+
+	for _, line := range lines {
+		if framePattern.MatchString(line) {
+			// New frame: if previous frame's header SEID matches SMF SEID, collect its TEIDs
+			if headerSEID != "" && smfSEIDSet[headerSEID] {
+				for _, teid := range currentFrameTEIDs {
+					teidSet[teid] = true
+				}
+			}
+			headerSEID = ""
+			inFTEIDIE = false
+			currentFrameTEIDs = nil
+		}
+
+		// First SEID in frame is the header SEID (pfcp.seid)
+		if headerSEID == "" {
+			if match := seidPattern.FindStringSubmatch(line); len(match) > 1 {
+				headerSEID = match[1]
+				continue
+			}
+		}
+
+		// Detect F-TEID IE section
+		if fteidIEPattern.MatchString(line) {
+			inFTEIDIE = true
+		}
+
+		// Extract TEID value from F-TEID IE
+		if inFTEIDIE {
+			if match := teidValuePattern.FindStringSubmatch(line); len(match) > 1 {
+				teid := match[1]
+				// Skip zero TEID
+				if teid != "0x00000000" && teid != "0" && teid != "0x0" {
+					currentFrameTEIDs = append(currentFrameTEIDs, teid)
+				}
+				inFTEIDIE = false // Move to next F-TEID IE
+			}
+		}
+	}
+
+	// Check last frame
+	if headerSEID != "" && smfSEIDSet[headerSEID] {
+		for _, teid := range currentFrameTEIDs {
+			teidSet[teid] = true
+		}
+	}
+
+	var teids []string
+	for teid := range teidSet {
+		teids = append(teids, teid)
+	}
+	return teids
 }
 
 // S1APResolver resolves S1AP filters for an IMSI
@@ -1071,4 +1372,42 @@ func isPrivateIPv4(ip string) bool {
 	}
 
 	return false
+}
+
+// teidToNgapBytes converts a TEID string (hex or decimal) to the xx:xx:xx:xx format
+// used by ngap.gTP_TEID display filter. Returns empty string and false if conversion fails.
+// Examples:
+//   - "0x00000001" -> "00:00:00:01", true
+//   - "1" -> "00:00:00:01", true
+//   - "0x10000b4b" -> "10:00:0b:4b", true
+func teidToNgapBytes(teid string) (string, bool) {
+	var val uint64
+	var err error
+
+	teid = strings.TrimSpace(teid)
+	if teid == "" {
+		return "", false
+	}
+
+	if strings.HasPrefix(teid, "0x") || strings.HasPrefix(teid, "0X") {
+		// Parse as hex
+		val, err = strconv.ParseUint(teid[2:], 16, 32)
+	} else {
+		// Parse as decimal
+		val, err = strconv.ParseUint(teid, 10, 32)
+	}
+
+	if err != nil {
+		return "", false
+	}
+
+	// TEID is 32-bit (4 bytes)
+	bytes := []byte{
+		byte((val >> 24) & 0xFF),
+		byte((val >> 16) & 0xFF),
+		byte((val >> 8) & 0xFF),
+		byte(val & 0xFF),
+	}
+
+	return fmt.Sprintf("%02x:%02x:%02x:%02x", bytes[0], bytes[1], bytes[2], bytes[3]), true
 }
