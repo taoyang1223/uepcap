@@ -648,8 +648,8 @@ export function MermaidDiagram({
         ref={containerRef}
         className="mermaid-container overflow-x-auto overflow-y-auto bg-white rounded-xl border border-slate-200 p-3"
         style={{ 
-          minHeight: 150,
-          maxHeight: '70vh',
+          minHeight: 550,
+          maxHeight: '570vh',
         }}
       />
       
