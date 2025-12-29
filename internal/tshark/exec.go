@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -234,4 +235,93 @@ func TsharkCompactJSON(ctx context.Context, pcapFile string, filter string, prot
 	// 添加 NAS 解密偏好设置
 	args = appendNASDecryptPrefs(args, filter, protocols)
 	return Exec(ctx, "tshark", args...)
+}
+
+// PacketColumns holds wireshark column display values for a packet.
+// These are the same values displayed in Wireshark's packet list.
+type PacketColumns struct {
+	FrameNumber  string `json:"frame_number"`
+	TimeRelative string `json:"time_relative"`
+	Source       string `json:"source"`
+	Destination  string `json:"destination"`
+	Protocol     string `json:"protocol"`
+	Length       string `json:"length"`
+	Info         string `json:"info"`       // Original _ws.col.Info
+	InfoClean    string `json:"info_clean"` // Info with SACK prefix removed
+}
+
+// sackPrefixRegex matches SCTP SACK acknowledgement prefix in Info field
+// Example: "SACK (TSN: 123456) , " or "SACK (TSN: 123456, ...) , "
+var sackPrefixRegex = regexp.MustCompile(`^SACK \([^)]*\) , `)
+
+// CleanInfo removes SCTP SACK prefix from the Info string.
+// SCTP often bundles acknowledgements with data, making Info noisy.
+// Example: "SACK (TSN: 123456) , InitialUEMessage" -> "InitialUEMessage"
+func CleanInfo(info string) string {
+	return sackPrefixRegex.ReplaceAllString(info, "")
+}
+
+// TsharkPacketColumns extracts wireshark column values for all packets matching a filter.
+// Returns a map of frame.number -> PacketColumns.
+// Fields extracted: frame.number, frame.time_relative, _ws.col.Source, _ws.col.Destination,
+//
+//	_ws.col.Protocol, frame.len, _ws.col.Info
+func TsharkPacketColumns(ctx context.Context, pcapFile string, filter string) (map[string]*PacketColumns, error) {
+	fields := []string{
+		"frame.number",
+		"frame.time_relative",
+		"_ws.col.Source",
+		"_ws.col.Destination",
+		"_ws.col.Protocol",
+		"frame.len",
+		"_ws.col.Info",
+	}
+
+	args := []string{"-r", pcapFile, "-T", "fields", "-E", "separator=\t"}
+	for _, f := range fields {
+		args = append(args, "-e", f)
+	}
+	if filter != "" {
+		args = append(args, "-Y", filter)
+	}
+
+	// Add NAS decryption preferences based on filter
+	args = appendNASDecryptPrefs(args, filter, nil)
+
+	result, err := Exec(ctx, "tshark", args...)
+	if err != nil {
+		return nil, fmt.Errorf("tshark packet columns failed: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return nil, fmt.Errorf("tshark packet columns failed with exit code %d: %s", result.ExitCode, result.Stderr)
+	}
+
+	columns := make(map[string]*PacketColumns)
+	lines := strings.Split(strings.TrimSpace(result.Stdout), "\n")
+
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) < 7 {
+			// Skip malformed lines
+			continue
+		}
+
+		frameNum := parts[0]
+		info := parts[6]
+		columns[frameNum] = &PacketColumns{
+			FrameNumber:  frameNum,
+			TimeRelative: parts[1],
+			Source:       parts[2],
+			Destination:  parts[3],
+			Protocol:     parts[4],
+			Length:       parts[5],
+			Info:         info,
+			InfoClean:    CleanInfo(info),
+		}
+	}
+
+	return columns, nil
 }

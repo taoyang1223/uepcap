@@ -17,9 +17,9 @@ import (
 	"sync"
 	"time"
 
-	"uepcap/internal/packet"
-	"uepcap/internal/protocol"
-	"uepcap/internal/tshark"
+	"gitee.com/yangdadayyds/uepcap/internal/packet"
+	"gitee.com/yangdadayyds/uepcap/internal/protocol"
+	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
 
 // ExportRequest represents export request body

@@ -2,41 +2,43 @@ import { useEffect, useRef, useState, useId, useCallback } from 'react'
 import mermaid from 'mermaid'
 import { AlertCircle, ChevronDown, ChevronUp, Copy, Check } from 'lucide-react'
 
-// Initialize mermaid with optimized settings for sequence diagrams with long messages
+// Initialize mermaid with balanced settings for sequence diagrams - readable overview
 mermaid.initialize({
   startOnLoad: false,
   // 使用 'loose' 以支持 <br/> 等 HTML 标签在消息中渲染
   securityLevel: 'loose',
   theme: 'default',
   sequence: {
-    diagramMarginX: 80,
-    diagramMarginY: 30,
-    // 大幅增加 actor 间距以容纳长消息文本
-    actorMargin: 300,
-    // 增加 actor 宽度
-    width: 180,
-    height: 65,
-    boxMargin: 15,
-    boxTextMargin: 8,
-    noteMargin: 20,
-    // 增加消息间距以容纳多行文本
-    messageMargin: 60,
+    diagramMarginX: 40,
+    diagramMarginY: 20,
+    // 适中的 actor 间距
+    actorMargin: 280,
+    // 适中的 actor 尺寸
+    width: 140,
+    height: 50,
+    boxMargin: 10,
+    boxTextMargin: 6,
+    noteMargin: 12,
+    // 适中的消息间距
+    messageMargin: 40,
     mirrorActors: true,
     // 禁用 useMaxWidth，让图表可以水平滚动
     useMaxWidth: false,
     rightAngles: false,
     showSequenceNumbers: true,
-    // 增加消息文本的包裹宽度
+    // 消息文本包裹
     wrapPadding: 15,
     wrap: true,
-    // 增加 message 文本字号
-    messageFontSize: 13,
+    // 适中的字号
+    messageFontSize: 11,
     // Note 相关设置
-    noteFontSize: 10,
+    noteFontSize: 9,
+    // 消息文本居中
+    messageAlign: 'center',
   },
   // 全局字体设置
   fontFamily: 'ui-sans-serif, system-ui, sans-serif',
-  fontSize: 12,
+  fontSize: 11,
 })
 
 interface MermaidDiagramProps {
@@ -61,6 +63,11 @@ export function MermaidDiagram({
   const [svgReady, setSvgReady] = useState(false)
   const uniqueId = useId().replace(/:/g, '_')
 
+  /**
+   * Apply highlight to a specific message using sequence numbers for reliable matching.
+   * Uses Y-coordinate matching between sequence numbers and message elements
+   * to correctly identify which message text/line belongs to which sequence number.
+   */
   const applyHighlight = useCallback(() => {
     const container = containerRef.current
     if (!container) return
@@ -69,6 +76,7 @@ export function MermaidDiagram({
 
     const textEls = Array.from(svg.querySelectorAll<SVGTextElement>('text.messageText'))
     const lineEls = Array.from(svg.querySelectorAll<SVGPathElement>('path.messageLine0, path.messageLine1'))
+    const seqNumEls = Array.from(svg.querySelectorAll<SVGTextElement>('text.sequenceNumber'))
 
     // Reset classes
     for (const el of [...textEls, ...lineEls]) {
@@ -77,25 +85,148 @@ export function MermaidDiagram({
     }
 
     if (!highlightMessageIndex || highlightMessageIndex <= 0) return
-    const target = highlightMessageIndex - 1
 
-    textEls.forEach((el, i) => el.classList.add(i === target ? 'uepcap-highlight' : 'uepcap-dim'))
-    lineEls.forEach((el, i) => el.classList.add(i === target ? 'uepcap-highlight' : 'uepcap-dim'))
+    // Build a map of sequence number -> Y coordinate
+    const seqNumYMap = new Map<number, number>()
+    for (const el of seqNumEls) {
+      const num = parseInt(el.textContent?.trim() || '', 10)
+      if (!isNaN(num) && num > 0) {
+        const rect = el.getBoundingClientRect()
+        seqNumYMap.set(num, rect.top + rect.height / 2)
+      }
+    }
+
+    const targetY = seqNumYMap.get(highlightMessageIndex)
+    if (targetY === undefined) {
+      // Fallback to index-based if sequence number not found
+      const target = highlightMessageIndex - 1
+      textEls.forEach((el, i) => el.classList.add(i === target ? 'uepcap-highlight' : 'uepcap-dim'))
+      lineEls.forEach((el, i) => el.classList.add(i === target ? 'uepcap-highlight' : 'uepcap-dim'))
+      return
+    }
+
+    // Highlight elements by matching Y-coordinate
+    const Y_THRESHOLD = 30
+    
+    for (const el of textEls) {
+      const rect = el.getBoundingClientRect()
+      const elY = rect.top + rect.height / 2
+      const dist = Math.abs(elY - targetY)
+      
+      if (dist < Y_THRESHOLD) {
+        el.classList.add('uepcap-highlight')
+      } else {
+        el.classList.add('uepcap-dim')
+      }
+    }
+
+    for (const el of lineEls) {
+      const rect = el.getBoundingClientRect()
+      const elY = rect.top + rect.height / 2
+      const dist = Math.abs(elY - targetY)
+      
+      if (dist < Y_THRESHOLD) {
+        el.classList.add('uepcap-highlight')
+      } else {
+        el.classList.add('uepcap-dim')
+      }
+    }
   }, [highlightMessageIndex])
 
+  /**
+   * Resolve message index from a clicked element using Mermaid's rendered sequence numbers.
+   * This is more reliable than DOM order because Mermaid's autonumber sequence numbers
+   * are explicitly rendered and their text content directly indicates the message index.
+   * 
+   * Strategy:
+   * 1. If user clicks on a sequenceNumber element, parse its text content directly
+   * 2. For message text/line clicks, find the nearest sequence number by Y-coordinate
+   * 3. Fall back to legacy DOM-order logic if the new approach fails
+   */
   const resolveMessageIndexFromTarget = useCallback((targetEl: Element) => {
     const container = containerRef.current
     if (!container) return null
     const svg = container.querySelector('svg')
     if (!svg) return null
 
+    // Get all sequence number text elements (Mermaid renders these with autonumber)
+    const seqNumEls = Array.from(svg.querySelectorAll<SVGTextElement>('text.sequenceNumber'))
+    
+    // === Priority 1: Direct click on sequence number ===
+    const seqNumEl = targetEl.closest('text.sequenceNumber')
+    if (seqNumEl && seqNumEl.textContent) {
+      const parsed = parseInt(seqNumEl.textContent.trim(), 10)
+      if (!isNaN(parsed) && parsed > 0) {
+        console.log('[MermaidDiagram] 🎯 Direct sequenceNumber click:', parsed)
+        return parsed
+      }
+    }
+    
+    // Also check if clicking on the rect background of a sequence number
+    const seqNumRect = targetEl.closest('rect.sequenceNumber')
+    if (seqNumRect) {
+      // Find the sibling text element in the same group
+      const parentG = seqNumRect.closest('g')
+      if (parentG) {
+        const siblingText = parentG.querySelector('text.sequenceNumber')
+        if (siblingText?.textContent) {
+          const parsed = parseInt(siblingText.textContent.trim(), 10)
+          if (!isNaN(parsed) && parsed > 0) {
+            console.log('[MermaidDiagram] 🎯 sequenceNumber rect click, sibling text:', parsed)
+            return parsed
+          }
+        }
+      }
+    }
+
+    // === Priority 2: Message text or line click - find nearest sequence number by Y-coordinate ===
+    const isMessageClick = 
+      targetEl.closest('text.messageText') || 
+      targetEl.closest('path.messageLine0, path.messageLine1') ||
+      targetEl.closest('tspan')?.closest('text.messageText')
+    
+    if (isMessageClick && seqNumEls.length > 0) {
+      // Get Y-coordinate of clicked element (use center)
+      const targetRect = targetEl.getBoundingClientRect()
+      const targetY = targetRect.top + targetRect.height / 2
+
+      // Find the sequence number closest in Y-coordinate
+      let closestEl: SVGTextElement | null = null
+      let closestDist = Infinity
+
+      for (const el of seqNumEls) {
+        const rect = el.getBoundingClientRect()
+        const elY = rect.top + rect.height / 2
+        const dist = Math.abs(elY - targetY)
+        
+        if (dist < closestDist) {
+          closestDist = dist
+          closestEl = el
+        }
+      }
+
+      // Use a reasonable threshold to prevent mismatches
+      const Y_THRESHOLD = 30
+      if (closestEl && closestDist < Y_THRESHOLD && closestEl.textContent) {
+        const parsed = parseInt(closestEl.textContent.trim(), 10)
+        if (!isNaN(parsed) && parsed > 0) {
+          console.log('[MermaidDiagram] 🎯 Nearest sequenceNumber by Y:', parsed, 'dist:', closestDist.toFixed(1))
+          return parsed
+        }
+      }
+    }
+
+    // === Fallback: Legacy DOM-order based resolution (kept for edge cases) ===
     const textEls = Array.from(svg.querySelectorAll<SVGTextElement>('text.messageText'))
     if (!textEls.length) return null
 
     const messageTextEl = targetEl.closest('text.messageText')
     if (messageTextEl) {
       const idx = textEls.indexOf(messageTextEl as SVGTextElement)
-      return idx >= 0 ? idx + 1 : null
+      if (idx >= 0) {
+        console.log('[MermaidDiagram] ⚠️ Fallback to DOM order for messageText, idx:', idx + 1)
+        return idx + 1
+      }
     }
 
     const lineEl = targetEl.closest('path.messageLine0, path.messageLine1')
@@ -106,7 +237,10 @@ export function MermaidDiagram({
         const siblingText = g.querySelector('text.messageText')
         if (siblingText) {
           const idx = textEls.indexOf(siblingText as SVGTextElement)
-          return idx >= 0 ? idx + 1 : null
+          if (idx >= 0) {
+            console.log('[MermaidDiagram] ⚠️ Fallback to DOM order for line sibling, idx:', idx + 1)
+            return idx + 1
+          }
         }
       }
 
@@ -114,7 +248,10 @@ export function MermaidDiagram({
       const lineEls = Array.from(svg.querySelectorAll<SVGPathElement>('path.messageLine0, path.messageLine1'))
       if (lineEls.length === textEls.length) {
         const idx = lineEls.indexOf(lineEl as SVGPathElement)
-        return idx >= 0 ? idx + 1 : null
+        if (idx >= 0) {
+          console.log('[MermaidDiagram] ⚠️ Fallback to DOM order for line, idx:', idx + 1)
+          return idx + 1
+        }
       }
     }
 
@@ -133,9 +270,167 @@ export function MermaidDiagram({
     return null
   }, [])
 
+  /**
+   * Adjust message text alignment based on arrow direction.
+   * - All messages: text positioned ABOVE the arrow line
+   * - Request (arrow pointing right): text aligned to left
+   * - Response (arrow pointing left): text aligned to right
+   * 
+   * NOTE: Currently disabled due to Mermaid version compatibility issues.
+   * The function is kept for future use when the correct selector is found.
+   */
+  // @ts-ignore - Temporarily disabled, kept for future use
+  const _adjustMessageAlignment = useCallback((container: HTMLDivElement) => {
+    const svg = container.querySelector('svg')
+    if (!svg) {
+      console.log('[adjustMessageAlignment] ❌ SVG not found')
+      return
+    }
+
+    // Try multiple selectors for message lines (Mermaid version compatibility)
+    // Old versions: path.messageLine0, path.messageLine1
+    // New versions: line.messageLine0, line.messageLine1 or line elements in message groups
+    let messageLines = Array.from(svg.querySelectorAll<SVGLineElement | SVGPathElement>(
+      'path.messageLine0, path.messageLine1, line.messageLine0, line.messageLine1'
+    ))
+    
+    // Fallback: find line elements that are part of message arrows
+    if (messageLines.length === 0) {
+      // Try finding lines within message-related groups
+      messageLines = Array.from(svg.querySelectorAll<SVGLineElement>('line'))
+      console.log('[adjustMessageAlignment] 🔍 Fallback: found', messageLines.length, 'line elements')
+    }
+    
+    const messageTexts = Array.from(svg.querySelectorAll<SVGTextElement>('text.messageText'))
+
+    console.log('[adjustMessageAlignment] 📊 Found elements:', {
+      messageLines: messageLines.length,
+      messageTexts: messageTexts.length,
+    })
+
+    // If no lines found, log SVG structure for debugging
+    if (messageLines.length === 0) {
+      console.log('[adjustMessageAlignment] ⚠️ No message lines found. SVG element types:')
+      const allElements = svg.querySelectorAll('*')
+      const tagCounts: Record<string, number> = {}
+      allElements.forEach(el => {
+        const tag = el.tagName.toLowerCase()
+        tagCounts[tag] = (tagCounts[tag] || 0) + 1
+      })
+      console.log('[adjustMessageAlignment] Element counts:', tagCounts)
+      
+      // Log classes of line and path elements
+      svg.querySelectorAll('line, path').forEach((el, i) => {
+        if (i < 10) { // Only first 10
+          const classes = (el as SVGElement).className?.baseVal || ''
+          if (classes) console.log(`[adjustMessageAlignment] ${el.tagName}[${i}] class:`, classes)
+        }
+      })
+      return
+    }
+
+    // Build a map of Y-coordinate to message line for matching
+    const linesByY = new Map<number, SVGLineElement | SVGPathElement>()
+    for (const line of messageLines) {
+      try {
+        // For <line> elements, use y1/y2 attributes; for <path>, use getBBox
+        let centerY: number
+        if (line.tagName.toLowerCase() === 'line') {
+          const y1 = parseFloat(line.getAttribute('y1') || '0')
+          const y2 = parseFloat(line.getAttribute('y2') || '0')
+          centerY = (y1 + y2) / 2
+        } else {
+          const bbox = line.getBBox()
+          centerY = bbox.y + bbox.height / 2
+        }
+        linesByY.set(Math.round(centerY), line)
+      } catch (e) {
+        // getBBox can fail for hidden elements
+      }
+    }
+
+    console.log('[adjustMessageAlignment] 📍 Lines mapped by Y:', linesByY.size)
+
+    for (const textEl of messageTexts) {
+      const textBbox = textEl.getBBox()
+      const textCenterY = Math.round(textBbox.y + textBbox.height / 2)
+      
+      // Find the closest line by Y-coordinate
+      let closestLine: SVGLineElement | SVGPathElement | null = null
+      let closestDist = Infinity
+      
+      for (const [y, line] of linesByY) {
+        const dist = Math.abs(y - textCenterY)
+        if (dist < closestDist && dist < 80) { // Threshold for matching
+          closestDist = dist
+          closestLine = line
+        }
+      }
+      
+      if (!closestLine) continue
+      
+      // Determine arrow direction
+      let startX: number, endX: number
+      
+      if (closestLine.tagName.toLowerCase() === 'line') {
+        // For <line> elements, use x1/x2 attributes
+        startX = parseFloat(closestLine.getAttribute('x1') || '0')
+        endX = parseFloat(closestLine.getAttribute('x2') || '0')
+      } else {
+        // For <path> elements, parse the 'd' attribute
+        const pathD = closestLine.getAttribute('d')
+        if (!pathD) continue
+        
+        const coords = pathD.match(/[\d.-]+/g)
+        if (!coords || coords.length < 4) continue
+        
+        startX = parseFloat(coords[0])
+        endX = parseFloat(coords[coords.length - 2])
+      }
+      
+      // Get line bounding box for positioning
+      let lineBbox: DOMRect | { x: number; y: number; width: number; height: number }
+      if (closestLine.tagName.toLowerCase() === 'line') {
+        const x1 = parseFloat(closestLine.getAttribute('x1') || '0')
+        const x2 = parseFloat(closestLine.getAttribute('x2') || '0')
+        const y1 = parseFloat(closestLine.getAttribute('y1') || '0')
+        const y2 = parseFloat(closestLine.getAttribute('y2') || '0')
+        lineBbox = {
+          x: Math.min(x1, x2),
+          y: Math.min(y1, y2),
+          width: Math.abs(x2 - x1),
+          height: Math.abs(y2 - y1)
+        }
+      } else {
+        lineBbox = closestLine.getBBox()
+      }
+      
+      // Calculate position above the line (8px above the line)
+      const textY = lineBbox.y - 8
+      textEl.setAttribute('y', String(textY))
+      
+      // If end X is less than start X, arrow points left (response)
+      const isLeftArrow = endX < startX
+      
+      if (isLeftArrow) {
+        // Response message (arrow pointing left): align text to right
+        textEl.setAttribute('text-anchor', 'end')
+        const rightEdge = lineBbox.x + lineBbox.width - 25
+        textEl.setAttribute('x', String(rightEdge))
+      } else {
+        // Request message (arrow pointing right): align text to left
+        textEl.setAttribute('text-anchor', 'start')
+        const leftEdge = lineBbox.x + 25
+        textEl.setAttribute('x', String(leftEdge))
+      }
+    }
+    
+    console.log('[adjustMessageAlignment] ✅ Alignment adjustment completed')
+  }, [])
+
   // Preprocess Mermaid code to wrap long Note text with <br/> tags
   const preprocessCode = useCallback((rawCode: string): string => {
-    const MAX_LINE_LENGTH = 60 // Max characters per line in notes
+    const MAX_LINE_LENGTH = 50 // Max characters per line in notes
     
     // Match Note lines: Note over/left of/right of Actor: text
     // or multi-line Note blocks
@@ -195,6 +490,12 @@ export function MermaidDiagram({
         
         if (!cancelled && containerRef.current) {
           containerRef.current.innerHTML = svg
+          
+          // NOTE: adjustMessageAlignment is disabled because new Mermaid versions
+          // use different SVG structure. The default Mermaid alignment is used instead.
+          // TODO: Re-enable after fixing the line element selector
+          // adjustMessageAlignment(containerRef.current)
+          
           // Apply highlight after render (if any)
           applyHighlight()
           // Signal that SVG is ready for click handling
@@ -342,25 +643,25 @@ export function MermaidDiagram({
 
   return (
     <div className={`relative ${className}`}>
-      {/* Diagram container */}
+      {/* Diagram container - balanced for readable overview */}
       <div
         ref={containerRef}
-        className="mermaid-container overflow-x-auto overflow-y-auto bg-white rounded-xl border border-slate-200 p-4"
+        className="mermaid-container overflow-x-auto overflow-y-auto bg-white rounded-xl border border-slate-200 p-3"
         style={{ 
-          minHeight: 200,
-          maxHeight: '80vh',
+          minHeight: 150,
+          maxHeight: '70vh',
         }}
       />
       
-      {/* CSS for mermaid message text - enhanced for long messages */}
+      {/* CSS for mermaid message text - balanced for readable overview */}
       <style>{`
         .mermaid-container .messageText {
-          font-size: 13px !important;
+          font-size: 11px !important;
           fill: #1f2937 !important;
           font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
         }
         .mermaid-container .messageText tspan {
-          font-size: 13px !important;
+          font-size: 11px !important;
           fill: #1f2937 !important;
         }
         .mermaid-container text.messageText {
@@ -368,7 +669,7 @@ export function MermaidDiagram({
           text-anchor: start !important;
         }
         .mermaid-container .actor {
-          font-size: 12px !important;
+          font-size: 11px !important;
           font-weight: 600 !important;
         }
         .mermaid-container .actor-box {
@@ -376,15 +677,15 @@ export function MermaidDiagram({
           stroke: #94a3b8 !important;
         }
         .mermaid-container .note {
-          font-size: 11px !important;
+          font-size: 9px !important;
           fill: #fef3c7 !important;
         }
         .mermaid-container .noteText {
-          font-size: 11px !important;
+          font-size: 9px !important;
           fill: #92400e !important;
         }
         .mermaid-container .labelText {
-          font-size: 10px !important;
+          font-size: 9px !important;
         }
         .mermaid-container svg {
           max-width: none !important;
@@ -392,13 +693,15 @@ export function MermaidDiagram({
         .mermaid-container .messageLine0,
         .mermaid-container .messageLine1 {
           stroke: #6366f1 !important;
-          stroke-width: 1.5 !important;
+          stroke-width: 1.2px !important;
         }
         .mermaid-container text.messageText,
         .mermaid-container .messageLine0,
         .mermaid-container .messageLine1,
         .mermaid-container text.actor,
-        .mermaid-container .actor-box {
+        .mermaid-container .actor-box,
+        .mermaid-container text.sequenceNumber,
+        .mermaid-container rect.sequenceNumber {
           cursor: pointer;
         }
         .mermaid-container .arrowhead {
@@ -406,7 +709,7 @@ export function MermaidDiagram({
         }
         .mermaid-container .sequenceNumber {
           fill: white !important;
-          font-size: 10px !important;
+          font-size: 9px !important;
           font-weight: 600 !important;
         }
         .mermaid-container rect.sequenceNumber {
@@ -414,7 +717,7 @@ export function MermaidDiagram({
         }
         .mermaid-container .uepcap-highlight {
           opacity: 1 !important;
-          filter: drop-shadow(0 0 6px rgba(99, 102, 241, 0.35));
+          filter: drop-shadow(0 0 5px rgba(99, 102, 241, 0.35));
         }
         .mermaid-container .uepcap-dim {
           opacity: 0.25 !important;

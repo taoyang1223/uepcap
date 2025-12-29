@@ -13,9 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"uepcap/internal/api"
-	"uepcap/internal/job"
-	"uepcap/internal/tshark"
+	uepcap "gitee.com/yangdadayyds/uepcap"
+	"gitee.com/yangdadayyds/uepcap/httpapi"
 )
 
 //go:embed all:dist
@@ -28,23 +27,26 @@ func main() {
 	maxJobs := flag.Int("max-jobs", 3, "Maximum number of jobs to keep (0 = unlimited)")
 	flag.Parse()
 
-	// Check dependencies
-	if err := checkDependencies(); err != nil {
-		log.Fatalf("Dependency check failed: %v", err)
+	// Initialize uepcap handler using the public httpapi package
+	// This demonstrates how external projects would embed uepcap
+	handler, err := httpapi.New(uepcap.Config{
+		DataDir: *dataDir,
+		JobTTL:  *ttl,
+		MaxJobs: *maxJobs,
+		// Dependencies are checked automatically by httpapi.New()
+	})
+	if err != nil {
+		log.Fatalf("Failed to initialize uepcap: %v", err)
 	}
 
-	// Initialize job manager
-	jobMgr := job.NewManagerWithLimit(*dataDir, *ttl, *maxJobs)
-
-	// Start TTL cleanup goroutine
+	// Start background cleanup routines
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go jobMgr.StartCleanup(ctx, 5*time.Minute)
+	handler.Start(ctx)
 
 	// Setup HTTP routes
 	mux := http.NewServeMux()
-	apiHandler := api.NewHandler(jobMgr)
-	apiHandler.RegisterRoutes(mux)
+	handler.RegisterRoutes(mux)
 
 	// Serve static files from embedded FS
 	distFS, err := fs.Sub(webFS, "dist")
@@ -93,19 +95,6 @@ func main() {
 		log.Fatalf("Server error: %v", err)
 	}
 	log.Println("Server stopped")
-}
-
-func checkDependencies() error {
-	// Check tshark
-	if err := tshark.CheckInstalled("tshark"); err != nil {
-		return fmt.Errorf("tshark not found: %w (install wireshark-cli or wireshark)", err)
-	}
-	// Check mergecap
-	if err := tshark.CheckInstalled("mergecap"); err != nil {
-		return fmt.Errorf("mergecap not found: %w (install wireshark-cli or wireshark)", err)
-	}
-	log.Println("Dependencies OK: tshark, mergecap")
-	return nil
 }
 
 // spaHandler wraps file server to support SPA routing (fallback to index.html)

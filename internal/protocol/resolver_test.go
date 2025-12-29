@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"uepcap/internal/tshark"
+	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
 
 func TestIsValidUEIPv4(t *testing.T) {

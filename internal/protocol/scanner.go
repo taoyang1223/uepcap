@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"uepcap/internal/tshark"
+	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
 
 // IMSIScanner scans pcap files for IMSI values

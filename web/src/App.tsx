@@ -86,12 +86,6 @@ function App() {
     setFlowFilter('')
   }, [])
 
-  // 切换到时间线视图
-  const handleViewTimeline = useCallback((packets: any[]) => {
-    setTimelinePackets(packets)
-    setViewMode('timeline')
-  }, [])
-
   // 从时间线返回主视图
   const handleBackFromTimeline = useCallback(() => {
     setViewMode('main')
@@ -238,7 +232,6 @@ function App() {
                     jobId={currentJob.id}
                     selectedIMSIs={selectedIMSIs}
                     selectedProtocols={selectedProtocols}
-                    onViewTimeline={handleViewTimeline}
                     onViewFlow={handleViewFlow}
                   />
                   
@@ -261,6 +254,7 @@ function App() {
           </footer>
         </div>
       </div>
+
     </>
   )
 }

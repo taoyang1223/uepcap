@@ -15,13 +15,16 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"uepcap/internal/packet"
-	"uepcap/internal/protocol"
-	"uepcap/internal/tshark"
+	uepcap "gitee.com/yangdadayyds/uepcap"
+	"gitee.com/yangdadayyds/uepcap/internal/packet"
+	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
 
 // 默认数据目录
 var dataDir = "./data"
+
+// uepcap App instance for core functionality
+var app *uepcap.App
 
 // 支持的协议白名单
 var allowedProtocols = map[string]bool{
@@ -90,8 +93,13 @@ func main() {
 	// 设置数据目录
 	dataDir = *dataDirArg
 
-	// 依赖检查：tshark/mergecap
-	if err := checkDependencies(); err != nil {
+	// 使用公开包初始化 uepcap，这会同时检查依赖
+	var err error
+	app, err = uepcap.New(uepcap.Config{
+		DataDir:             dataDir,
+		SkipDependencyCheck: false, // 确保检查 tshark/mergecap
+	})
+	if err != nil {
 		log.Fatalf("依赖检查失败: %v", err)
 	}
 
@@ -115,16 +123,6 @@ func main() {
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatalf("MCP server 运行失败: %v", err)
 	}
-}
-
-func checkDependencies() error {
-	if err := tshark.CheckInstalled("tshark"); err != nil {
-		return fmt.Errorf("tshark not found: %w (install wireshark-cli or wireshark)", err)
-	}
-	if err := tshark.CheckInstalled("mergecap"); err != nil {
-		return fmt.Errorf("mergecap not found: %w (install wireshark-cli or wireshark)", err)
-	}
-	return nil
 }
 
 // findAvailablePcaps 查找数据目录下所有可用的 pcap 文件
@@ -279,8 +277,8 @@ func handleListIMSIs(ctx context.Context, _ *mcp.CallToolRequest, args listIMSIs
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	scanner := protocol.NewIMSIScanner()
-	imsis, err := scanner.ScanIMSIs(ctx, pcapFile)
+	// 使用公开 API 扫描 IMSI
+	imsis, err := app.ScanIMSIs(ctx, pcapFile)
 	if err != nil {
 		return mcpErrorResult(err), listIMSIsOut{}, nil
 	}
@@ -325,8 +323,8 @@ func handleIMSIBrief(ctx context.Context, _ *mcp.CallToolRequest, args imsiBrief
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	resolver := protocol.NewFilterResolver()
-	filters, combined, err := resolver.ResolveFilters(ctx, pcapFile, imsi, protocols)
+	// 使用公开 API 解析过滤器
+	filters, combined, err := app.ResolveFilters(ctx, pcapFile, imsi, protocols)
 	if err != nil {
 		return mcpErrorResult(err), imsiBriefOut{}, nil
 	}

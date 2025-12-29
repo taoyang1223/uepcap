@@ -40,6 +40,8 @@ type Job struct {
 	Error           string                 `json:"error,omitempty"`
 	ExportCache     map[string]string      `json:"-"` // key: imsi+protocols hash, value: exported pcap path
 	TextExportCache map[string]string      `json:"-"` // key: filter hash, value: compact JSON text
+	TreeCache       map[string]string      `json:"-"` // key: proto|frame, value: protocol tree text
+	TreePrefetched  map[string]bool        `json:"-"` // key: filterHash, tracks which filters have been prefetched
 	ExportTasks     map[string]*ExportTask `json:"-"` // key: task_id
 	mu              sync.RWMutex
 }
@@ -89,6 +91,8 @@ func (m *Manager) CreateJob() (*Job, error) {
 		Status:          "created",
 		ExportCache:     make(map[string]string),
 		TextExportCache: make(map[string]string),
+		TreeCache:       make(map[string]string),
+		TreePrefetched:  make(map[string]bool),
 		ExportTasks:     make(map[string]*ExportTask),
 	}
 
@@ -295,6 +299,67 @@ func (m *Manager) GetCachedTextExport(jobID, cacheKey string) (string, bool) {
 	return text, ok
 }
 
+// TreeCacheKey generates a cache key for protocol tree
+func TreeCacheKey(protocol string, frameNumber int) string {
+	return fmt.Sprintf("%s|%d", protocol, frameNumber)
+}
+
+// CacheProtocolTree caches a protocol tree result
+func (m *Manager) CacheProtocolTree(jobID, cacheKey, tree string) {
+	m.mu.RLock()
+	job, ok := m.jobs[jobID]
+	m.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	job.mu.Lock()
+	if job.TreeCache == nil {
+		job.TreeCache = make(map[string]string)
+	}
+	job.TreeCache[cacheKey] = tree
+	job.mu.Unlock()
+}
+
+// GetCachedProtocolTree gets a cached protocol tree
+func (m *Manager) GetCachedProtocolTree(jobID, cacheKey string) (string, bool) {
+	m.mu.RLock()
+	job, ok := m.jobs[jobID]
+	m.mu.RUnlock()
+	if !ok {
+		return "", false
+	}
+
+	job.mu.RLock()
+	defer job.mu.RUnlock()
+	if job.TreeCache == nil {
+		return "", false
+	}
+	tree, ok := job.TreeCache[cacheKey]
+	return tree, ok
+}
+
+// MarkTreePrefetched marks a filter as prefetched (returns true if already marked)
+func (m *Manager) MarkTreePrefetched(jobID, filterHash string) bool {
+	m.mu.RLock()
+	job, ok := m.jobs[jobID]
+	m.mu.RUnlock()
+	if !ok {
+		return true // Treat missing job as "already prefetched" to skip
+	}
+
+	job.mu.Lock()
+	defer job.mu.Unlock()
+	if job.TreePrefetched == nil {
+		job.TreePrefetched = make(map[string]bool)
+	}
+	if job.TreePrefetched[filterHash] {
+		return true // Already prefetched
+	}
+	job.TreePrefetched[filterHash] = true
+	return false
+}
+
 // CreateExportTask creates a new export task
 func (m *Manager) CreateExportTask(jobID string, imsiCount int, filter string) (*ExportTask, error) {
 	m.mu.RLock()
@@ -383,6 +448,11 @@ func (m *Manager) CompleteExportTask(jobID, taskID, downloadURL, filename string
 	task.FileCount = fileCount
 	task.CompletedAt = time.Now()
 	task.mu.Unlock()
+}
+
+// GetMu returns the job's mutex for external locking
+func (j *Job) GetMu() *sync.RWMutex {
+	return &j.mu
 }
 
 // GetExportTaskInfo returns task info for API response

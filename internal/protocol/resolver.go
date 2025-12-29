@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"uepcap/internal/tshark"
+	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
 
 // FilterResolver resolves display filters for IMSI + protocols

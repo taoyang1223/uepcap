@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"uepcap/internal/protocol"
+	"gitee.com/yangdadayyds/uepcap/internal/protocol"
 )
 
 // GetIMSIList handles GET /api/jobs/{id}/imsis - scan and return IMSI list (legacy)

@@ -1,4 +1,4 @@
-module uepcap
+module gitee.com/yangdadayyds/uepcap
 
 go 1.24.3
 

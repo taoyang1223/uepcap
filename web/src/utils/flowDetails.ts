@@ -2,7 +2,7 @@
  * Flow Details Utility
  * 
  * Derives rich details (title, detail_lines, fields) from CompactPacket JSON.
- * This replaces LLM-generated DETAILS with frontend-derived summaries.
+ * Used for frontend-derived summaries in the flow viewer.
  */
 
 // CompactPacket structure matches backend packet.CompactPacket
@@ -73,13 +73,27 @@ export interface FlowDetailMapping {
   originNumber: string
 }
 
-// LLMMappingEntry represents a single mapping entry parsed from LLM output
-export interface LLMMappingEntry {
+// PacketColumns holds wireshark column display values for a packet.
+// These are the same values displayed in Wireshark's packet list,
+// extracted by tshark on the backend.
+export interface PacketColumns {
+  frame_number: string
+  time_relative: string
+  source: string
+  destination: string
+  protocol: string
+  length: string
+  info: string        // Original _ws.col.Info
+  info_clean: string  // Info with SACK prefix removed
+}
+
+// MappingEntry represents a single idx:frameNumber mapping entry
+export interface MappingEntry {
   idx: number
   frameNumber: string
 }
 
-// IPMapping maps an IP address to a network element role (from LLM annotations)
+// IPMapping maps an IP address to a network element role (from protocol-based inference)
 export interface IPMapping {
   ip: string
   ne: string  // gNB, AMF, SMF, UPF, etc.
@@ -87,7 +101,7 @@ export interface IPMapping {
   reason?: string
 }
 
-// FlowAnnotationsV1 is the structured JSON returned by LLM for annotations
+// FlowAnnotationsV1 is the structured JSON for IP→NE mapping annotations
 export interface FlowAnnotationsV1 {
   version: string
   flow_name?: string
@@ -385,7 +399,7 @@ function generateFields(packet: CompactPacket): Record<string, unknown> {
  * Derives rich flow details from packets and mapping
  * @param inputJSON - The compact packet JSON string
  * @param detailsMap - The mapping from backend
- * @param annotations - Optional LLM annotations for IP→NE mapping (aligns with diagram)
+ * @param annotations - Optional annotations for IP→NE mapping (aligns with diagram)
  */
 export function deriveFlowDetails(
   inputJSON: string,
@@ -483,11 +497,11 @@ export function findPacketByOriginNumber(
 }
 
 /**
- * Parses the MAPPING section from LLM stream content.
+ * Parses the MAPPING section from stream content.
  * Format: each line is "idx:frameNumber" (e.g., "1:1001")
  */
-export function parseLLMMapping(streamContent: string): LLMMappingEntry[] {
-  const mapping: LLMMappingEntry[] = []
+export function parseMapping(streamContent: string): MappingEntry[] {
+  const mapping: MappingEntry[] = []
   
   const mappingMarker = '---MAPPING---'
   const mappingIdx = streamContent.indexOf(mappingMarker)
@@ -524,15 +538,15 @@ export function parseLLMMapping(streamContent: string): LLMMappingEntry[] {
 }
 
 /**
- * Derives rich flow details from packets using LLM-provided mapping.
- * This provides accurate correlation when LLM skips heartbeat messages.
+ * Derives rich flow details from packets using the provided mapping.
+ * This provides accurate correlation when heartbeat messages are skipped.
  * @param inputJSON - The compact packet JSON string
- * @param llmMapping - The LLM-provided mapping
- * @param annotations - Optional LLM annotations for IP→NE mapping (aligns with diagram)
+ * @param mapping - The frame number mapping
+ * @param annotations - Optional annotations for IP→NE mapping (aligns with diagram)
  */
-export function deriveFlowDetailsFromLLMMapping(
+export function deriveFlowDetailsFromMapping(
   inputJSON: string,
-  llmMapping: LLMMappingEntry[],
+  mapping: MappingEntry[],
   annotations?: FlowAnnotationsV1 | null
 ): RichFlowDetail[] {
   let packets: CompactPacket[]
@@ -555,7 +569,7 @@ export function deriveFlowDetailsFromLLMMapping(
   // Build IP maps for annotations-based naming
   const ipMaps = annotations ? buildIPMaps(annotations) : null
   
-  return llmMapping.map((entry) => {
+  return mapping.map((entry) => {
     const packet = packetByFrameNumber.get(entry.frameNumber)
     const arrayIdx = frameNumberToArrayIdx.get(entry.frameNumber) || entry.idx
     
@@ -599,6 +613,97 @@ export function deriveFlowDetailsFromLLMMapping(
       title: generateTitle(packet),
       detail_lines: generateDetailLines(packet),
       fields: generateFields(packet),
+    }
+  })
+}
+
+/**
+ * Derives rich flow details using tshark-extracted packet columns.
+ * This is the preferred method as it uses the exact same display values as Wireshark.
+ * 
+ * @param detailsMap - The mapping from backend (idx -> frame number)
+ * @param packetColumns - Map of frame.number -> PacketColumns from tshark
+ * @param annotations - Optional annotations for IP→NE naming (aligns with diagram)
+ */
+export function deriveFlowDetailsFromTsharkColumns(
+  detailsMap: FlowDetailMapping[],
+  packetColumns: Record<string, PacketColumns>,
+  annotations?: FlowAnnotationsV1 | null
+): RichFlowDetail[] {
+  // Build IP maps for annotations-based naming
+  const ipMaps = annotations ? buildIPMaps(annotations) : null
+  
+  return detailsMap.map((mapping, arrayIdx) => {
+    const cols = packetColumns[mapping.originNumber]
+    
+    if (!cols) {
+      return {
+        idx: mapping.idx,
+        frame: mapping.frame,
+        originNumber: mapping.originNumber,
+        title: `Frame ${mapping.originNumber}`,
+        detail_lines: [],
+        fields: {},
+      }
+    }
+    
+    // Use tshark-extracted Protocol directly
+    const protocol = cols.protocol
+    
+    // Get from/to using annotations if available, otherwise use tshark source/destination
+    let from: string, to: string
+    
+    if (ipMaps && ipMaps.ipToNE.size > 0) {
+      // Use annotations: simple display without sequence numbers for detail list
+      const srcRole = ipMaps.ipToNE.get(cols.source) || 'Unknown'
+      const dstRole = ipMaps.ipToNE.get(cols.destination) || 'Unknown'
+      from = srcRole === 'Unknown' ? cols.source : `${srcRole}(${cols.source})`
+      to = dstRole === 'Unknown' ? cols.destination : `${dstRole}(${cols.destination})`
+    } else {
+      // No annotations: just use raw source/destination from tshark
+      from = cols.source
+      to = cols.destination
+    }
+    
+    // Title: use Protocol + cleaned Info (matches Mermaid arrow label)
+    const title = `${cols.protocol} ${cols.info_clean}`
+    
+    // Detail lines: comprehensive tshark column info
+    const detail_lines: string[] = [
+      `Frame: ${cols.frame_number}`,
+      `Time: ${cols.time_relative}s`,
+      `${cols.source} → ${cols.destination}`,
+      `Length: ${cols.length} bytes`,
+      `Protocol: ${cols.protocol}`,
+      `Info: ${cols.info_clean}`,
+    ]
+    
+    // Fields for expandable JSON view
+    const fields: Record<string, unknown> = {
+      frame: {
+        number: cols.frame_number,
+        time: cols.time_relative,
+        length: cols.length,
+      },
+      layers: {
+        src_ip: cols.source,
+        dst_ip: cols.destination,
+      },
+      protocol: cols.protocol,
+      info: cols.info,
+      info_clean: cols.info_clean,
+    }
+    
+    return {
+      idx: mapping.idx,
+      frame: arrayIdx + 1, // 1-based array index
+      originNumber: mapping.originNumber,
+      from,
+      to,
+      protocol,
+      title,
+      detail_lines,
+      fields,
     }
   })
 }

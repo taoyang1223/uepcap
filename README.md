@@ -2,6 +2,8 @@
 
 基于 Go + Vite/React 构建的 Web 应用，通过 tshark 从 PCAP 文件中按 IMSI 关联提取 UE 相关的信令包。
 
+**可作为 Go 包导入**：其他 Go 项目可以直接 `import` 本包，将 PCAP 分析能力嵌入到自己的服务中。
+
 ## 功能特性
 
 - **多文件上传合并**：支持上传多个 PCAP 文件，自动合并为一个文件
@@ -10,6 +12,154 @@
 - **多协议支持**：NGAP (5G)、PFCP (5G N4)、S1AP (LTE)、GTPv2-C、GTP-U
 - **批量导出**：选择多个 IMSI 批量导出，自动打包为 ZIP
 - **实时流式扫描**：使用 SSE 实时推送 IMSI 扫描结果
+- **Go 包可嵌入**：提供 `httpapi` 包，可将 API 嵌入到任何 Go HTTP 服务
+
+---
+
+## 作为 Go 包使用
+
+uepcap 可以作为 Go 库导入到其他项目中，将 PCAP 分析能力嵌入到您自己的服务中。
+
+### 安装
+
+```bash
+go get gitee.com/yangdadayyds/uepcap
+```
+
+> **注意**：使用前需确保系统已安装 `tshark` 和 `mergecap`（`apt install wireshark-cli` 或 `brew install wireshark`）
+
+### 嵌入 HTTP API
+
+最简单的方式是使用 `httpapi` 包将完整的 HTTP API 嵌入到您的服务中：
+
+```go
+package main
+
+import (
+    "context"
+    "net/http"
+    "time"
+
+    uepcap "gitee.com/yangdadayyds/uepcap"
+    "gitee.com/yangdadayyds/uepcap/httpapi"
+)
+
+func main() {
+    // 创建 uepcap HTTP 处理器
+    handler, err := httpapi.New(uepcap.Config{
+        DataDir: "./data",      // 数据存储目录
+        JobTTL:  time.Hour,     // Job 自动清理时间
+        MaxJobs: 5,             // 最大保留 Job 数量
+    })
+    if err != nil {
+        panic(err)
+    }
+
+    // 启动后台清理任务
+    ctx := context.Background()
+    handler.Start(ctx)
+
+    // 注册路由到您的 HTTP mux
+    mux := http.NewServeMux()
+    handler.RegisterRoutes(mux)
+
+    // 您可以在同一个 mux 上添加自己的路由
+    mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+        w.Write([]byte("OK"))
+    })
+
+    http.ListenAndServe(":8080", mux)
+}
+```
+
+### 程序化 API
+
+如果只需要核心功能而不需要 HTTP API，可以直接使用 `uepcap.App`：
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+
+    uepcap "gitee.com/yangdadayyds/uepcap"
+)
+
+func main() {
+    app, err := uepcap.New(uepcap.Config{DataDir: "./data"})
+    if err != nil {
+        panic(err)
+    }
+
+    ctx := context.Background()
+
+    // 扫描 PCAP 文件中的 IMSI
+    imsis, err := app.ScanIMSIs(ctx, "path/to/file.pcap")
+    if err != nil {
+        panic(err)
+    }
+    fmt.Printf("Found %d IMSIs: %v\n", len(imsis), imsis)
+
+    // 解析某个 IMSI 的协议过滤器
+    filters, combined, err := app.ResolveFilters(ctx, "path/to/file.pcap", imsis[0], 
+        []string{"ngap", "pfcp", "s1ap", "gtpv2"})
+    if err != nil {
+        panic(err)
+    }
+    fmt.Printf("Combined filter: %s\n", combined)
+    fmt.Printf("Per-protocol filters: %v\n", filters)
+
+    // 导出过滤后的数据包
+    err = app.ExportPackets(ctx, "path/to/file.pcap", "output.pcap", combined)
+    if err != nil {
+        panic(err)
+    }
+}
+```
+
+### 配置选项
+
+`uepcap.Config` 支持以下配置项：
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `DataDir` | string | `"./data"` | 数据存储目录 |
+| `JobTTL` | time.Duration | `1h` | Job 自动清理时间 |
+| `MaxJobs` | int | `3` | 最大保留 Job 数量（0=不限制） |
+| `CleanupInterval` | time.Duration | `5m` | 清理任务检查间隔 |
+| `TsharkPath` | string | `"tshark"` | tshark 可执行文件路径 |
+| `MergecapPath` | string | `"mergecap"` | mergecap 可执行文件路径 |
+| `SkipDependencyCheck` | bool | `false` | 跳过依赖检查 |
+
+### IP 到网元映射规则
+
+流程图生成时会根据协议规则自动推导 IP→网元 (NE) 映射：
+
+- **NGAP**: SCTP 端口 38412 → 一侧为 AMF，另一侧为 gNB
+- **S1AP**: SCTP 端口 36412 → 一侧为 MME，另一侧为 eNB
+- **PFCP**: UDP 端口 8805 → 一侧为 SMF，另一侧为 UPF
+- **GTPv2-C**: UDP 端口 2123 → SGW/PGW（根据方向推导）
+- **GTP-U**: UDP 端口 2152 → 基于其他协议的已知端点推导
+
+### HTTP API 路由
+
+嵌入 `httpapi` 后，以下路由可用：
+
+| 方法 | 路由 | 说明 |
+|------|------|------|
+| POST | `/api/jobs` | 上传 PCAP 文件，创建任务 |
+| GET | `/api/jobs` | 列出所有任务 |
+| GET | `/api/jobs/{id}` | 获取任务详情 |
+| DELETE | `/api/jobs/{id}` | 删除任务 |
+| GET | `/api/jobs/{id}/imsis` | 扫描并返回 IMSI 列表 |
+| GET | `/api/jobs/{id}/imsis/stream` | SSE 流式返回 IMSI |
+| POST | `/api/jobs/{id}/export` | 导出过滤后的数据包（异步） |
+| GET | `/api/jobs/{id}/export/{taskId}/status` | 获取导出任务状态 |
+| GET | `/api/jobs/{id}/download/{filename}` | 下载导出文件 |
+| POST | `/api/jobs/{id}/flow/brief` | 获取流程摘要 |
+| POST | `/api/jobs/{id}/flow/generate` | 生成 Mermaid 流程图 |
+| POST | `/api/jobs/{id}/flow/generate/stream` | SSE 流式生成流程图 |
 
 ---
 
@@ -534,7 +684,7 @@ uepcap/
 │   │   ├── main.go          # 服务启动、依赖检查、路由注册
 │   │   └── dist/            # 前端构建输出（嵌入到二进制）
 │   │
-│   └── mcp/                 # MCP Server（AI 工具调用）
+│   └── mcp/                 # MCP Server（大模型工具调用）
 │       └── main.go          # MCP server 入口，暴露 2 个 tools
 │
 ├── internal/
@@ -742,18 +892,6 @@ Job TTL: 1h0m0s
 - **内容展示**：在线查看信令流程时序图
 
 ![导出结果](docs/images/export-result.png)
-
----
-
-### 可选：配置 Kimi（Moonshot）用于流程/时序图智能生成
-
-项目在 `POST /api/jobs/{id}/flow/generate` 中会调用 Moonshot（Kimi）Chat API 来生成结构化流程 JSON（用于前端的流程/时序图展示）。如需启用，请设置以下环境变量：
-
-- **MOONSHOT_API_KEY**：必填，Moonshot 平台 API Key
-- **MOONSHOT_BASE_URL**：可选，默认 `https://api.moonshot.cn/v1`
-- **MOONSHOT_MODEL**：可选，默认 `kimi-k2-thinking`
-
-未配置 `MOONSHOT_API_KEY` 时，流程生成接口会返回“API key not configured”的错误提示。
 
 ---
 

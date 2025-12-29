@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"uepcap/internal/tshark"
+	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
 
 // CreateJob handles POST /api/jobs - upload pcap files and create a job

@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -9,10 +11,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"uepcap/internal/packet"
-	"uepcap/internal/tshark"
+	"gitee.com/yangdadayyds/uepcap/internal/job"
+	"gitee.com/yangdadayyds/uepcap/internal/packet"
+	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
 
 // FlowBriefRequest represents the request for flow brief
@@ -68,6 +72,9 @@ type FlowGenerateResponse struct {
 	// Annotations contains LLM-provided IP→NE mapping and stage segmentation.
 	// May be nil if LLM parsing failed (diagram still generated deterministically by Go).
 	Annotations *FlowAnnotationsV1 `json:"annotations,omitempty"`
+	// PacketColumns contains tshark-extracted column info (Protocol, Info, etc.) for each frame.
+	// Used by frontend to display message labels and packet details without LLM parsing.
+	PacketColumns map[string]*tshark.PacketColumns `json:"packet_columns,omitempty"`
 }
 
 // FlowMessageDetail maps a Mermaid message (by autonumber index) to the original packet.
@@ -93,6 +100,9 @@ type FlowFinalEvent struct {
 	// Annotations contains LLM-provided IP→NE mapping and stage segmentation.
 	// May be nil if LLM parsing failed.
 	Annotations *FlowAnnotationsV1 `json:"annotations,omitempty"`
+	// PacketColumns contains tshark-extracted column info (Protocol, Info, etc.) for each frame.
+	// Used by frontend to display message labels and packet details without LLM parsing.
+	PacketColumns map[string]*tshark.PacketColumns `json:"packet_columns,omitempty"`
 }
 
 type FlowValidationStats struct {
@@ -631,6 +641,15 @@ func (h *Handler) GenerateFlow(w http.ResponseWriter, r *http.Request) {
 	// Extract key params from compactJSON for response
 	keyParams := extractKeyParamsFromJSON(compactJSON)
 
+	// Extract packet columns using tshark (Protocol, Info, etc.)
+	columnsCtx, columnsCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	packetColumns, err := tshark.TsharkPacketColumns(columnsCtx, job.MergedPcap, req.Filter)
+	columnsCancel()
+	if err != nil {
+		log.Printf("[FlowGenerate] Warning: failed to extract packet columns: %v", err)
+		packetColumns = nil // Continue without columns
+	}
+
 	// Filter heartbeat packets to make LLM input deterministic
 	llmInputJSON, removedHeartbeats, err := filterHeartbeatPacketsJSON(limitedJSON)
 	if err != nil {
@@ -658,33 +677,18 @@ func (h *Handler) GenerateFlow(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[FlowGenerate] Job %s: %d packets after filtering (removed %d heartbeats)", id, packetCount, removedHeartbeats)
 
-	// Call Moonshot API to get annotations only (IP→NE mapping, stages)
-	// annotations may be nil if LLM fails - that's OK, we still generate deterministic Mermaid
-	annotations := h.callMoonshotForAnnotations(llmInputJSON, packetCount, validFrameNumbers)
+	// Use deterministic rule-based IP→NE inference (no LLM)
+	annotations := InferIPMappingsWithEmptyStages(llmInputJSON)
 
-	// Determine which JSON to use for rendering
-	// If annotations are valid, filter to only selected frames (subset rendering)
-	// Otherwise, use full llmInputJSON (fallback to all packets)
+	// No stage-based filtering - use all packets
 	renderJSON := llmInputJSON
 	flowName := "信令流程图"
-
-	if annotations != nil {
+	if annotations != nil && annotations.FlowName != "" {
 		flowName = annotations.FlowName
-		// Collect selected frames from all stages
-		selectedFrames := collectSelectedFramesSet(annotations.Stages)
-		if len(selectedFrames) > 0 {
-			filteredJSON, filteredCount, err := filterPacketsByFrameNumbers(llmInputJSON, selectedFrames)
-			if err != nil {
-				log.Printf("[FlowGenerate] Warning: failed to filter packets, using full set: %v", err)
-			} else if filteredCount > 0 {
-				renderJSON = filteredJSON
-				log.Printf("[FlowGenerate] Filtered to %d packets based on annotations (from %d)", filteredCount, packetCount)
-			}
-		}
 	}
 
-	// Generate Mermaid deterministically from Go using annotations
-	mermaid := buildDeterministicMermaid(renderJSON, flowName, annotations)
+	// Generate Mermaid deterministically from Go using annotations and packet columns
+	mermaid := buildDeterministicMermaid(renderJSON, flowName, annotations, packetColumns)
 
 	// Build details mapping (guaranteed 1:1 with Mermaid)
 	details := buildDetailsMapping(renderJSON)
@@ -692,12 +696,13 @@ func (h *Handler) GenerateFlow(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[FlowGenerate] Generated Mermaid with %d messages, annotations=%v", len(details), annotations != nil)
 
 	writeSuccess(w, &FlowGenerateResponse{
-		FlowName:    flowName,
-		Mermaid:     mermaid,
-		KeyParams:   keyParams,
-		Details:     details,
-		InputJSON:   renderJSON, // Return the subset JSON that matches the diagram
-		Annotations: annotations,
+		FlowName:      flowName,
+		Mermaid:       mermaid,
+		KeyParams:     keyParams,
+		Details:       details,
+		InputJSON:     renderJSON, // Return the subset JSON that matches the diagram
+		Annotations:   annotations,
+		PacketColumns: packetColumns,
 	})
 }
 
@@ -897,97 +902,6 @@ func countMermaidMessages(mermaid string) int {
 	return count
 }
 
-// validateFlowLLMParsed enforces strict consistency between:
-// - input packets (exact JSON sent to LLM)
-// - Mermaid message count
-// - MAPPING (idx -> frame.number)
-//
-// If validation fails, caller should fallback to deterministic full diagram.
-func validateFlowLLMParsed(compactJSON string, parsed flowLLMParsed, removedHeartbeats int) (bool, []string, FlowValidationStats) {
-	var packets []map[string]interface{}
-	if err := json.Unmarshal([]byte(compactJSON), &packets); err != nil {
-		return false, []string{"input_json解析失败"}, FlowValidationStats{RemovedHeartbeats: removedHeartbeats}
-	}
-	inputCount := len(packets)
-
-	validFrames := make(map[string]struct{}, inputCount)
-	for _, pkt := range packets {
-		if frame, ok := pkt["frame"].(map[string]interface{}); ok {
-			if num, ok := frame["number"].(string); ok {
-				validFrames[num] = struct{}{}
-			}
-		}
-	}
-
-	mermaidCount := countMermaidMessages(parsed.Mermaid)
-	mappingCount := len(parsed.Mapping)
-
-	stats := FlowValidationStats{
-		InputPackets:      inputCount,
-		MermaidMessages:   mermaidCount,
-		MappingEntries:    mappingCount,
-		RemovedHeartbeats: removedHeartbeats,
-	}
-
-	var reasons []string
-	if mermaidCount <= 0 {
-		reasons = append(reasons, "Mermaid消息数=0")
-	}
-	// Since we pre-filter heartbeat packets, we expect 1 message per packet.
-	if inputCount > 0 && mermaidCount != inputCount {
-		reasons = append(reasons, fmt.Sprintf("Mermaid消息数(%d) != 输入包数(%d)", mermaidCount, inputCount))
-	}
-	if mappingCount != mermaidCount {
-		reasons = append(reasons, fmt.Sprintf("Mapping条数(%d) != Mermaid消息数(%d)", mappingCount, mermaidCount))
-	}
-
-	// idx coverage and uniqueness
-	idxToFrame := make(map[int]string, mappingCount)
-	for _, e := range parsed.Mapping {
-		if e.Idx <= 0 {
-			reasons = append(reasons, fmt.Sprintf("存在非法idx(%d)", e.Idx))
-			continue
-		}
-		if _, exists := idxToFrame[e.Idx]; exists {
-			reasons = append(reasons, fmt.Sprintf("存在重复idx(%d)", e.Idx))
-			continue
-		}
-		idxToFrame[e.Idx] = e.FrameNumber
-	}
-	if mermaidCount > 0 {
-		for i := 1; i <= mermaidCount; i++ {
-			if _, ok := idxToFrame[i]; !ok {
-				reasons = append(reasons, fmt.Sprintf("缺少idx=%d", i))
-				break
-			}
-		}
-	}
-
-	// frame existence + strict monotonicity by idx (prompt requires strict frame.number order)
-	last := -1
-	for i := 1; i <= mermaidCount; i++ {
-		f := idxToFrame[i]
-		if f == "" {
-			continue
-		}
-		if _, ok := validFrames[f]; !ok {
-			reasons = append(reasons, fmt.Sprintf("frame不存在(%s)", f))
-			break
-		}
-		n, err := strconv.Atoi(f)
-		if err != nil {
-			reasons = append(reasons, fmt.Sprintf("frame非数字(%s)", f))
-			break
-		}
-		if last != -1 && n <= last {
-			reasons = append(reasons, fmt.Sprintf("frame未严格递增(%d -> %d)", last, n))
-			break
-		}
-		last = n
-	}
-
-	return len(reasons) == 0, reasons, stats
-}
 
 func safeOneLine(s string, max int) string {
 	out := strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
@@ -1096,6 +1010,188 @@ func buildPacketTitle(pkt map[string]interface{}) string {
 	return "Frame"
 }
 
+// buildPacketTitleNoFrame generates a message title without the [frameNum] prefix.
+// Used for Mermaid diagrams since autonumber already provides sequence numbers.
+func buildPacketTitleNoFrame(pkt map[string]interface{}) string {
+	app, _ := pkt["application"].(map[string]interface{})
+	if app != nil {
+		if ngap, ok := app["ngap"].(map[string]interface{}); ok {
+			proc := getString(ngap, "procedure")
+			if proc == "" {
+				proc = getString(ngap, "procedureCode")
+				if proc != "" {
+					proc = "NGAP(" + proc + ")"
+				}
+			}
+			if proc == "" {
+				proc = "NGAP"
+			}
+			return proc
+		}
+		if nas, ok := app["nas-5gs"].(map[string]interface{}); ok {
+			mm := getString(nas, "mm_message")
+			sm := getString(nas, "sm_message")
+			title := mm
+			if title == "" {
+				title = sm
+			}
+			if title == "" {
+				title = "NAS-5GS"
+			}
+			return title
+		}
+		if pfcp, ok := app["pfcp"].(map[string]interface{}); ok {
+			msg := getString(pfcp, "message")
+			if msg == "" {
+				msg = getString(pfcp, "message_type")
+				if msg != "" {
+					msg = "PFCP(" + msg + ")"
+				}
+			}
+			if msg == "" {
+				msg = "PFCP"
+			}
+			return msg
+		}
+		if gtpv2, ok := app["gtpv2"].(map[string]interface{}); ok {
+			msg := getString(gtpv2, "message")
+			if msg == "" {
+				msg = getString(gtpv2, "message_type")
+				if msg != "" {
+					msg = "GTPv2(" + msg + ")"
+				}
+			}
+			if msg == "" {
+				msg = "GTPv2"
+			}
+			return msg
+		}
+		if s1ap, ok := app["s1ap"].(map[string]interface{}); ok {
+			proc := getString(s1ap, "procedure")
+			if proc == "" {
+				proc = "S1AP"
+			}
+			return proc
+		}
+	}
+	
+	// Fallback to Frame number
+	if frame, ok := pkt["frame"].(map[string]interface{}); ok {
+		if num := getString(frame, "number"); num != "" {
+			return "Frame " + num
+		}
+	}
+	return "Frame"
+}
+
+// isPFCPSessionMessage checks if the PFCP message type is a session-related message (50-57).
+// These are: Session Establishment Request/Response, Session Modification Request/Response,
+// Session Deletion Request/Response, Session Report Request/Response.
+func isPFCPSessionMessage(msgType string) bool {
+	switch msgType {
+	case "50", "51", "52", "53", "54", "55", "56", "57":
+		return true
+	default:
+		return false
+	}
+}
+
+// extractPFCPSeidsFromPacket recursively extracts all SEIDs from a PFCP packet.
+// Returns SEIDs from:
+// 1. Header SEID (pfcp.seid) if non-empty and non-zero
+// 2. F-SEID IEs: keys containing "F-SEID" with child keys containing "SEID"
+func extractPFCPSeidsFromPacket(pfcpInfo map[string]interface{}) []string {
+	seids := make(map[string]struct{})
+
+	// 1. Get header SEID
+	if headerSeid, ok := pfcpInfo["seid"].(string); ok && headerSeid != "" && headerSeid != "0" && headerSeid != "0x0" && headerSeid != "0x0000000000000000" {
+		seids[headerSeid] = struct{}{}
+	}
+
+	// 2. Recursively search for F-SEID IEs
+	var searchFSeid func(data interface{}, inFseid bool)
+	searchFSeid = func(data interface{}, inFseid bool) {
+		switch v := data.(type) {
+		case map[string]interface{}:
+			for key, val := range v {
+				keyLower := strings.ToLower(key)
+				// Check if we're entering an F-SEID structure
+				isFseidKey := strings.Contains(keyLower, "f-seid") || strings.Contains(keyLower, "f_seid") || strings.Contains(keyLower, "fseid")
+				// If we're inside an F-SEID and find a SEID value
+				if inFseid && (strings.Contains(keyLower, "seid") && !strings.Contains(keyLower, "f-seid") && !strings.Contains(keyLower, "f_seid")) {
+					if s, ok := val.(string); ok && s != "" && s != "0" && s != "0x0" && s != "0x0000000000000000" {
+						seids[s] = struct{}{}
+					}
+				}
+				// Recurse
+				searchFSeid(val, inFseid || isFseidKey)
+			}
+		case []interface{}:
+			for _, item := range v {
+				searchFSeid(item, inFseid)
+			}
+		}
+	}
+
+	// Search in IEs
+	if ies, ok := pfcpInfo["ies"].(map[string]interface{}); ok {
+		searchFSeid(ies, false)
+	}
+
+	// Convert to slice
+	result := make([]string, 0, len(seids))
+	for seid := range seids {
+		result = append(result, seid)
+	}
+	sort.Strings(result)
+	return result
+}
+
+// extractPFCPDnnsFromPacket recursively extracts all DNN values from a PFCP packet.
+// Returns DNNs from Network Instance IEs (case-insensitive key matching).
+func extractPFCPDnnsFromPacket(pfcpInfo map[string]interface{}) []string {
+	dnns := make(map[string]struct{})
+
+	var searchDnn func(data interface{})
+	searchDnn = func(data interface{}) {
+		switch v := data.(type) {
+		case map[string]interface{}:
+			for key, val := range v {
+				keyLower := strings.ToLower(key)
+				// Match "network instance", "network_instance", "networkinstance"
+				if strings.Contains(keyLower, "network") && strings.Contains(keyLower, "instance") {
+					if s, ok := val.(string); ok && s != "" {
+						// Clean up the DNN value (remove quotes, trim whitespace)
+						dnn := strings.Trim(strings.TrimSpace(s), "\"'")
+						if dnn != "" {
+							dnns[dnn] = struct{}{}
+						}
+					}
+				}
+				// Recurse into nested structures
+				searchDnn(val)
+			}
+		case []interface{}:
+			for _, item := range v {
+				searchDnn(item)
+			}
+		}
+	}
+
+	// Search in IEs
+	if ies, ok := pfcpInfo["ies"].(map[string]interface{}); ok {
+		searchDnn(ies)
+	}
+
+	// Convert to slice and sort for deterministic output
+	result := make([]string, 0, len(dnns))
+	for dnn := range dnns {
+		result = append(result, dnn)
+	}
+	sort.Strings(result)
+	return result
+}
+
 // buildDeterministicMermaid builds a guaranteed-consistent sequence diagram from the exact input JSON.
 // It creates exactly one Mermaid message per packet in the same order, so message count == mapping count == input packets.
 // If annotations are provided, uses ip_map for participant naming and inserts stage notes.
@@ -1105,7 +1201,11 @@ func buildPacketTitle(pkt map[string]interface{}) string {
 // - Message direction strictly follows packet's src_ip → dst_ip
 // - ip_map from annotations provides display names; unknown IPs show raw IP
 // - No port-based role inference for naming (avoids ambiguity)
-func buildDeterministicMermaid(compactJSON string, flowName string, ann *FlowAnnotationsV1) string {
+//
+// DNN LABELING:
+// - For PFCP session messages (msg_type 50-57), appends （dnn1,dnn2） suffix to message title
+// - DNNs are extracted from Network Instance IEs and propagated via SEID mapping
+func buildDeterministicMermaid(compactJSON string, flowName string, ann *FlowAnnotationsV1, packetColumns map[string]*tshark.PacketColumns) string {
 	var packets []map[string]interface{}
 	if err := json.Unmarshal([]byte(compactJSON), &packets); err != nil {
 		return "sequenceDiagram\n    autonumber\n"
@@ -1121,22 +1221,16 @@ func buildDeterministicMermaid(compactJSON string, flowName string, ann *FlowAnn
 		}
 	}
 
-	// Build frame→info lookups from annotations
+	// Build frame→stage lookup from annotations
 	// frameToStage: first frame of each stage → stage (for inserting stage notes)
-	// frameToInfo: frame.number → FlowStageFrame (for title/note overrides)
+	// NOTE: We no longer use per-frame title/note from annotations - we use tshark columns instead
 	frameToStage := make(map[string]*FlowStage)
-	frameToInfo := make(map[string]*FlowStageFrame)
 	if ann != nil {
 		for i := range ann.Stages {
 			s := &ann.Stages[i]
 			if len(s.Frames) > 0 {
 				// First frame of stage triggers the stage note
 				frameToStage[s.Frames[0].Number] = s
-			}
-			// Build frame info lookup
-			for j := range s.Frames {
-				f := &s.Frames[j]
-				frameToInfo[f.Number] = f
 			}
 		}
 	}
@@ -1191,6 +1285,10 @@ func buildDeterministicMermaid(compactJSON string, flowName string, ann *FlowAnn
 	}
 	msgs := make([]Msg, 0, len(packets))
 
+	// PFCP SEID → DNNs mapping for DNN label propagation across session messages
+	// Key: SEID string, Value: set of DNN strings
+	seidToDnns := make(map[string]map[string]struct{})
+
 	for _, pkt := range packets {
 		layers, _ := pkt["layers"].(map[string]interface{})
 		srcIP := ""
@@ -1216,10 +1314,64 @@ func buildDeterministicMermaid(compactJSON string, flowName string, ann *FlowAnn
 		ensureIP(srcIP)
 		ensureIP(dstIP)
 
-		// Determine title: prefer LLM-provided title if available
-		title := buildPacketTitle(pkt)
-		if info, ok := frameToInfo[frameNum]; ok && info.Title != "" {
-			title = fmt.Sprintf("[%s] %s", frameNum, info.Title)
+		// Determine title: prefer tshark column info (Protocol + InfoClean)
+		// This gives us the exact same output as Wireshark's packet list
+		// NOTE: We don't add [frameNum] prefix because Mermaid's autonumber already shows sequence numbers
+		var title string
+		if cols, ok := packetColumns[frameNum]; ok && cols.InfoClean != "" {
+			// Use tshark-extracted Protocol + cleaned Info (SACK prefix removed)
+			title = fmt.Sprintf("%s %s", cols.Protocol, cols.InfoClean)
+		} else {
+			// Fallback: use legacy buildPacketTitle when tshark columns not available
+			title = buildPacketTitleNoFrame(pkt)
+		}
+
+		// PFCP DNN labeling: extract SEIDs and DNNs, update mapping, and decorate title
+		if app, ok := pkt["application"].(map[string]interface{}); ok {
+			if pfcpInfo, ok := app["pfcp"].(map[string]interface{}); ok {
+				msgType := getString(pfcpInfo, "message_type")
+
+				// Extract SEIDs and DNNs from this packet
+				seidsInPkt := extractPFCPSeidsFromPacket(pfcpInfo)
+				dnnsInPkt := extractPFCPDnnsFromPacket(pfcpInfo)
+
+				// Build union of DNNs: dnnsInPkt + existing mappings for seidsInPkt
+				unionDnns := make(map[string]struct{})
+				for _, dnn := range dnnsInPkt {
+					unionDnns[dnn] = struct{}{}
+				}
+				for _, seid := range seidsInPkt {
+					if existingDnns, ok := seidToDnns[seid]; ok {
+						for dnn := range existingDnns {
+							unionDnns[dnn] = struct{}{}
+						}
+					}
+				}
+
+				// Propagate: update seidToDnns for all SEIDs in this packet
+				if len(unionDnns) > 0 {
+					for _, seid := range seidsInPkt {
+						if seidToDnns[seid] == nil {
+							seidToDnns[seid] = make(map[string]struct{})
+						}
+						for dnn := range unionDnns {
+							seidToDnns[seid][dnn] = struct{}{}
+						}
+					}
+				}
+
+				// Decorate title for PFCP session messages (msg_type 50-57)
+				if isPFCPSessionMessage(msgType) && len(unionDnns) > 0 {
+					// Convert to sorted slice for deterministic output
+					dnnList := make([]string, 0, len(unionDnns))
+					for dnn := range unionDnns {
+						dnnList = append(dnnList, dnn)
+					}
+					sort.Strings(dnnList)
+					// Append DNN suffix with full-width parentheses
+					title = title + "（" + strings.Join(dnnList, ",") + "）"
+				}
+			}
 		}
 
 		msgs = append(msgs, Msg{FromIP: srcIP, ToIP: dstIP, Title: title, FrameNumber: frameNum})
@@ -1320,19 +1472,11 @@ func buildDeterministicMermaid(compactJSON string, flowName string, ann *FlowAnn
 		b.WriteString("->>")
 		b.WriteString(toID)
 		b.WriteString(": ")
-		b.WriteString(safeOneLine(m.Title, 120))
+		// Increase max length to show complete message (0 = no limit)
+		b.WriteString(safeOneLine(m.Title, 0))
 		b.WriteString("\n")
-
-		// Insert frame note if available
-		if info, ok := frameToInfo[m.FrameNumber]; ok && info.Note != "" {
-			b.WriteString("    Note over ")
-			b.WriteString(fromID)
-			b.WriteString(",")
-			b.WriteString(toID)
-			b.WriteString(": ")
-			b.WriteString(safeOneLine(info.Note, 80))
-			b.WriteString("\n")
-		}
+		// NOTE: Per-frame notes are no longer rendered.
+		// Message details are shown via tshark columns in the frontend details panel.
 	}
 	return b.String()
 }
@@ -1389,416 +1533,7 @@ func inferRoleWithAnnotations(ip, port, proto string, ipToNE map[string]string) 
 	return ip
 }
 
-// buildDetailsMappingFromLLM builds the details mapping using the LLM-provided MAPPING section.
-// This provides accurate correlation when LLM skips heartbeat messages or reorders packets.
-// Falls back to sequential mapping if LLM mapping is empty.
-func buildDetailsMappingFromLLM(compactJSON string, llmMapping []LLMMappingEntry) []FlowMessageDetail {
-	if len(llmMapping) == 0 {
-		// Fallback to sequential mapping
-		return buildDetailsMapping(compactJSON)
-	}
 
-	// Ensure deterministic order by idx
-	mapping := make([]LLMMappingEntry, len(llmMapping))
-	copy(mapping, llmMapping)
-	sort.Slice(mapping, func(i, j int) bool { return mapping[i].Idx < mapping[j].Idx })
-
-	// Build a map from frame.number to array index for quick lookup
-	var packets []map[string]interface{}
-	if err := json.Unmarshal([]byte(compactJSON), &packets); err != nil {
-		return nil
-	}
-
-	frameToArrayIdx := make(map[string]int)
-	for i, pkt := range packets {
-		if frame, ok := pkt["frame"].(map[string]interface{}); ok {
-			if num, ok := frame["number"].(string); ok {
-				frameToArrayIdx[num] = i + 1 // 1-based
-			}
-		}
-	}
-
-	// Build details from LLM mapping
-	details := make([]FlowMessageDetail, 0, len(mapping))
-	for _, entry := range mapping {
-		arrayIdx := frameToArrayIdx[entry.FrameNumber]
-		if arrayIdx == 0 {
-			// Frame number not found in packets, use idx as fallback
-			arrayIdx = entry.Idx
-		}
-		details = append(details, FlowMessageDetail{
-			Idx:          entry.Idx,
-			Frame:        arrayIdx,
-			OriginNumber: entry.FrameNumber,
-		})
-	}
-
-	return details
-}
-
-// buildFlowAnnotationsPrompt builds the prompt for LLM to output structured JSON annotations only.
-// The LLM no longer generates Mermaid; it only provides IP→NE mappings and stage segmentation with explicit frames.
-// Go will use these annotations to generate a deterministic Mermaid diagram.
-func buildFlowAnnotationsPrompt(compactJSON string, packetCount int) string {
-	return fmt.Sprintf(`你是一个5G/LTE核心网信令分析专家。请根据以下数据包信息，输出一个 **纯 JSON 对象**，用于标注IP地址与网元的对应关系，以及信令流程的阶段划分。
-
-**【极其重要 - 完整性要求】**
-⚠️ **必须包含所有数据包，一个都不能遗漏！输入共 %d 条！**
-⚠️ **stages 中所有 frames 数组的元素总数必须等于输入的数据包总数！**
-⚠️ **即使是"重复"的消息，也必须全部包含，不能合并或省略！**
-⚠️ **只输出单个JSON对象，不要输出任何其他内容！**
-
-数据包JSON（已过滤心跳消息，共 %d 条）：
-%s
-
-数据结构说明：
-- frame: 帧信息（number=帧序号，这是唯一标识符）
-- layers: 网络层信息（src_ip=源IP, dst_ip=目的IP, proto=传输协议, src_port/dst_port=端口）
-- application: 应用层协议详情
-  - ngap: gNB与AMF之间的N2接口协议
-  - pfcp: SMF与UPF之间的N4接口协议
-  - gtpv2: GTP控制面协议
-  - s1ap: 4G LTE的eNB与MME之间的S1接口协议
-  - diameter: 3GPP Diameter协议
-  - http2: SBI接口的HTTP/2消息
-  - sip: IMS信令
-
-**你的任务**：
-1. 分析所有数据包，识别每个IP地址对应的网元角色
-2. 将信令流程划分为逻辑阶段（如：注册、认证、PDU会话建立，会话更新等）
-3. 为每个阶段明确列出属于该阶段的帧（通过 frame.number 标识）
-4. 为每个帧提供 title（消息名称，注意一定是完整的标准的消息类型名称，如果是pfcp消息，一定要在消息的后面加上DNN,比如PFCP Session Establishment Request(DNN: ctnet)）和 note（操作说明/关键参数）
-5. **【必须】确保所有数据包都被分配到某个阶段中，不能遗漏任何一条！**
-6. 输出一个严格符合以下schema的JSON对象
-
-**JSON Schema**：
-{
-  "version": "flow_annotations_v1",
-  "flow_name": "简短的流程名称",
-  "ip_map": [
-    {
-      "ip": "IP地址",
-      "ne": "网元类型"
-    }
-  ],
-  "stages": [
-    {
-      "name": "阶段名称",
-      "summary": "阶段简述",
-      "frames": [
-        {
-          "number": "帧序号",
-          "title": "消息名称，注意一定是完整的标准的消息类型名称",
-          "note": "操作说明/关键参数/参数尽可能完整准确"
-        }
-      ]
-    }
-  ]
-}
-
-**字段说明**：
-- version: 固定为 "flow_annotations_v1"
-- flow_name: 流程名称，简洁描述（可包含SUPI/DNN等关键信息）
-- ip_map: IP地址到网元的映射数组
-  - ip: 必填，IP地址字符串
-  - ne: 必填，网元类型。只允许以下值：gNB, eNB, AMF, MME, SMF, PGW, UPF, SGW, PCRF, HSS, UDM, AUSF, Unknown
-- stages: 阶段数组（按流程顺序排列）
-  - name: 必填，阶段名称（如"5G注册"、"PDU会话建立(DNN:ctnet)"）
-  - summary: 可选，该阶段的简短总结，尽可能详细准确
-  - frames: 必填，该阶段包含的帧列表（按时间顺序）
-    - number: 必填，帧序号（必须是输入JSON中存在的 frame.number 值）
-    - title: 必填，消息名称（用于流程图显示，如"InitialUEMessage"，注意一定是完整的标准的消息类型名称，如果是pfcp消息，一定要在消息的后面加上DNN,比如PFCP Session Establishment Request(DNN: ctnet)）
-    - note: 可选，该消息的关键操作/参数说明（如"分配UE IP: 10.57.1.100"，分配的FTEID、"建立PDR/FAR规则"，参数尽可能完整准确）
-
-**网元识别规则**（参考）：
-- SCTP端口38412 → NGAP接口 → 一端是gNB，另一端是AMF
-- UDP端口8805 → PFCP接口 → 一端是SMF，另一端是UPF
-- UDP端口2123 → GTPv2-C接口 → SGW/PGW
-- 分析消息方向：如gNB发送InitialUEMessage到AMF
-
-**阶段划分建议**（仅供参考）：
-- 5G注册流程：Registration Request → Registration Complete
-- 认证阶段：Authentication Request/Response
-- 安全模式：Security Mode Command/Complete
-- PDU会话建立：PDU Session Establishment（按DNN/SessionID分开）
-- PFCP会话管理：Session Establishment/Modification/Deletion
-
-**示例输出**（请输出类似格式的JSON）：
-{"version":"flow_annotations_v1","flow_name":"5G注册与PDU会话建立","ip_map":[{"ip":"10.18.11.23","ne":"gNB","reason":"NGAP发送方"},{"ip":"10.18.11.20","ne":"AMF","reason":"NGAP端口38412"},{"ip":"127.0.0.3","ne":"SMF","reason":"PFCP端口8805"},{"ip":"127.0.0.5","ne":"UPF","reason":"PFCP端口8805"}],"stages":[{"name":"5G注册","summary":"UE注册到5G核心网","frames":[{"number":"1001","title":"Registration Request","note":"SUPI: 460110000000001"},{"number":"1002","title":"Authentication Request","note":""},{"number":"1003","title":"Authentication Response","note":""},{"number":"1005","title":"Security Mode Command","note":""},{"number":"1006","title":"Security Mode Complete","note":""},{"number":"1007","title":"Registration Accept","note":"5G-GUTI分配"},{"number":"1008","title":"Initial Context Setup Response","note":""},{"number":"1009","title":"Registration Complete","note":""}]},{"name":"PDU会话建立(DNN:ctnet)","summary":"建立ctnet数据会话","frames":[{"number":"1015","title":"PDU Session Est Request","note":"DNN: ctnet, SST: 1"},{"number":"1016","title":"PFCP Session Est Req","note":"创建PDR/FAR"},{"number":"1017","title":"PFCP Session Est Resp","note":"成功"},{"number":"1018","title":"PDU Session Est Accept","note":"UE IP: 10.57.1.100"},{"number":"1019","title":"PDU Session Resource Setup Resp","note":""}]}]}
-
-**【注意事项】**：
-1. frames 中的 number 必须是输入JSON中实际存在的 frame.number 值
-2. 每个帧的 title ，适合在流程图中显示，注意一定是完整的标准的消息类型名称
-3. note 用于记录该消息的关键信息，可以为空，参数尽可能完整准确
-4. **【必须】所有数据包都必须包含在 stages 的 frames 中，不能遗漏任何一条！**
-5. 同一个帧只能属于一个阶段
-6. 即使消息类型相同，也必须分别列出每一条，不能合并
-
-**【最后检查】生成JSON前请确认：**
-- stages 中所有 frames 的元素总数 = 输入的数据包总数（%d）
-- 没有遗漏任何一条数据包
-- 没有合并或省略重复的消息
-
-**【再次强调】只输出一个纯JSON对象，不要有任何其他字符！**`, packetCount, packetCount, compactJSON, packetCount)
-}
-
-// callMoonshotForAnnotations calls Moonshot API to get structured annotations (IP→NE mapping, stages).
-// Returns nil annotations (not error) if LLM fails or returns invalid JSON - the caller can still
-// generate a deterministic Mermaid diagram without annotations.
-// validFrameNumbers is a set of valid frame.number strings from input packets.
-func (h *Handler) callMoonshotForAnnotations(compactJSON string, packetCount int, validFrameNumbers map[string]bool) *FlowAnnotationsV1 {
-	log.Printf("[FlowAnnotations] ========== CALLING LLM FOR ANNOTATIONS START ==========")
-	log.Printf("[FlowAnnotations] Input: packetCount=%d, compactJSON size=%d bytes, valid frame numbers=%d",
-		packetCount, len(compactJSON), len(validFrameNumbers))
-
-	client := h.getMoonshotClient()
-	if client == nil {
-		log.Printf("[FlowAnnotations] Moonshot API key not configured, skipping annotations")
-		log.Printf("[FlowAnnotations] ========== CALLING LLM FOR ANNOTATIONS END (no client) ==========")
-		return nil
-	}
-
-	prompt := buildFlowAnnotationsPrompt(compactJSON, packetCount)
-	log.Printf("[FlowAnnotations] Built prompt: size=%d bytes", len(prompt))
-
-	// Log a simplified summary of the input packets
-	var packets []map[string]interface{}
-	if err := json.Unmarshal([]byte(compactJSON), &packets); err == nil {
-		log.Printf("[FlowAnnotations] Input packets summary (%d packets):", len(packets))
-		previewCount := len(packets)
-		if previewCount > 10 {
-			previewCount = 10
-		}
-		for i := 0; i < previewCount; i++ {
-			pkt := packets[i]
-			frameNum := ""
-			if frame, ok := pkt["frame"].(map[string]interface{}); ok {
-				frameNum = getString(frame, "number")
-			}
-			proto := ""
-			msgType := ""
-			if app, ok := pkt["application"].(map[string]interface{}); ok {
-				for protoName, protoData := range app {
-					proto = protoName
-					if pd, ok := protoData.(map[string]interface{}); ok {
-						if procedure, ok := pd["procedure"].(string); ok {
-							msgType = procedure
-						} else if message, ok := pd["message"].(string); ok {
-							msgType = message
-						} else if mmMsg, ok := pd["mm_message"].(string); ok {
-							msgType = mmMsg
-						} else if smMsg, ok := pd["sm_message"].(string); ok {
-							msgType = smMsg
-						}
-					}
-					break
-				}
-			}
-			log.Printf("[FlowAnnotations]   Packet[%d]: frame=%s, proto=%s, msg=%s",
-				i, frameNum, proto, safeOneLine(msgType, 50))
-		}
-		if len(packets) > 10 {
-			log.Printf("[FlowAnnotations]   ... (%d more packets)", len(packets)-10)
-		}
-	}
-
-	startTime := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-
-	log.Printf("[FlowAnnotations] Calling Moonshot API...")
-	response, err := client.ChatCompletion(ctx, prompt)
-	elapsed := time.Since(startTime)
-
-	if err != nil {
-		log.Printf("[FlowAnnotations] ERROR: Moonshot API call failed after %v: %v", elapsed, err)
-		log.Printf("[FlowAnnotations] ========== CALLING LLM FOR ANNOTATIONS END (error) ==========")
-		return nil
-	}
-
-	log.Printf("[FlowAnnotations] Moonshot API call succeeded in %v, response size: %d bytes", elapsed, len(response))
-
-	// Log the raw response for debugging
-	log.Printf("[FlowAnnotations] Raw LLM response preview: %s", truncateForLog(response, 800))
-	if len(response) > 800 {
-		log.Printf("[FlowAnnotations] Raw LLM response (last 300 chars): ...%s", response[len(response)-300:])
-	}
-
-	// Parse JSON response
-	ann, err := parseFlowAnnotationsJSON(response, validFrameNumbers)
-	if err != nil {
-		log.Printf("[FlowAnnotations] Failed to parse annotations JSON: %v", err)
-		log.Printf("[FlowAnnotations] ========== CALLING LLM FOR ANNOTATIONS END (parse error) ==========")
-		return nil
-	}
-
-	log.Printf("[FlowAnnotations] Successfully parsed annotations: flow_name=%q, ip_map=%d entries, stages=%d entries",
-		ann.FlowName, len(ann.IPMap), len(ann.Stages))
-	log.Printf("[FlowAnnotations] ========== CALLING LLM FOR ANNOTATIONS END (success) ==========")
-	return ann
-}
-
-// parseFlowAnnotationsJSON parses and validates the LLM JSON response into FlowAnnotationsV1.
-// validFrameNumbers is a set of valid frame.number strings from input packets.
-// It filters stage frames to only include valid frame numbers and removes stages with no valid frames.
-func parseFlowAnnotationsJSON(response string, validFrameNumbers map[string]bool) (*FlowAnnotationsV1, error) {
-	log.Printf("[FlowAnnotationsParse] ========== PARSING ANNOTATIONS JSON START ==========")
-	log.Printf("[FlowAnnotationsParse] Response length: %d bytes, valid frame numbers: %d", len(response), len(validFrameNumbers))
-
-	// Try to extract JSON from response (in case LLM added extra text)
-	jsonStr := extractJSONFromResponse(response)
-	if jsonStr == "" {
-		log.Printf("[FlowAnnotationsParse] ERROR: No JSON object found in response")
-		log.Printf("[FlowAnnotationsParse] Response preview: %s", truncateForLog(response, 500))
-		return nil, fmt.Errorf("no JSON object found in response")
-	}
-	log.Printf("[FlowAnnotationsParse] Extracted JSON: length=%d bytes", len(jsonStr))
-
-	var ann FlowAnnotationsV1
-	if err := json.Unmarshal([]byte(jsonStr), &ann); err != nil {
-		log.Printf("[FlowAnnotationsParse] ERROR: JSON unmarshal failed: %v", err)
-		log.Printf("[FlowAnnotationsParse] JSON preview: %s", truncateForLog(jsonStr, 500))
-		return nil, fmt.Errorf("json unmarshal failed: %w", err)
-	}
-	log.Printf("[FlowAnnotationsParse] JSON unmarshaled successfully")
-
-	// Validate version
-	if ann.Version != "flow_annotations_v1" && ann.Version != "" {
-		log.Printf("[FlowAnnotationsParse] Warning: unexpected version %q, proceeding anyway", ann.Version)
-	}
-	ann.Version = "flow_annotations_v1"
-
-	// Default flow_name
-	if ann.FlowName == "" {
-		ann.FlowName = "信令流程图"
-		log.Printf("[FlowAnnotationsParse] Using default flow_name: %s", ann.FlowName)
-	} else {
-		log.Printf("[FlowAnnotationsParse] Parsed flow_name: %s", ann.FlowName)
-	}
-
-	// Log IP map details
-	log.Printf("[FlowAnnotationsParse] IP Map (before dedup): %d entries", len(ann.IPMap))
-	for i, m := range ann.IPMap {
-		log.Printf("[FlowAnnotationsParse]   IPMap[%d]: ip=%s, ne=%s, confidence=%.2f, reason=%s",
-			i, m.IP, m.NE, m.Confidence, safeOneLine(m.Reason, 60))
-	}
-
-	// Deduplicate IP map (keep last entry for each IP)
-	ann.IPMap = deduplicateIPMap(ann.IPMap)
-	log.Printf("[FlowAnnotationsParse] IP Map (after dedup): %d entries", len(ann.IPMap))
-
-	// Log stages before filtering
-	log.Printf("[FlowAnnotationsParse] Stages (before filter): %d stages", len(ann.Stages))
-	totalFramesBefore := 0
-	for i, s := range ann.Stages {
-		totalFramesBefore += len(s.Frames)
-		log.Printf("[FlowAnnotationsParse]   Stage[%d]: name=%q, frames=%d, summary=%q",
-			i, s.Name, len(s.Frames), safeOneLine(s.Summary, 60))
-		// Log first few frames of each stage
-		previewCount := len(s.Frames)
-		if previewCount > 5 {
-			previewCount = 5
-		}
-		for j := 0; j < previewCount; j++ {
-			f := s.Frames[j]
-			log.Printf("[FlowAnnotationsParse]     Frame[%d]: number=%s, title=%q, note=%q",
-				j, f.Number, safeOneLine(f.Title, 40), safeOneLine(f.Note, 40))
-		}
-		if len(s.Frames) > 5 {
-			log.Printf("[FlowAnnotationsParse]     ... (%d more frames)", len(s.Frames)-5)
-		}
-	}
-	log.Printf("[FlowAnnotationsParse] Total frames before filter: %d", totalFramesBefore)
-
-	// Validate and filter stage frames
-	ann.Stages = validateAndFilterStageFrames(ann.Stages, validFrameNumbers)
-
-	// Check if we have any valid frames across all stages
-	totalFrames := 0
-	for _, s := range ann.Stages {
-		totalFrames += len(s.Frames)
-	}
-
-	log.Printf("[FlowAnnotationsParse] Stages (after filter): %d stages, total frames: %d", len(ann.Stages), totalFrames)
-	if totalFrames == 0 {
-		log.Printf("[FlowAnnotationsParse] ERROR: No valid frames found after filtering")
-		return nil, fmt.Errorf("no valid frames found in any stage")
-	}
-
-	// Log final stage summary
-	for i, s := range ann.Stages {
-		log.Printf("[FlowAnnotationsParse]   FinalStage[%d]: name=%q, frames=%d", i, s.Name, len(s.Frames))
-	}
-
-	log.Printf("[FlowAnnotationsParse] ========== PARSING ANNOTATIONS JSON END ==========")
-	log.Printf("[FlowAnnotationsParse] Result: flow_name=%q, ip_map=%d, stages=%d, total_frames=%d",
-		ann.FlowName, len(ann.IPMap), len(ann.Stages), totalFrames)
-
-	return &ann, nil
-}
-
-// extractJSONFromResponse tries to extract a JSON object from the response.
-// Handles cases where LLM might wrap it in markdown code blocks or add extra text.
-func extractJSONFromResponse(response string) string {
-	response = strings.TrimSpace(response)
-
-	// If response starts with {, assume it's raw JSON
-	if strings.HasPrefix(response, "{") {
-		// Find matching closing brace
-		depth := 0
-		for i, c := range response {
-			if c == '{' {
-				depth++
-			} else if c == '}' {
-				depth--
-				if depth == 0 {
-					return response[:i+1]
-				}
-			}
-		}
-		return response // Return as-is, let json.Unmarshal handle errors
-	}
-
-	// Try to find JSON in markdown code block
-	if idx := strings.Index(response, "```json"); idx != -1 {
-		start := idx + len("```json")
-		if endIdx := strings.Index(response[start:], "```"); endIdx != -1 {
-			return strings.TrimSpace(response[start : start+endIdx])
-		}
-	}
-
-	// Try to find JSON in generic code block
-	if idx := strings.Index(response, "```"); idx != -1 {
-		start := idx + len("```")
-		// Skip optional language tag
-		if nlIdx := strings.Index(response[start:], "\n"); nlIdx != -1 {
-			start += nlIdx + 1
-		}
-		if endIdx := strings.Index(response[start:], "```"); endIdx != -1 {
-			candidate := strings.TrimSpace(response[start : start+endIdx])
-			if strings.HasPrefix(candidate, "{") {
-				return candidate
-			}
-		}
-	}
-
-	// Try to find { ... } anywhere in the response
-	if idx := strings.Index(response, "{"); idx != -1 {
-		depth := 0
-		for i := idx; i < len(response); i++ {
-			if response[i] == '{' {
-				depth++
-			} else if response[i] == '}' {
-				depth--
-				if depth == 0 {
-					return response[idx : i+1]
-				}
-			}
-		}
-	}
-
-	return ""
-}
 
 // deduplicateIPMap removes duplicate IP entries, keeping the last (or highest confidence) one.
 func deduplicateIPMap(ipMap []IPMapping) []IPMapping {
@@ -1856,126 +1591,6 @@ func normalizeNEType(ne string) string {
 	}
 }
 
-// validateAndFilterStageFrames validates stage frames against valid frame numbers.
-// Removes frames with invalid numbers, deduplicates, and removes stages with no valid frames.
-// validFrameNumbers is a set of valid frame.number strings from input packets.
-func validateAndFilterStageFrames(stages []FlowStage, validFrameNumbers map[string]bool) []FlowStage {
-	if len(stages) == 0 {
-		return nil
-	}
-
-	result := make([]FlowStage, 0, len(stages))
-
-	for _, s := range stages {
-		name := strings.TrimSpace(s.Name)
-		if name == "" {
-			continue
-		}
-		s.Name = name
-		s.Summary = strings.TrimSpace(s.Summary)
-
-		// Filter and deduplicate frames
-		seen := make(map[string]bool)
-		validFrames := make([]FlowStageFrame, 0, len(s.Frames))
-		for _, f := range s.Frames {
-			num := strings.TrimSpace(f.Number)
-			if num == "" {
-				continue
-			}
-			// Check if frame number exists in input
-			if !validFrameNumbers[num] {
-				continue
-			}
-			// Deduplicate
-			if seen[num] {
-				continue
-			}
-			seen[num] = true
-
-			validFrames = append(validFrames, FlowStageFrame{
-				Number: num,
-				Title:  strings.TrimSpace(f.Title),
-				Note:   strings.TrimSpace(f.Note),
-			})
-		}
-
-		// Skip stage if no valid frames
-		if len(validFrames) == 0 {
-			continue
-		}
-		s.Frames = validFrames
-
-		result = append(result, s)
-	}
-
-	return result
-}
-
-// collectAllFrameNumbers collects all unique frame numbers from all stages.
-// Returns the frame numbers in the order they first appear across all stages.
-func collectAllFrameNumbers(stages []FlowStage) []string {
-	seen := make(map[string]bool)
-	result := make([]string, 0)
-
-	for _, s := range stages {
-		for _, f := range s.Frames {
-			if !seen[f.Number] {
-				seen[f.Number] = true
-				result = append(result, f.Number)
-			}
-		}
-	}
-
-	return result
-}
-
-// filterPacketsByFrameNumbers filters packets to only include those with frame.number in selectedFrames.
-// Returns the filtered packets JSON (maintaining original order) and the count.
-// If selectedFrames is empty, returns the original JSON unchanged.
-func filterPacketsByFrameNumbers(compactJSON string, selectedFrames map[string]bool) (string, int, error) {
-	if len(selectedFrames) == 0 {
-		// Return original
-		var packets []map[string]interface{}
-		if err := json.Unmarshal([]byte(compactJSON), &packets); err != nil {
-			return compactJSON, 0, err
-		}
-		return compactJSON, len(packets), nil
-	}
-
-	var packets []map[string]interface{}
-	if err := json.Unmarshal([]byte(compactJSON), &packets); err != nil {
-		return "", 0, fmt.Errorf("failed to parse JSON: %w", err)
-	}
-
-	filtered := make([]map[string]interface{}, 0, len(selectedFrames))
-	for _, pkt := range packets {
-		if frame, ok := pkt["frame"].(map[string]interface{}); ok {
-			if num, ok := frame["number"].(string); ok {
-				if selectedFrames[num] {
-					filtered = append(filtered, pkt)
-				}
-			}
-		}
-	}
-
-	result, err := json.Marshal(filtered)
-	if err != nil {
-		return "", 0, fmt.Errorf("failed to marshal filtered packets: %w", err)
-	}
-
-	return string(result), len(filtered), nil
-}
-
-// collectSelectedFramesSet collects all unique frame numbers from stages into a set.
-func collectSelectedFramesSet(stages []FlowStage) map[string]bool {
-	result := make(map[string]bool)
-	for _, s := range stages {
-		for _, f := range s.Frames {
-			result[f.Number] = true
-		}
-	}
-	return result
-}
 
 // truncateForLog truncates a string for logging purposes.
 func truncateForLog(s string, maxLen int) string {
@@ -2078,158 +1693,11 @@ func sortAndNumberParticipants(participants []string) []string {
 	return result
 }
 
-// LLMMappingEntry represents a single idx:frameNumber mapping from LLM output
-type LLMMappingEntry struct {
-	Idx         int    `json:"idx"`
-	FrameNumber string `json:"frame_number"`
-}
-
-type flowLLMParsed struct {
-	FlowName string
-	Mermaid  string
-	Mapping  []LLMMappingEntry // New: LLM-provided mapping of autonumber idx to frame.number
-}
-
-// parseFlowLLMResponse extracts FLOW_NAME, MERMAID, and MAPPING from the LLM response.
-// MAPPING section provides the correlation between Mermaid autonumber and original frame.number.
-func parseFlowLLMResponse(response string) flowLLMParsed {
-	log.Printf("[FlowParse] ========== PARSING LLM RESPONSE START ==========")
-	log.Printf("[FlowParse] Response length: %d bytes", len(response))
-
-	response = strings.TrimSpace(response)
-
-	out := flowLLMParsed{FlowName: "信令流程图"}
-
-	// Check for key markers
-	hasFlowName := strings.Contains(response, "---FLOW_NAME---")
-	hasMermaid := strings.Contains(response, "---MERMAID---")
-	hasMapping := strings.Contains(response, "---MAPPING---")
-	hasPacketList := strings.Contains(response, "---PACKET_LIST---")
-	hasMermaidBlock := strings.Contains(response, "```mermaid")
-	hasSequenceDiagram := strings.Contains(response, "sequenceDiagram")
-
-	log.Printf("[FlowParse] Markers detected: FLOW_NAME=%v, MERMAID=%v, MAPPING=%v, PACKET_LIST=%v, mermaid_block=%v, sequenceDiagram=%v",
-		hasFlowName, hasMermaid, hasMapping, hasPacketList, hasMermaidBlock, hasSequenceDiagram)
-
-	// FLOW_NAME
-	if idx := strings.Index(response, "---FLOW_NAME---"); idx != -1 {
-		rest := response[idx+len("---FLOW_NAME---"):]
-		if endIdx := strings.Index(rest, "---"); endIdx != -1 {
-			out.FlowName = strings.TrimSpace(rest[:endIdx])
-			log.Printf("[FlowParse] Extracted FLOW_NAME: %s", out.FlowName)
-		}
-	}
-
-	// MERMAID (stop at MAPPING or other markers)
-	var mermaidCode string
-	if idx := strings.Index(response, "---MERMAID---"); idx != -1 {
-		rest := strings.TrimSpace(response[idx+len("---MERMAID---"):])
-		// Stop at MAPPING marker (new format)
-		if mIdx := strings.Index(rest, "---MAPPING---"); mIdx != -1 {
-			mermaidCode = strings.TrimSpace(rest[:mIdx])
-		} else if dIdx := strings.Index(rest, "---DETAILS---"); dIdx != -1 {
-			// Stop at DETAILS marker (backward compatibility)
-			mermaidCode = strings.TrimSpace(rest[:dIdx])
-		} else if dIdx := strings.Index(rest, "---"); dIdx != -1 {
-			// Stop at any other marker
-			mermaidCode = strings.TrimSpace(rest[:dIdx])
-		} else {
-			mermaidCode = strings.TrimSpace(rest)
-		}
-	} else if idx := strings.Index(response, "```mermaid"); idx != -1 {
-		rest := response[idx+len("```mermaid"):]
-		if endIdx := strings.Index(rest, "```"); endIdx != -1 {
-			mermaidCode = strings.TrimSpace(rest[:endIdx])
-		} else {
-			mermaidCode = strings.TrimSpace(rest)
-		}
-	} else if idx := strings.Index(response, "sequenceDiagram"); idx != -1 {
-		mermaidCode = strings.TrimSpace(response[idx:])
-	} else {
-		mermaidCode = response
-	}
-
-	// Clean up any trailing markdown from Mermaid
-	if idx := strings.LastIndex(mermaidCode, "```"); idx != -1 {
-		mermaidCode = strings.TrimSpace(mermaidCode[:idx])
-	}
-	out.Mermaid = mermaidCode
-	log.Printf("[FlowParse] Extracted MERMAID: length=%d bytes", len(mermaidCode))
-
-	// Count message lines in Mermaid
-	mermaidMsgCount := countMermaidMessages(mermaidCode)
-	log.Printf("[FlowParse] Mermaid diagram message count: %d", mermaidMsgCount)
-
-	// Log first few lines of Mermaid for debugging
-	mermaidLines := strings.Split(mermaidCode, "\n")
-	previewLines := mermaidLines
-	if len(previewLines) > 10 {
-		previewLines = previewLines[:10]
-	}
-	log.Printf("[FlowParse] Mermaid preview (first %d lines):", len(previewLines))
-	for i, line := range previewLines {
-		log.Printf("[FlowParse]   [%d] %s", i+1, safeOneLine(line, 100))
-	}
-	if len(mermaidLines) > 10 {
-		log.Printf("[FlowParse]   ... (%d more lines)", len(mermaidLines)-10)
-	}
-
-	// Parse MAPPING section (new format: idx:frameNumber per line)
-	if idx := strings.Index(response, "---MAPPING---"); idx != -1 {
-		rest := strings.TrimSpace(response[idx+len("---MAPPING---"):])
-		// Find end of mapping section (next --- or end of string)
-		endIdx := len(rest)
-		if dIdx := strings.Index(rest, "---"); dIdx != -1 {
-			endIdx = dIdx
-		}
-		mappingSection := strings.TrimSpace(rest[:endIdx])
-		log.Printf("[FlowParse] Found MAPPING section: length=%d bytes", len(mappingSection))
-
-		// Parse each line: format is "idx:frameNumber"
-		lines := strings.Split(mappingSection, "\n")
-		validMappings := 0
-		invalidMappings := 0
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) != 2 {
-				invalidMappings++
-				continue
-			}
-			idxStr := strings.TrimSpace(parts[0])
-			frameStr := strings.TrimSpace(parts[1])
-
-			idx, err := strconv.Atoi(idxStr)
-			if err != nil {
-				invalidMappings++
-				continue
-			}
-
-			out.Mapping = append(out.Mapping, LLMMappingEntry{
-				Idx:         idx,
-				FrameNumber: frameStr,
-			})
-			validMappings++
-		}
-		log.Printf("[FlowParse] Parsed MAPPING: valid=%d, invalid=%d", validMappings, invalidMappings)
-	} else {
-		log.Printf("[FlowParse] No MAPPING section found in response")
-	}
-
-	log.Printf("[FlowParse] ========== PARSING LLM RESPONSE END ==========")
-	log.Printf("[FlowParse] Result: flow_name=%q, mermaid_len=%d, mapping_entries=%d",
-		out.FlowName, len(out.Mermaid), len(out.Mapping))
-
-	return out
-}
 
 // GenerateFlowStream handles POST /api/jobs/{id}/flow/generate/stream
-// Uses Server-Sent Events to stream the LLM response in real-time.
-// LLM only returns structured annotations (IP→NE mapping, stages);
-// Mermaid is always generated deterministically by Go.
+// Uses Server-Sent Events to stream the flow generation progress.
+// IP→NE mappings are inferred deterministically from protocol rules;
+// Mermaid diagram is always generated deterministically by Go.
 func (h *Handler) GenerateFlowStream(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 	id := r.PathValue("id")
@@ -2320,6 +1788,19 @@ func (h *Handler) GenerateFlowStream(w http.ResponseWriter, r *http.Request) {
 	// Extract key params from compactJSON
 	keyParams := extractKeyParamsFromJSON(compactJSON)
 
+	// Extract packet columns using tshark (Protocol, Info, etc.)
+	// These are used for Mermaid labels and frontend details panel.
+	log.Printf("[FlowGenerateStream] Extracting packet columns via tshark...")
+	columnsCtx, columnsCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	packetColumns, err := tshark.TsharkPacketColumns(columnsCtx, job.MergedPcap, req.Filter)
+	columnsCancel()
+	if err != nil {
+		log.Printf("[FlowGenerateStream] Warning: failed to extract packet columns: %v", err)
+		packetColumns = nil // Continue without columns
+	} else {
+		log.Printf("[FlowGenerateStream] Extracted packet columns for %d frames", len(packetColumns))
+	}
+
 	// Filter heartbeat packets so LLM input is deterministic and correlation is absolute.
 	llmInputJSON, removedHeartbeats, err := filterHeartbeatPacketsJSON(limitedJSON)
 	if err != nil {
@@ -2408,113 +1889,28 @@ func (h *Handler) GenerateFlowStream(w http.ResponseWriter, r *http.Request) {
 	sendEvent("details_map", string(detailsMapJSON))
 	log.Printf("[FlowGenerateStream] Sent details_map: %d entries", len(detailsMap))
 
-	// Check Moonshot client
-	client := h.getMoonshotClient()
-	if client == nil {
-		// No LLM configured - generate Mermaid without annotations
-		log.Printf("[FlowGenerateStream] Moonshot API key not configured, generating Mermaid without annotations")
-		flowName := "信令流程图"
-		mermaid := buildDeterministicMermaid(llmInputJSON, flowName, nil)
-		log.Printf("[FlowGenerateStream] Generated deterministic Mermaid: length=%d bytes", len(mermaid))
-		finalEvent := FlowFinalEvent{
-			FlowName:    flowName,
-			Mermaid:     mermaid,
-			Details:     detailsMap,
-			Mode:        "go_deterministic",
-			Annotations: nil,
-		}
-		finalJSON, _ := json.Marshal(finalEvent)
-		sendEvent("flow_final", string(finalJSON))
-		sendEvent("done", `{"status":"completed"}`)
-		elapsed := time.Since(startTime)
-		log.Printf("[FlowGenerateStream] Completed without LLM in %v", elapsed)
-		log.Printf("[FlowGenerateStream] ========== STREAM FLOW GENERATION END (no LLM) ==========")
-		return
-	}
+	// Use deterministic rule-based IP→NE inference (no LLM)
+	log.Printf("[FlowGenerateStream] Using deterministic IP→NE inference (no LLM)")
+	annotations := InferIPMappingsWithEmptyStages(llmInputJSON)
 
-	// Build prompt for annotations only (not Mermaid)
-	prompt := buildFlowAnnotationsPrompt(llmInputJSON, packetCount)
-	log.Printf("[FlowGenerateStream] Built annotations prompt: size=%d bytes", len(prompt))
-	log.Printf("[FlowGenerateStream] Starting LLM stream call...")
-
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
-	defer cancel()
-
-	// Stream the response (LLM outputs JSON annotations)
-	llmStartTime := time.Now()
-	var fullResp strings.Builder
-	chunkCount := 0
-	err = client.ChatCompletionStream(ctx, prompt, func(chunk string) error {
-		chunkCount++
-		fullResp.WriteString(chunk)
-		// Stream chunks to frontend for live display
-		chunkJSON, _ := json.Marshal(chunk)
-		sendEvent("chunk", string(chunkJSON))
-		return nil
-	})
-	llmElapsed := time.Since(llmStartTime)
-	log.Printf("[FlowGenerateStream] LLM stream completed in %v, received %d chunks, total response: %d bytes",
-		llmElapsed, chunkCount, fullResp.Len())
-
-	var annotations *FlowAnnotationsV1
-	if err != nil {
-		log.Printf("[FlowGenerateStream] LLM stream error: %v", err)
-		log.Printf("[FlowGenerateStream] Will generate Mermaid without annotations (fallback mode)")
-		// Don't fail - we can still generate Mermaid without annotations
-	} else {
-		// Log raw LLM response
-		rawResp := fullResp.String()
-		log.Printf("[FlowGenerateStream] Raw LLM response preview: %s", truncateForLog(rawResp, 600))
-		if len(rawResp) > 600 {
-			log.Printf("[FlowGenerateStream] Raw LLM response (last 300 chars): ...%s", rawResp[len(rawResp)-300:])
-		}
-
-		// Parse annotations from LLM response
-		log.Printf("[FlowGenerateStream] Parsing annotations from LLM response...")
-		annotations, err = parseFlowAnnotationsJSON(rawResp, validFrameNumbers)
-		if err != nil {
-			log.Printf("[FlowGenerateStream] PARSE FAILED: %v", err)
-			log.Printf("[FlowGenerateStream] Will generate Mermaid without annotations (fallback mode)")
-		} else {
-			log.Printf("[FlowGenerateStream] PARSE SUCCESS: flow_name=%q, ip_map=%d, stages=%d",
-				annotations.FlowName, len(annotations.IPMap), len(annotations.Stages))
-			// Log parsed annotations summary
-			for i, m := range annotations.IPMap {
-				log.Printf("[FlowGenerateStream]   IPMap[%d]: %s -> %s (conf=%.2f)", i, m.IP, m.NE, m.Confidence)
-			}
-			totalStageFrames := 0
-			for i, s := range annotations.Stages {
-				totalStageFrames += len(s.Frames)
-				log.Printf("[FlowGenerateStream]   Stage[%d]: %q (%d frames)", i, s.Name, len(s.Frames))
-			}
-			log.Printf("[FlowGenerateStream]   Total stage frames: %d", totalStageFrames)
-		}
-	}
-
-	// Determine which JSON to use for rendering
-	// If annotations are valid, filter to only selected frames (subset rendering)
+	// No stage-based filtering - use all packets
 	renderJSON := llmInputJSON
 	flowName := "信令流程图"
-
-	if annotations != nil {
+	if annotations != nil && annotations.FlowName != "" {
 		flowName = annotations.FlowName
-		// Collect selected frames from all stages
-		selectedFrames := collectSelectedFramesSet(annotations.Stages)
-		log.Printf("[FlowGenerateStream] Selected frames from annotations: %d frames", len(selectedFrames))
-		if len(selectedFrames) > 0 {
-			filteredJSON, filteredCount, filterErr := filterPacketsByFrameNumbers(llmInputJSON, selectedFrames)
-			if filterErr != nil {
-				log.Printf("[FlowGenerateStream] Warning: failed to filter packets, using full set: %v", filterErr)
-			} else if filteredCount > 0 {
-				renderJSON = filteredJSON
-				log.Printf("[FlowGenerateStream] Filtered packets: %d -> %d (based on annotations)", packetCount, filteredCount)
-			}
+	}
+
+	// Log inferred annotations
+	if annotations != nil {
+		log.Printf("[FlowGenerateStream] Inferred annotations: ip_map=%d entries", len(annotations.IPMap))
+		for i, m := range annotations.IPMap {
+			log.Printf("[FlowGenerateStream]   IPMap[%d]: %s -> %s (conf=%.2f)", i, m.IP, m.NE, m.Confidence)
 		}
 	}
 
-	// Generate Mermaid deterministically from Go using annotations
+	// Generate Mermaid deterministically from Go using annotations and packet columns
 	log.Printf("[FlowGenerateStream] Generating deterministic Mermaid diagram...")
-	mermaid := buildDeterministicMermaid(renderJSON, flowName, annotations)
+	mermaid := buildDeterministicMermaid(renderJSON, flowName, annotations, packetColumns)
 	log.Printf("[FlowGenerateStream] Generated Mermaid: length=%d bytes", len(mermaid))
 
 	// Log Mermaid preview
@@ -2546,12 +1942,13 @@ func (h *Handler) GenerateFlowStream(w http.ResponseWriter, r *http.Request) {
 		stats.InputPackets, stats.MermaidMessages, stats.MappingEntries, stats.RemovedHeartbeats)
 
 	finalEvent := FlowFinalEvent{
-		FlowName:    flowName,
-		Mermaid:     mermaid,
-		Details:     finalDetailsMap,
-		Mode:        "go_deterministic",
-		Stats:       &stats,
-		Annotations: annotations,
+		FlowName:      flowName,
+		Mermaid:       mermaid,
+		Details:       finalDetailsMap,
+		Mode:          "go_deterministic",
+		Stats:         &stats,
+		Annotations:   annotations,
+		PacketColumns: packetColumns,
 	}
 	finalJSON, _ := json.Marshal(finalEvent)
 	sendEvent("flow_final", string(finalJSON))
@@ -2569,4 +1966,121 @@ func (h *Handler) GenerateFlowStream(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[FlowGenerateStream] ========== STREAM FLOW GENERATION END (success) ==========")
 	log.Printf("[FlowGenerateStream] Completed in %v: flow_name=%q, annotations=%v, mermaid_messages=%d",
 		elapsed, flowName, annotations != nil, len(finalDetailsMap))
+
+	// Async prefetch protocol trees for all frames in the flow (improves UX when clicking messages)
+	go h.prefetchProtocolTrees(id, req.Filter, finalDetailsMap, packetColumns, job.MergedPcap)
+}
+
+// prefetchFilterHash generates a hash for the filter to track prefetch status
+func prefetchFilterHash(filter string) string {
+	h := sha256.Sum256([]byte(filter))
+	return hex.EncodeToString(h[:8]) // 16 hex chars is enough for dedup
+}
+
+// prefetchProtocolTrees asynchronously prefetches protocol trees for all frames in a flow.
+// This runs in the background after GenerateFlowStream completes, populating job.TreeCache
+// so that subsequent GET /packets/{frame}/tree requests can hit the cache.
+func (h *Handler) prefetchProtocolTrees(
+	jobID string,
+	filter string,
+	detailsMap []FlowMessageDetail,
+	packetColumns map[string]*tshark.PacketColumns,
+	pcapPath string,
+) {
+	filterHash := prefetchFilterHash(filter)
+
+	// Check if already prefetched (returns true if already marked)
+	if h.jobMgr.MarkTreePrefetched(jobID, filterHash) {
+		log.Printf("[TreePrefetch] Already prefetched for job=%s filter_hash=%s, skipping", jobID, filterHash)
+		return
+	}
+
+	log.Printf("[TreePrefetch] Starting prefetch for job=%s filter_hash=%s, %d frames",
+		jobID, filterHash, len(detailsMap))
+	startTime := time.Now()
+
+	// Group frames by protocol
+	protoFrames := make(map[string][]int) // proto -> list of frame numbers
+	for _, detail := range detailsMap {
+		if detail.OriginNumber == "" {
+			continue
+		}
+		frameNum := 0
+		if _, err := fmt.Sscanf(detail.OriginNumber, "%d", &frameNum); err != nil || frameNum <= 0 {
+			continue
+		}
+
+		// Get protocol from packetColumns
+		cols, ok := packetColumns[detail.OriginNumber]
+		if !ok || cols.Protocol == "" {
+			continue
+		}
+
+		// Map display protocol to tshark filter protocol
+		proto := tshark.MapDisplayProtocolToTsharkFilter(cols.Protocol)
+		if !tshark.IsAllowedProtocol(proto) {
+			continue
+		}
+
+		protoFrames[proto] = append(protoFrames[proto], frameNum)
+	}
+
+	if len(protoFrames) == 0 {
+		log.Printf("[TreePrefetch] No valid frames to prefetch")
+		return
+	}
+
+	// Log grouped frames
+	for proto, frames := range protoFrames {
+		log.Printf("[TreePrefetch] Protocol %q: %d frames", proto, len(frames))
+	}
+
+	// Run batch extraction per protocol with limited concurrency
+	const maxConcurrency = 3
+	var wg sync.WaitGroup
+	semaphore := make(chan struct{}, maxConcurrency)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	totalCached := 0
+	var cacheMu sync.Mutex
+
+	for proto, frames := range protoFrames {
+		wg.Add(1)
+		go func(proto string, frames []int) {
+			defer wg.Done()
+			semaphore <- struct{}{}        // Acquire
+			defer func() { <-semaphore }() // Release
+
+			protoStart := time.Now()
+			trees, err := tshark.TsharkProtocolTreeBatch(ctx, pcapPath, frames, proto)
+			if err != nil {
+				log.Printf("[TreePrefetch] Error extracting %q trees: %v", proto, err)
+				return
+			}
+
+			// Cache all extracted trees
+			cached := 0
+			for frameNum, tree := range trees {
+				if tree == "" {
+					continue
+				}
+				cacheKey := job.TreeCacheKey(proto, frameNum)
+				h.jobMgr.CacheProtocolTree(jobID, cacheKey, tree)
+				cached++
+			}
+
+			cacheMu.Lock()
+			totalCached += cached
+			cacheMu.Unlock()
+
+			log.Printf("[TreePrefetch] Protocol %q: cached %d/%d trees in %v",
+				proto, cached, len(frames), time.Since(protoStart))
+		}(proto, frames)
+	}
+
+	wg.Wait()
+	log.Printf("[TreePrefetch] Completed for job=%s: cached %d trees in %v",
+		jobID, totalCached, time.Since(startTime))
 }

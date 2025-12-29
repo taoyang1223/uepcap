@@ -1,6 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { Loader2, BadgeCheck, FileArchive, RefreshCw, Copy, CopyCheck, Download, Clock, PackageOpen, FileText, ClipboardCopy, Eye } from 'lucide-react'
-import { FlowSummaryCard } from './FlowSummaryCard'
+import { Loader2, BadgeCheck, FileArchive, RefreshCw, Copy, CopyCheck, Download, Clock, PackageOpen, FileText, ClipboardCopy, GitBranch, ChevronRight } from 'lucide-react'
 
 // 安全的剪贴板复制函数，带 fallback
 async function copyToClipboard(text: string): Promise<boolean> {
@@ -39,7 +38,6 @@ interface ExportPanelProps {
   jobId: string
   selectedIMSIs: string[]
   selectedProtocols: string[]
-  onViewTimeline?: (packets: any[]) => void
   onViewFlow?: (filter: string) => void
 }
 
@@ -54,7 +52,7 @@ interface ExportResult {
   cached?: boolean
 }
 
-export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols, onViewTimeline, onViewFlow }: ExportPanelProps) {
+export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols, onViewFlow }: ExportPanelProps) {
   const [exporting, setExporting] = useState(false)
   const [result, setResult] = useState<ExportResult | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -66,7 +64,6 @@ export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols, onViewTim
   const [textExporting, setTextExporting] = useState(false)
   const [textCopied, setTextCopied] = useState(false)
   const [textCached, setTextCached] = useState(false)
-  const [viewLoading, setViewLoading] = useState(false)
 
   // Cleanup polling on unmount
   useEffect(() => {
@@ -287,31 +284,6 @@ export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols, onViewTim
     }
   }, [jobId, result])
 
-  // 查看时间线可视化
-  const handleViewTimeline = useCallback(async () => {
-    if (!result?.filter || !onViewTimeline) return
-    
-    setViewLoading(true)
-    setError(null)
-    
-    try {
-      const data = await fetchPacketText()
-      if (data) {
-        // 解析 JSON 字符串为数组
-        const packets = JSON.parse(data.text)
-        if (Array.isArray(packets)) {
-          onViewTimeline(packets)
-        } else {
-          setError('数据格式错误')
-        }
-      }
-    } catch (err) {
-      setError('加载失败: ' + (err as Error).message)
-    } finally {
-      setViewLoading(false)
-    }
-  }, [result, fetchPacketText, onViewTimeline])
-
   const isComplete = result?.status === 'completed' || result?.cached
 
   return (
@@ -437,7 +409,7 @@ export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols, onViewTim
               <div className="grid grid-cols-2 gap-3 mt-4 border-t border-slate-100 pt-4">
                 <button
                   onClick={handleCopyPacketText}
-                  disabled={textExporting || viewLoading}
+                  disabled={textExporting}
                   className={`group py-2.5 px-3 font-medium text-sm rounded-xl transition-all duration-200 flex items-center justify-center gap-2 border active:scale-[0.98] ${
                     textCopied
                       ? 'bg-emerald-50 text-emerald-700 border-emerald-200 shadow-sm'
@@ -456,7 +428,7 @@ export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols, onViewTim
                 
                 <button
                   onClick={handleDownloadPacketText}
-                  disabled={textExporting || viewLoading}
+                  disabled={textExporting}
                   className="group py-2.5 px-3 bg-white text-slate-600 hover:text-indigo-600 border border-slate-200 hover:border-indigo-300 font-medium text-sm rounded-xl transition-all duration-200 flex items-center justify-center gap-2 hover:shadow-md hover:shadow-indigo-500/5 active:scale-[0.98]"
                 >
                   {textExporting ? (
@@ -468,29 +440,16 @@ export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols, onViewTim
                 </button>
               </div>
 
-              {/* 内容展示按钮 */}
-              {onViewTimeline && (
-                <button
-                  onClick={handleViewTimeline}
-                  disabled={textExporting || viewLoading}
-                  className="w-full mt-3 py-2.5 px-3 bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700 disabled:from-slate-300 disabled:to-slate-400 text-white font-semibold text-sm rounded-xl transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-purple-500/20 active:scale-[0.98]"
-                >
-                  {viewLoading ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Eye className="w-4 h-4" />
-                  )}
-                  <span>{viewLoading ? '加载中...' : '内容展示'}</span>
-                </button>
-              )}
-
-              {/* 流程分析摘要卡片 */}
+              {/* 查看流程按钮 */}
               {result.filter && onViewFlow && (
-                <FlowSummaryCard
-                  jobId={jobId}
-                  filter={result.filter}
-                  onViewFlow={() => onViewFlow(result.filter!)}
-                />
+                <button
+                  onClick={() => onViewFlow(result.filter!)}
+                  className="group w-full mt-3 py-2.5 px-3 bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700 text-white font-semibold text-sm rounded-xl transition-all duration-200 flex items-center justify-center gap-2 shadow-lg shadow-purple-500/20 active:scale-[0.98]"
+                >
+                  <GitBranch className="w-4 h-4" />
+                  <span>查看流程</span>
+                  <ChevronRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
+                </button>
               )}
             </>
           )}

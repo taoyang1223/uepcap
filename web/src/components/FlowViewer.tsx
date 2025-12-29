@@ -1,14 +1,16 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { ArrowLeft, Loader2, AlertCircle, Sparkles, Code, AlertTriangle, Search } from 'lucide-react'
+import { ArrowLeft, Loader2, AlertCircle, Code, AlertTriangle, Search, FileText, Copy, Check } from 'lucide-react'
 import { MermaidDiagram } from './MermaidDiagram'
 import { DraggableWindow } from './DraggableWindow'
 import { 
-  deriveFlowDetails, 
+  deriveFlowDetails,
+  deriveFlowDetailsFromTsharkColumns,
   type FlowDetailMapping, 
-  type RichFlowDetail 
+  type RichFlowDetail,
+  type PacketColumns
 } from '../utils/flowDetails'
 
-// IPMapping maps an IP address to a network element role (from LLM annotations)
+// IPMapping maps an IP address to a network element role (from protocol-based inference)
 interface IPMapping {
   ip: string
   ne: string  // gNB, AMF, SMF, UPF, etc.
@@ -31,7 +33,7 @@ interface FlowStage {
   confidence?: number
 }
 
-// FlowAnnotationsV1 is the structured JSON returned by LLM for annotations
+// FlowAnnotationsV1 is the structured JSON for IP-NE mapping annotations
 interface FlowAnnotationsV1 {
   version: string
   flow_name?: string
@@ -43,7 +45,7 @@ interface FlowFinalPayload {
   flow_name: string
   mermaid: string
   details_map: FlowDetailMapping[]
-  mode: 'llm_validated' | 'full_fallback' | 'go_deterministic'
+  mode: 'full_fallback' | 'go_deterministic'
   reasons?: string[]
   stats?: {
     input_packets: number
@@ -51,8 +53,11 @@ interface FlowFinalPayload {
     mapping_entries: number
     removed_heartbeats: number
   }
-  // Annotations from LLM (IP→NE mapping, stages). May be null if LLM failed.
+  // Annotations (IP→NE mapping) inferred from protocols. May be null.
   annotations?: FlowAnnotationsV1 | null
+  // PacketColumns from tshark (Protocol, Info, etc.) for each frame.
+  // Used for message labels and packet details.
+  packet_columns?: Record<string, PacketColumns> | null
 }
 
 // KeyParams from backend
@@ -83,10 +88,50 @@ interface FlowViewerProps {
 
 type StreamState = 'connecting' | 'streaming' | 'parsing' | 'completed' | 'error'
 
+// Map display protocol names (from tshark columns) to tshark filter protocol names
+function mapDisplayProtocolToFilter(displayProtocol: string): string {
+  if (!displayProtocol) return ''
+  
+  let proto = displayProtocol.toLowerCase()
+  
+  // Handle compound protocols like "NGAP/NAS-5GS"
+  if (proto.includes('/')) {
+    proto = proto.split('/')[0]
+  }
+  
+  // Remove any suffix like " (encrypted)"
+  const spaceIdx = proto.indexOf(' ')
+  if (spaceIdx > 0) {
+    proto = proto.substring(0, spaceIdx)
+  }
+  
+  // Map common display names to tshark filter names
+  const mapping: Record<string, string> = {
+    'ngap': 'ngap',
+    's1ap': 's1ap',
+    'pfcp': 'pfcp',
+    'gtpv2': 'gtpv2',
+    'gtp': 'gtp',
+    'nas-5gs': 'nas-5gs',
+    'nas-eps': 'nas-eps',
+    'diameter': 'diameter',
+    'sctp': 'sctp',
+    'f1ap': 'f1ap',
+    'e1ap': 'e1ap',
+    'xnap': 'xnap',
+    'x2ap': 'x2ap',
+    // Additional aliases
+    'gtp-u': 'gtp',
+    'gtp-c': 'gtpv2',
+    'gtpv2-c': 'gtpv2',
+  }
+  
+  return mapping[proto] || proto
+}
+
 export function FlowViewer({ jobId, filter, onBack }: FlowViewerProps) {
   const [streamState, setStreamState] = useState<StreamState>('connecting')
   const [error, setError] = useState<string | null>(null)
-  const [streamContent, setStreamContent] = useState('')
   const [flowData, setFlowData] = useState<FlowData | null>(null)
   const [finalNote, setFinalNote] = useState<string | null>(null)
   // Message sequence number search
@@ -94,9 +139,13 @@ export function FlowViewer({ jobId, filter, onBack }: FlowViewerProps) {
   const [searchError, setSearchError] = useState<string | null>(null)
   // Active detail shown in modal (null = closed)
   const [activeDetail, setActiveDetail] = useState<RichFlowDetail | null>(null)
+  // Protocol tree state for the active detail
+  const [protocolTree, setProtocolTree] = useState<string | null>(null)
+  const [protocolTreeLoading, setProtocolTreeLoading] = useState(false)
+  const [protocolTreeError, setProtocolTreeError] = useState<string | null>(null)
+  const [protocolTreeCopied, setProtocolTreeCopied] = useState(false)
   
   const streamContentRef = useRef('')
-  const textDisplayRef = useRef<HTMLPreElement>(null)
   const flowFinalRef = useRef<FlowFinalPayload | null>(null)
   
   // Store SSE data in refs to avoid useEffect dependency issues
@@ -104,7 +153,7 @@ export function FlowViewer({ jobId, filter, onBack }: FlowViewerProps) {
   const inputJSONRef = useRef<string>('')
   const detailsMapRef = useRef<FlowDetailMapping[]>([])
 
-  // Parse LLM stream content to extract flow_name and mermaid code
+  // Parse stream content to extract flow_name and mermaid code
   const parseStreamContent = useCallback((content: string) => {
     let flowName = '信令流程图'
     let mermaidCode = ''
@@ -162,7 +211,6 @@ export function FlowViewer({ jobId, filter, onBack }: FlowViewerProps) {
       try {
         setStreamState('connecting')
         setError(null)
-        setStreamContent('')
         setFlowData(null)
         setFinalNote(null)
         flowFinalRef.current = null
@@ -219,12 +267,6 @@ export function FlowViewer({ jobId, filter, onBack }: FlowViewerProps) {
                 try {
                   const chunk = JSON.parse(data) as string
                   streamContentRef.current += chunk
-                  setStreamContent(streamContentRef.current)
-                  
-                  // Auto-scroll to bottom
-                  if (textDisplayRef.current) {
-                    textDisplayRef.current.scrollTop = textDisplayRef.current.scrollHeight
-                  }
                 } catch (e) {
                   console.error('Failed to parse chunk:', e)
                 }
@@ -286,22 +328,30 @@ export function FlowViewer({ jobId, filter, onBack }: FlowViewerProps) {
                   // Prefer server-provided flow_final (guaranteed consistent with input_json)
                   const finalPayload = flowFinalRef.current
                   if (finalPayload && finalPayload.mermaid) {
-                    // Pass annotations to deriveFlowDetails for consistent IP→NE naming with diagram
-                    const derived = inputJSONRef.current && finalPayload.details_map?.length
-                      ? deriveFlowDetails(inputJSONRef.current, finalPayload.details_map, finalPayload.annotations)
-                      : []
+                    // Derive flow details: prefer tshark columns when available (new method),
+                    // fall back to deriveFlowDetails from input_json (legacy method)
+                    let derived: RichFlowDetail[] = []
+                    if (finalPayload.packet_columns && finalPayload.details_map?.length) {
+                      // New: Use tshark-extracted columns for accurate Wireshark-style display
+                      console.log('[FlowViewer] Using packet_columns for details:', Object.keys(finalPayload.packet_columns).length, 'frames')
+                      derived = deriveFlowDetailsFromTsharkColumns(
+                        finalPayload.details_map,
+                        finalPayload.packet_columns,
+                        finalPayload.annotations
+                      )
+                    } else if (inputJSONRef.current && finalPayload.details_map?.length) {
+                      // Fallback: derive from input_json (legacy method)
+                      console.log('[FlowViewer] Falling back to deriveFlowDetails (no packet_columns)')
+                      derived = deriveFlowDetails(inputJSONRef.current, finalPayload.details_map, finalPayload.annotations)
+                    }
 
                     if (finalPayload.mode === 'full_fallback') {
                       setFinalNote(
-                        `AI 输出未通过一致性校验，已使用"全量时序图"保证一致性。${finalPayload.reasons?.length ? `原因：${finalPayload.reasons.join('；')}` : ''}`
+                        `使用全量时序图展示。${finalPayload.reasons?.length ? `原因：${finalPayload.reasons.join('；')}` : ''}`
                       )
                     } else if (finalPayload.mode === 'go_deterministic') {
-                      // New mode: Go always generates Mermaid, LLM only provides annotations
-                      if (finalPayload.annotations) {
-                        setFinalNote(null)
-                      } else {
-                        setFinalNote('Go 确定性生成时序图（LLM 标注解析失败）')
-                      }
+                      // Go always generates Mermaid, IP mapping from protocol rules
+                      setFinalNote(null)
                     } else {
                       setFinalNote(null)
                     }
@@ -355,6 +405,69 @@ export function FlowViewer({ jobId, filter, onBack }: FlowViewerProps) {
     }
   }, [jobId, filter, parseStreamContent])
 
+  // Fetch protocol tree when activeDetail changes
+  useEffect(() => {
+    if (!activeDetail) {
+      // Reset tree state when modal closes
+      setProtocolTree(null)
+      setProtocolTreeError(null)
+      setProtocolTreeLoading(false)
+      return
+    }
+
+    // Map display protocol to tshark filter protocol
+    const displayProtocol = activeDetail.protocol || ''
+    const proto = mapDisplayProtocolToFilter(displayProtocol)
+    const frameNumber = activeDetail.originNumber
+
+    if (!proto || !frameNumber) {
+      // Can't fetch tree without protocol or frame number
+      setProtocolTree(null)
+      setProtocolTreeError(null)
+      return
+    }
+
+    let cancelled = false
+    async function fetchTree() {
+      setProtocolTreeLoading(true)
+      setProtocolTreeError(null)
+      setProtocolTree(null)
+
+      try {
+        const resp = await fetch(`/api/jobs/${jobId}/packets/${frameNumber}/tree?proto=${encodeURIComponent(proto)}`)
+        if (cancelled) return
+
+        if (!resp.ok) {
+          const errData = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }))
+          throw new Error(errData.error || `HTTP ${resp.status}`)
+        }
+
+        const data = await resp.json()
+        if (cancelled) return
+
+        if (data.success && data.data?.tree) {
+          setProtocolTree(data.data.tree)
+        } else {
+          throw new Error(data.error || '返回数据格式错误')
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setProtocolTreeError((err as Error).message)
+        }
+      } finally {
+        if (!cancelled) {
+          setProtocolTreeLoading(false)
+        }
+      }
+    }
+
+    fetchTree()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeDetail, jobId])
+
   // Open detail modal by idx (only opens modal, no diagram state change)
   const openDetailByIdx = useCallback(
     (idx: number) => {
@@ -397,8 +510,8 @@ export function FlowViewer({ jobId, filter, onBack }: FlowViewerProps) {
           <div className="w-16 h-16 bg-gradient-to-br from-violet-500 to-purple-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg animate-pulse">
             <Loader2 className="w-8 h-8 text-white animate-spin" />
           </div>
-          <h3 className="text-lg font-semibold text-slate-700 mb-2">正在连接 AI</h3>
-          <p className="text-sm text-slate-500">准备分析信令数据...</p>
+          <h3 className="text-lg font-semibold text-slate-700 mb-2">正在分析</h3>
+          <p className="text-sm text-slate-500">准备生成信令流程图...</p>
         </div>
       </div>
     )
@@ -443,8 +556,8 @@ export function FlowViewer({ jobId, filter, onBack }: FlowViewerProps) {
             <div className="flex items-center gap-2">
               {streamState === 'streaming' && (
                 <div className="flex items-center gap-2 text-violet-600">
-                  <Sparkles className="w-5 h-5 animate-pulse" />
-                  <span className="font-medium">AI 正在生成...</span>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  <span className="font-medium">正在生成...</span>
                 </div>
               )}
               {streamState === 'parsing' && (
@@ -503,39 +616,14 @@ export function FlowViewer({ jobId, filter, onBack }: FlowViewerProps) {
 
       {/* Main Content */}
       <main className="flex-1 p-4 sm:p-6 lg:p-8">
-        {/* Streaming output display - shown during streaming and parsing */}
+        {/* Loading indicator during streaming and parsing */}
         {(streamState === 'streaming' || streamState === 'parsing') && (
-          <div className="mb-6">
-            <div className="bg-slate-900 rounded-xl border border-slate-700 overflow-hidden shadow-xl">
-              <div className="flex items-center justify-between px-4 py-2 bg-slate-800 border-b border-slate-700">
-                <div className="flex items-center gap-2">
-                  <div className="flex gap-1.5">
-                    <div className="w-3 h-3 rounded-full bg-red-500" />
-                    <div className="w-3 h-3 rounded-full bg-yellow-500" />
-                    <div className="w-3 h-3 rounded-full bg-green-500" />
-                  </div>
-                  <span className="text-xs text-slate-400 ml-2">AI Output Stream</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-slate-500">{streamContent.length} chars</span>
-                  {streamState === 'streaming' && (
-                    <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                  )}
-                </div>
-              </div>
-              <pre 
-                ref={textDisplayRef}
-                className="p-4 text-sm text-green-400 font-mono whitespace-pre-wrap max-h-96 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-600 scrollbar-track-slate-800"
-                style={{ 
-                  background: 'linear-gradient(to bottom, #0f172a 0%, #1e293b 100%)',
-                  textShadow: '0 0 10px rgba(74, 222, 128, 0.3)'
-                }}
-              >
-                {streamContent}
-                {streamState === 'streaming' && (
-                  <span className="inline-block w-2 h-4 bg-green-400 animate-pulse ml-0.5" />
-                )}
-              </pre>
+          <div className="mb-6 flex items-center justify-center py-8">
+            <div className="flex items-center gap-3 text-violet-600">
+              <Loader2 className="w-6 h-6 animate-spin" />
+              <span className="font-medium">
+                {streamState === 'streaming' ? '正在生成流程图...' : '正在解析图表...'}
+              </span>
             </div>
           </div>
         )}
@@ -582,26 +670,90 @@ export function FlowViewer({ jobId, filter, onBack }: FlowViewerProps) {
                 .join(' · ')
             }
             onClose={() => setActiveDetail(null)}
-            minWidth={420}
-            minHeight={300}
+            minWidth={520}
+            minHeight={400}
           >
-            <div className="space-y-3 text-sm text-slate-700">
-              {activeDetail.detail_lines.length > 0 ? (
-                <div className="space-y-1">
-                  {activeDetail.detail_lines.map((line, i) => (
-                    <div key={i} className="break-words font-mono text-xs">
-                      {line}
-                    </div>
-                  ))}
+            <div className="space-y-4 text-sm text-slate-700">
+              {/* Protocol Tree Section - Primary display */}
+              <div className="border border-slate-200 rounded-lg overflow-hidden">
+                <div className="flex items-center justify-between px-3 py-2 bg-gradient-to-r from-violet-50 to-purple-50 border-b border-slate-200">
+                  <div className="flex items-center gap-2">
+                    <FileText className="w-4 h-4 text-violet-600" />
+                    <span className="font-medium text-violet-800">协议树 (Wireshark 展开)</span>
+                  </div>
+                  {protocolTree && (
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(protocolTree)
+                        setProtocolTreeCopied(true)
+                        setTimeout(() => setProtocolTreeCopied(false), 2000)
+                      }}
+                      className="flex items-center gap-1 px-2 py-1 text-xs text-slate-600 hover:text-violet-600 hover:bg-violet-100 rounded transition-colors"
+                    >
+                      {protocolTreeCopied ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-green-600" />
+                          <span className="text-green-600">已复制</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>复制</span>
+                        </>
+                      )}
+                    </button>
+                  )}
                 </div>
-              ) : (
-                <div className="text-slate-400">无详情行</div>
+                <div className="p-3 bg-slate-900 max-h-72 overflow-auto">
+                  {protocolTreeLoading && (
+                    <div className="flex items-center gap-2 text-slate-400">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>加载协议树...</span>
+                    </div>
+                  )}
+                  {protocolTreeError && (
+                    <div className="flex items-center gap-2 text-amber-400">
+                      <AlertCircle className="w-4 h-4" />
+                      <span>{protocolTreeError}</span>
+                    </div>
+                  )}
+                  {protocolTree && (
+                    <pre className="text-xs font-mono text-green-400 whitespace-pre-wrap break-words leading-relaxed"
+                      style={{ textShadow: '0 0 8px rgba(74, 222, 128, 0.2)' }}>
+                      {protocolTree}
+                    </pre>
+                  )}
+                  {!protocolTreeLoading && !protocolTreeError && !protocolTree && (
+                    <div className="text-slate-500 text-xs">
+                      无法获取协议树（协议不支持或帧号无效）
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Detail Lines Section - Secondary */}
+              {activeDetail.detail_lines.length > 0 && (
+                <details className="group">
+                  <summary className="cursor-pointer text-slate-600 hover:text-violet-600 font-medium flex items-center gap-1">
+                    <span className="text-xs">▶</span>
+                    <span>详情行 ({activeDetail.detail_lines.length})</span>
+                  </summary>
+                  <div className="mt-2 space-y-1 pl-4 border-l-2 border-slate-200">
+                    {activeDetail.detail_lines.map((line, i) => (
+                      <div key={i} className="break-words font-mono text-xs text-slate-600">
+                        {line}
+                      </div>
+                    ))}
+                  </div>
+                </details>
               )}
 
+              {/* Raw Fields Section - Tertiary */}
               {Object.keys(activeDetail.fields).length > 0 && (
-                <details className="mt-3">
-                  <summary className="cursor-pointer text-violet-600 hover:text-violet-700 font-medium">
-                    展开原始字段
+                <details className="group">
+                  <summary className="cursor-pointer text-slate-600 hover:text-violet-600 font-medium flex items-center gap-1">
+                    <span className="text-xs">▶</span>
+                    <span>原始字段</span>
                   </summary>
                   <pre className="mt-2 p-3 bg-slate-50 rounded-lg border border-slate-200 overflow-x-auto whitespace-pre-wrap break-words text-[11px] font-mono">
                     {JSON.stringify(activeDetail.fields, null, 2)}

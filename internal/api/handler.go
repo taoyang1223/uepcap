@@ -3,42 +3,20 @@ package api
 import (
 	"encoding/json"
 	"net/http"
-	"os"
-	"sync"
 
-	"uepcap/internal/job"
-	"uepcap/internal/moonshot"
+	"gitee.com/yangdadayyds/uepcap/internal/job"
 )
 
 // Handler handles API requests
 type Handler struct {
-	jobMgr         *job.Manager
-	moonshotClient *moonshot.Client
-	moonshotOnce   sync.Once
+	jobMgr *job.Manager
 }
 
 // NewHandler creates a new API handler
 func NewHandler(jobMgr *job.Manager) *Handler {
-	return &Handler{jobMgr: jobMgr}
-}
-
-// getMoonshotClient returns the Moonshot client, initializing it lazily
-func (h *Handler) getMoonshotClient() *moonshot.Client {
-	h.moonshotOnce.Do(func() {
-		apiKey := os.Getenv("MOONSHOT_API_KEY")
-		if apiKey != "" {
-			baseURL := os.Getenv("MOONSHOT_BASE_URL")
-			if baseURL == "" {
-				baseURL = "https://api.moonshot.cn/v1"
-			}
-			c := moonshot.NewClient(apiKey, baseURL)
-			if model := os.Getenv("MOONSHOT_MODEL"); model != "" {
-				c.SetModel(model)
-			}
-			h.moonshotClient = c
-		}
-	})
-	return h.moonshotClient
+	return &Handler{
+		jobMgr: jobMgr,
+	}
 }
 
 // RegisterRoutes registers API routes
@@ -66,6 +44,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/jobs/{id}/flow/brief", h.GetFlowBrief)
 	mux.HandleFunc("POST /api/jobs/{id}/flow/generate", h.GenerateFlow)
 	mux.HandleFunc("POST /api/jobs/{id}/flow/generate/stream", h.GenerateFlowStream)
+
+	// Packet tree (protocol details) operations
+	mux.HandleFunc("GET /api/jobs/{id}/packets/{frame}/tree", h.GetPacketTree)
 }
 
 // APIResponse represents a standard API response
