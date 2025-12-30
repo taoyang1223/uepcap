@@ -600,9 +600,10 @@ func TestNGAPResolverIntegration(t *testing.T) {
 		if !strings.Contains(ngapFilter, "ngap.RAN_UE_NGAP_ID") && !strings.Contains(ngapFilter, "ngap.AMF_UE_NGAP_ID") {
 			t.Errorf("NGAP filter doesn't contain expected ID patterns: %s", ngapFilter)
 		}
-		// New requirement: also include nas_5gs.5g_tmsi conditions in NGAP filter
-		if !strings.Contains(ngapFilter, "nas_5gs.5g_tmsi") {
-			t.Errorf("NGAP filter doesn't contain nas_5gs.5g_tmsi condition: %s", ngapFilter)
+		// New requirement: also include 5G-TMSI conditions in NGAP filter.
+		// Use the generic `3gpp.tmsi` field for better compatibility across tshark versions.
+		if !strings.Contains(ngapFilter, "3gpp.tmsi") {
+			t.Errorf("NGAP filter doesn't contain 3gpp.tmsi condition: %s", ngapFilter)
 		}
 		t.Logf("NGAP filter validated: %s", ngapFilter)
 	}

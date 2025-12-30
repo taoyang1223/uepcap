@@ -51,6 +51,34 @@ func Exec(ctx context.Context, name string, args ...string) (*ExecResult, error)
 	return result, nil
 }
 
+// tsharkCutShortWarningRegex matches the common warning when an input capture is truncated.
+// Example:
+//
+//	tshark: The file "/path/to/file.pcap" appears to have been cut short in the middle of a packet.
+var tsharkCutShortWarningRegex = regexp.MustCompile(`(?m)^tshark: The file ".*" appears to have been cut short in the middle of a packet\.\s*$`)
+
+// isOnlyTsharkCutShortWarning returns true if stderr contains only the "cut short" warning (possibly repeated),
+// and nothing else. We can safely treat this as non-fatal for most read/export operations because tshark
+// still processes all complete packets and only fails on the final truncated one.
+func isOnlyTsharkCutShortWarning(stderr string) bool {
+	s := strings.TrimSpace(stderr)
+	if s == "" {
+		return false
+	}
+	rest := tsharkCutShortWarningRegex.ReplaceAllString(s, "")
+	return strings.TrimSpace(rest) == ""
+}
+
+// tolerateTsharkCutShortWarning mutates result to downgrade the truncated-capture warning to exit code 0.
+func tolerateTsharkCutShortWarning(result *ExecResult) {
+	if result == nil || result.ExitCode == 0 {
+		return
+	}
+	if isOnlyTsharkCutShortWarning(result.Stderr) {
+		result.ExitCode = 0
+	}
+}
+
 // ExecWithTimeout runs a command with specified timeout
 func ExecWithTimeout(timeout time.Duration, name string, args ...string) (*ExecResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -69,7 +97,9 @@ func TsharkFields(ctx context.Context, pcapFile string, filter string, fields []
 	}
 	// 添加 NAS 解密偏好设置
 	args = appendNASDecryptPrefs(args, filter, nil)
-	return Exec(ctx, "tshark", args...)
+	result, err := Exec(ctx, "tshark", args...)
+	tolerateTsharkCutShortWarning(result)
+	return result, err
 }
 
 // TsharkJSON runs tshark with JSON output
@@ -83,7 +113,9 @@ func TsharkJSON(ctx context.Context, pcapFile string, filter string, protocols s
 	}
 	// 添加 NAS 解密偏好设置
 	args = appendNASDecryptPrefs(args, filter, strings.Fields(protocols))
-	return Exec(ctx, "tshark", args...)
+	result, err := Exec(ctx, "tshark", args...)
+	tolerateTsharkCutShortWarning(result)
+	return result, err
 }
 
 // TsharkVerbose runs tshark with -V verbose output
@@ -94,7 +126,9 @@ func TsharkVerbose(ctx context.Context, pcapFile string, filter string) (*ExecRe
 	}
 	// 添加 NAS 解密偏好设置
 	args = appendNASDecryptPrefs(args, filter, nil)
-	return Exec(ctx, "tshark", args...)
+	result, err := Exec(ctx, "tshark", args...)
+	tolerateTsharkCutShortWarning(result)
+	return result, err
 }
 
 // TsharkExport exports filtered packets to a new pcap file
@@ -103,7 +137,10 @@ func TsharkExport(ctx context.Context, inputPcap, outputPcap, filter string) err
 	if filter != "" {
 		args = append(args, "-Y", filter)
 	}
+	// Keep export consistent with other tshark calls (NAS null decipher prefs etc.)
+	args = appendNASDecryptPrefs(args, filter, nil)
 	result, err := Exec(ctx, "tshark", args...)
+	tolerateTsharkCutShortWarning(result)
 	if err != nil {
 		return err
 	}
@@ -136,7 +173,9 @@ func TsharkList(ctx context.Context, pcapFile string, filter string) (*ExecResul
 	if filter != "" {
 		args = append(args, "-Y", filter)
 	}
-	return Exec(ctx, "tshark", args...)
+	result, err := Exec(ctx, "tshark", args...)
+	tolerateTsharkCutShortWarning(result)
+	return result, err
 }
 
 // TsharkCount counts packets matching a filter
@@ -174,8 +213,8 @@ var nasEpsDecryptPrefs = []string{
 // appendNASDecryptPrefs appends NAS decryption preferences based on filter or protocols
 func appendNASDecryptPrefs(args []string, filter string, protocols []string) []string {
 	// 检查是否需要添加 NAS 5G 解密偏好
-	needNas5gs := strings.Contains(filter, "ngap") || strings.Contains(filter, "nas-5gs")
-	needNasEps := strings.Contains(filter, "s1ap") || strings.Contains(filter, "nas-eps")
+	needNas5gs := strings.Contains(filter, "ngap") || strings.Contains(filter, "nas-5gs") || strings.Contains(filter, "nas_5gs")
+	needNasEps := strings.Contains(filter, "s1ap") || strings.Contains(filter, "nas-eps") || strings.Contains(filter, "nas_eps")
 
 	// 也检查协议列表
 	for _, p := range protocols {
@@ -234,7 +273,9 @@ func TsharkCompactJSON(ctx context.Context, pcapFile string, filter string, prot
 
 	// 添加 NAS 解密偏好设置
 	args = appendNASDecryptPrefs(args, filter, protocols)
-	return Exec(ctx, "tshark", args...)
+	result, err := Exec(ctx, "tshark", args...)
+	tolerateTsharkCutShortWarning(result)
+	return result, err
 }
 
 // PacketColumns holds wireshark column display values for a packet.
@@ -289,6 +330,7 @@ func TsharkPacketColumns(ctx context.Context, pcapFile string, filter string) (m
 	args = appendNASDecryptPrefs(args, filter, nil)
 
 	result, err := Exec(ctx, "tshark", args...)
+	tolerateTsharkCutShortWarning(result)
 	if err != nil {
 		return nil, fmt.Errorf("tshark packet columns failed: %w", err)
 	}

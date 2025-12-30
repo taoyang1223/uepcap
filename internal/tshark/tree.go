@@ -19,34 +19,44 @@ type ProtocolTreeConfig struct {
 func DefaultProtocolTreeConfig() *ProtocolTreeConfig {
 	return &ProtocolTreeConfig{
 		AllowedProtocols: map[string]bool{
-			"ngap":    true,
-			"s1ap":    true,
-			"pfcp":    true,
-			"gtpv2":   true,
-			"gtp":     true,
-			"nas-5gs": true,
-			"nas-eps": true,
+			"ngap":     true,
+			"s1ap":     true,
+			"pfcp":     true,
+			"gtpv2":    true,
+			"gtp":      true,
+			"nas-5gs":  true,
+			"nas-eps":  true,
 			"diameter": true,
-			"sctp":    true,
-			"f1ap":    true,
-			"e1ap":    true,
-			"xnap":    true,
-			"x2ap":    true,
+			"sctp":     true,
+			"tcp":      true,
+			"udp":      true,
+			"http2":    true,
+			"http":     true,
+			"json":     true,
+			"f1ap":     true,
+			"e1ap":     true,
+			"xnap":     true,
+			"x2ap":     true,
 		},
 		ProtocolHeaders: map[string][]string{
-			"ngap":    {"NG Application Protocol"},
-			"s1ap":    {"S1 Application Protocol"},
-			"pfcp":    {"Packet Forwarding Control Protocol"},
-			"gtpv2":   {"GPRS Tunneling Protocol V2"},
-			"gtp":     {"GPRS Tunneling Protocol"},
-			"nas-5gs": {"Non-Access-Stratum 5GS (NAS)5GS", "NAS-5GS"},
-			"nas-eps": {"Non-Access-Stratum (NAS)PDU", "NAS-EPS"},
+			"ngap":     {"NG Application Protocol"},
+			"s1ap":     {"S1 Application Protocol"},
+			"pfcp":     {"Packet Forwarding Control Protocol"},
+			"gtpv2":    {"GPRS Tunneling Protocol V2"},
+			"gtp":      {"GPRS Tunneling Protocol"},
+			"nas-5gs":  {"Non-Access-Stratum 5GS (NAS)5GS", "NAS-5GS"},
+			"nas-eps":  {"Non-Access-Stratum (NAS)PDU", "NAS-EPS"},
 			"diameter": {"Diameter Protocol"},
-			"sctp":    {"Stream Control Transmission Protocol"},
-			"f1ap":    {"F1 Application Protocol"},
-			"e1ap":    {"E1 Application Protocol"},
-			"xnap":    {"XnAP"},
-			"x2ap":    {"X2 Application Protocol"},
+			"sctp":     {"Stream Control Transmission Protocol"},
+			"tcp":      {"Transmission Control Protocol"},
+			"udp":      {"User Datagram Protocol"},
+			"http2":    {"Hypertext Transfer Protocol 2", "HTTP/2"},
+			"http":     {"Hypertext Transfer Protocol"},
+			"json":     {"JavaScript Object Notation"},
+			"f1ap":     {"F1 Application Protocol"},
+			"e1ap":     {"E1 Application Protocol"},
+			"xnap":     {"XnAP"},
+			"x2ap":     {"X2 Application Protocol"},
 		},
 	}
 }
@@ -100,6 +110,7 @@ func TsharkProtocolTree(ctx context.Context, pcapFile string, frameNumber int, p
 	args = appendNASDecryptPrefs(args, protocol, []string{protocol})
 
 	result, err := Exec(ctx, "tshark", args...)
+	tolerateTsharkCutShortWarning(result)
 	if err != nil {
 		return nil, fmt.Errorf("tshark execution failed: %w", err)
 	}
@@ -210,23 +221,26 @@ func MapDisplayProtocolToTsharkFilter(displayProtocol string) string {
 
 	// Map common display names to tshark filter names
 	mapping := map[string]string{
-		"ngap":         "ngap",
-		"s1ap":         "s1ap",
-		"pfcp":         "pfcp",
-		"gtpv2":        "gtpv2",
-		"gtp":          "gtp",
-		"nas-5gs":      "nas-5gs",
-		"nas-eps":      "nas-eps",
-		"diameter":     "diameter",
-		"sctp":         "sctp",
-		"f1ap":         "f1ap",
-		"e1ap":         "e1ap",
-		"xnap":         "xnap",
-		"x2ap":         "x2ap",
+		"ngap":     "ngap",
+		"s1ap":     "s1ap",
+		"pfcp":     "pfcp",
+		"gtpv2":    "gtpv2",
+		"gtp":      "gtp",
+		"nas-5gs":  "nas-5gs",
+		"nas-eps":  "nas-eps",
+		"diameter": "diameter",
+		"sctp":     "sctp",
+		"f1ap":     "f1ap",
+		"e1ap":     "e1ap",
+		"xnap":     "xnap",
+		"x2ap":     "x2ap",
+		"http2":    "http2",
+		"http":     "http",
+		"json":     "json",
 		// Additional aliases
-		"gtp-u":        "gtp",
-		"gtp-c":        "gtpv2",
-		"gtpv2-c":      "gtpv2",
+		"gtp-u":   "gtp",
+		"gtp-c":   "gtpv2",
+		"gtpv2-c": "gtpv2",
 	}
 
 	if mapped, ok := mapping[displayProtocol]; ok {
@@ -278,6 +292,7 @@ func TsharkProtocolTreeBatch(ctx context.Context, pcapFile string, frameNumbers 
 	args = appendNASDecryptPrefs(args, protocol, []string{protocol})
 
 	result, err := Exec(ctx, "tshark", args...)
+	tolerateTsharkCutShortWarning(result)
 	if err != nil {
 		return nil, fmt.Errorf("tshark batch execution failed: %w", err)
 	}
@@ -362,4 +377,3 @@ func splitAndExtractTrees(output string, protocol string) (map[int]string, error
 
 	return result, nil
 }
-

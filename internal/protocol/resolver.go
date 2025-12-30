@@ -18,6 +18,7 @@ type FilterResolver struct {
 	s1apResolver  *S1APResolver
 	gtpv2Resolver *GTPv2Resolver
 	ueipResolver  *UEIPResolver
+	sbiResolver   *SBIResolver
 }
 
 // NewFilterResolver creates a new filter resolver
@@ -33,6 +34,7 @@ func NewFilterResolver() *FilterResolver {
 		s1apResolver:  s1ap,
 		gtpv2Resolver: NewGTPv2Resolver(),
 		ueipResolver:  NewUEIPResolver(ngap, s1ap),
+		sbiResolver:   NewSBIResolver(),
 	}
 }
 
@@ -76,6 +78,8 @@ func (r *FilterResolver) ResolveFilters(ctx context.Context, pcapFile, imsi stri
 				filter, callErr = r.gtpv2Resolver.ResolveGTPUFilter(ctx, pcapFile, imsi)
 			case "ueip":
 				filter, callErr = r.ueipResolver.ResolveFilter(ctx, pcapFile, imsi)
+			case "sbi":
+				filter, callErr = r.sbiResolver.ResolveFilter(ctx, pcapFile, imsi)
 			default:
 				return
 			}
@@ -150,7 +154,10 @@ func (r *NGAPResolver) ResolveFilter(ctx context.Context, pcapFile, imsi string)
 }
 
 // normalize5GTMSIToDecimal converts a 5G-TMSI string (hex like 0x1234 or decimal like 305419896)
-// to a decimal string suitable for Wireshark display filter (nas_5gs.5g_tmsi == N).
+// to a decimal string suitable for Wireshark/tshark display filter.
+//
+// Note: field names vary by dissector/version; `nas_5gs.5g_tmsi` does NOT exist on some
+// tshark builds. We use the generic `3gpp.tmsi` field (TMSI/P-TMSI/M-TMSI/5G-TMSI) for compatibility.
 func normalize5GTMSIToDecimal(tmsi string) (string, bool) {
 	tmsi = strings.TrimSpace(tmsi)
 	if tmsi == "" {
@@ -304,7 +311,8 @@ func (r *NGAPResolver) resolveByPfcpTeid(ctx context.Context, pcapFile, imsi str
 	for _, ranID := range ranIDs {
 		parts = append(parts, fmt.Sprintf("ngap.RAN_UE_NGAP_ID == %s", ranID))
 	}
-	// Also include NAS 5G-TMSI filters (decimal form)
+	// Also include 5G-TMSI filters (decimal form).
+	// Use the generic 3GPP TMSI field for better compatibility across tshark versions.
 	tmsiDecSet := make(map[string]bool)
 	for _, t := range fiveGTMSIs {
 		dec, ok := normalize5GTMSIToDecimal(t)
@@ -313,7 +321,7 @@ func (r *NGAPResolver) resolveByPfcpTeid(ctx context.Context, pcapFile, imsi str
 		}
 		if !tmsiDecSet[dec] {
 			tmsiDecSet[dec] = true
-			parts = append(parts, fmt.Sprintf("nas_5gs.5g_tmsi == %s", dec))
+			parts = append(parts, fmt.Sprintf("3gpp.tmsi == %s", dec))
 		}
 	}
 
@@ -358,7 +366,8 @@ func (r *NGAPResolver) resolveByMSIN(ctx context.Context, pcapFile, imsi string)
 		parts = append(parts, fmt.Sprintf("ngap.RAN_UE_NGAP_ID == %s", ranID))
 	}
 
-	// Also include NAS 5G-TMSI filters (decimal form)
+	// Also include 5G-TMSI filters (decimal form).
+	// Use the generic 3GPP TMSI field for better compatibility across tshark versions.
 	tmsiDecSet := make(map[string]bool)
 	for _, t := range fiveGTMSIs {
 		dec, ok := normalize5GTMSIToDecimal(t)
@@ -367,7 +376,7 @@ func (r *NGAPResolver) resolveByMSIN(ctx context.Context, pcapFile, imsi string)
 		}
 		if !tmsiDecSet[dec] {
 			tmsiDecSet[dec] = true
-			parts = append(parts, fmt.Sprintf("nas_5gs.5g_tmsi == %s", dec))
+			parts = append(parts, fmt.Sprintf("3gpp.tmsi == %s", dec))
 		}
 	}
 
@@ -1410,4 +1419,77 @@ func teidToNgapBytes(teid string) (string, bool) {
 	}
 
 	return fmt.Sprintf("%02x:%02x:%02x:%02x", bytes[0], bytes[1], bytes[2], bytes[3]), true
+}
+
+// SBIResolver resolves 5GC SBI filters for an IMSI.
+//
+// Note on tshark compatibility:
+//   - In some environments/captures, tshark may not expose HTTP2 fields (or even label packets as HTTP2).
+//     For example, packets might show as "HTTP/JSON" in _ws.col.Protocol, and http2.* fields may be absent.
+//   - To stay robust, we correlate at the TCP level using tcp.stream, which is always available.
+//     This still achieves the key goal: when the request contains imsi-<IMSI> but the response doesn't,
+//     we include the response by including the whole tcp.stream (payload-bearing packets only).
+type SBIResolver struct{}
+
+func NewSBIResolver() *SBIResolver { return &SBIResolver{} }
+
+func (r *SBIResolver) ResolveFilter(ctx context.Context, pcapFile, imsi string) (string, error) {
+	imsiToken := "imsi-" + strings.TrimSpace(imsi)
+	if imsiToken == "imsi-" {
+		return "", nil
+	}
+
+	// Phase 1: find request frames containing imsi-<IMSI>.
+	// Use frame contains so this works even if packets aren't dissected as HTTP2 by tshark.
+	reqFilter := fmt.Sprintf(`frame contains "%s"`, imsiToken)
+
+	// Phase 2: correlate to include responses on the same TCP stream.
+	// We avoid depending on http2.streamid because it may not exist in some tshark builds.
+	fieldsResult, err := tshark.TsharkFields(ctx, pcapFile, reqFilter, []string{"tcp.stream"})
+	if err != nil {
+		return "", err
+	}
+	if fieldsResult.ExitCode != 0 {
+		// Best-effort: treat as no matches.
+		return "", nil
+	}
+	if strings.TrimSpace(fieldsResult.Stdout) == "" {
+		// No matched frames.
+		return "", nil
+	}
+
+	// Collect unique tcp.stream ids.
+	streams := make(map[string]struct{})
+	lines := strings.Split(strings.TrimSpace(fieldsResult.Stdout), "\n")
+	for _, line := range lines {
+		s := strings.TrimSpace(line)
+		if s == "" {
+			continue
+		}
+		// -T fields with a single -e outputs one field per line (no tabs).
+		// But keep a small safety split in case separator changes.
+		if idx := strings.Index(s, "\t"); idx >= 0 {
+			s = strings.TrimSpace(s[:idx])
+		}
+		if s == "" {
+			continue
+		}
+		streams[s] = struct{}{}
+		if len(streams) >= 200 {
+			break
+		}
+	}
+
+	if len(streams) == 0 {
+		return reqFilter, nil
+	}
+
+	// Build correlated filter.
+	// Use tcp.len > 0 to avoid including pure ACK noise; still captures request/response payload packets.
+	var parts []string
+	parts = append(parts, "("+reqFilter+")")
+	for s := range streams {
+		parts = append(parts, fmt.Sprintf("(tcp.stream == %s && tcp.len > 0)", s))
+	}
+	return strings.Join(parts, " || "), nil
 }

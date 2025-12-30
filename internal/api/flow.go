@@ -657,6 +657,16 @@ func (h *Handler) GenerateFlow(w http.ResponseWriter, r *http.Request) {
 		removedHeartbeats = 0
 	}
 
+	// Drop transport-only packets from the flow diagram.
+	// These are usually noise (random client ports, retransmissions) and make flows misleading.
+	removedTransport := 0
+	if packetColumns != nil {
+		if filtered, removed, err := filterTransportPacketsByColumnsJSON(llmInputJSON, packetColumns); err == nil {
+			llmInputJSON = filtered
+			removedTransport = removed
+		}
+	}
+
 	// Count packets in llmInputJSON and build valid frame numbers set
 	var packets []map[string]interface{}
 	if err := json.Unmarshal([]byte(llmInputJSON), &packets); err != nil {
@@ -675,10 +685,10 @@ func (h *Handler) GenerateFlow(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	log.Printf("[FlowGenerate] Job %s: %d packets after filtering (removed %d heartbeats)", id, packetCount, removedHeartbeats)
+	log.Printf("[FlowGenerate] Job %s: %d packets after filtering (removed %d heartbeats, %d transport)", id, packetCount, removedHeartbeats, removedTransport)
 
 	// Use deterministic rule-based IP→NE inference (no LLM)
-	annotations := InferIPMappingsWithEmptyStages(llmInputJSON)
+	annotations := InferIPMappingsWithEmptyStagesAndColumns(llmInputJSON, packetColumns)
 
 	// No stage-based filtering - use all packets
 	renderJSON := llmInputJSON
@@ -873,6 +883,43 @@ func filterHeartbeatPacketsJSON(compactJSON string) (string, int, error) {
 	return string(out), removed, nil
 }
 
+// filterTransportPacketsByColumnsJSON removes packets whose Wireshark Protocol column is pure transport.
+//
+// We use `_ws.col.Protocol` (captured in packetColumns) instead of JSON `layers.proto` so we don't
+// accidentally drop real app protocols running over TCP (e.g., DIAMETER). Those show as DIAMETER,
+// while transport-only packets show as TCP/UDP.
+func filterTransportPacketsByColumnsJSON(compactJSON string, packetColumns map[string]*tshark.PacketColumns) (string, int, error) {
+	var packets []map[string]interface{}
+	if err := json.Unmarshal([]byte(compactJSON), &packets); err != nil {
+		return compactJSON, 0, err
+	}
+
+	removed := 0
+	filtered := make([]map[string]interface{}, 0, len(packets))
+	for _, pkt := range packets {
+		frameNum := ""
+		if frame, ok := pkt["frame"].(map[string]interface{}); ok {
+			frameNum = getString(frame, "number")
+		}
+
+		if frameNum != "" {
+			if cols, ok := packetColumns[frameNum]; ok && cols != nil {
+				if strings.EqualFold(cols.Protocol, "tcp") || strings.EqualFold(cols.Protocol, "udp") {
+					removed++
+					continue
+				}
+			}
+		}
+		filtered = append(filtered, pkt)
+	}
+
+	out, err := json.Marshal(filtered)
+	if err != nil {
+		return compactJSON, 0, err
+	}
+	return string(out), removed, nil
+}
+
 // countMermaidMessages counts Mermaid sequenceDiagram message arrows in a best-effort way.
 func countMermaidMessages(mermaid string) int {
 	if strings.TrimSpace(mermaid) == "" {
@@ -901,7 +948,6 @@ func countMermaidMessages(mermaid string) int {
 	}
 	return count
 }
-
 
 func safeOneLine(s string, max int) string {
 	out := strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
@@ -1074,7 +1120,7 @@ func buildPacketTitleNoFrame(pkt map[string]interface{}) string {
 			return proc
 		}
 	}
-	
+
 	// Fallback to Frame number
 	if frame, ok := pkt["frame"].(map[string]interface{}); ok {
 		if num := getString(frame, "number"); num != "" {
@@ -1533,8 +1579,6 @@ func inferRoleWithAnnotations(ip, port, proto string, ipToNE map[string]string) 
 	return ip
 }
 
-
-
 // deduplicateIPMap removes duplicate IP entries, keeping the last (or highest confidence) one.
 func deduplicateIPMap(ipMap []IPMapping) []IPMapping {
 	if len(ipMap) == 0 {
@@ -1590,7 +1634,6 @@ func normalizeNEType(ne string) string {
 		return ne // Keep original if not recognized
 	}
 }
-
 
 // truncateForLog truncates a string for logging purposes.
 func truncateForLog(s string, maxLen int) string {
@@ -1692,7 +1735,6 @@ func sortAndNumberParticipants(participants []string) []string {
 
 	return result
 }
-
 
 // GenerateFlowStream handles POST /api/jobs/{id}/flow/generate/stream
 // Uses Server-Sent Events to stream the flow generation progress.
@@ -1808,6 +1850,15 @@ func (h *Handler) GenerateFlowStream(w http.ResponseWriter, r *http.Request) {
 		removedHeartbeats = 0
 	}
 
+	// Drop transport-only packets from the flow diagram.
+	removedTransport := 0
+	if packetColumns != nil {
+		if filtered, removed, err := filterTransportPacketsByColumnsJSON(llmInputJSON, packetColumns); err == nil {
+			llmInputJSON = filtered
+			removedTransport = removed
+		}
+	}
+
 	// Count packets in llmInputJSON and build valid frame numbers set
 	var packets []map[string]interface{}
 	if err := json.Unmarshal([]byte(llmInputJSON), &packets); err != nil {
@@ -1826,8 +1877,8 @@ func (h *Handler) GenerateFlowStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	log.Printf("[FlowGenerateStream] Packet processing: total=%d, removed_heartbeats=%d, final=%d",
-		packetCount+removedHeartbeats, removedHeartbeats, packetCount)
+	log.Printf("[FlowGenerateStream] Packet processing: total=%d, removed_heartbeats=%d, removed_transport=%d, final=%d",
+		packetCount+removedHeartbeats+removedTransport, removedHeartbeats, removedTransport, packetCount)
 
 	// Log input packets summary
 	log.Printf("[FlowGenerateStream] Input packets summary (%d packets):", packetCount)
@@ -1891,7 +1942,7 @@ func (h *Handler) GenerateFlowStream(w http.ResponseWriter, r *http.Request) {
 
 	// Use deterministic rule-based IP→NE inference (no LLM)
 	log.Printf("[FlowGenerateStream] Using deterministic IP→NE inference (no LLM)")
-	annotations := InferIPMappingsWithEmptyStages(llmInputJSON)
+	annotations := InferIPMappingsWithEmptyStagesAndColumns(llmInputJSON, packetColumns)
 
 	// No stage-based filtering - use all packets
 	renderJSON := llmInputJSON

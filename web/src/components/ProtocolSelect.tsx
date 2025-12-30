@@ -14,6 +14,7 @@ const PROTOCOLS: Protocol[] = [
   { id: 'gtpv2', name: 'GTPv2-C', description: '控制面隧道', category: '通用' },
   { id: 'gtpu', name: 'GTP-U', description: '用户面隧道', category: '通用' },
   { id: 'ueip', name: 'UEIP', description: 'UE IPv4', category: '通用' },
+  { id: 'sbi', name: 'SBI', description: '5GC SBI (HTTP2)', category: '通用' },
 ]
 
 interface ProtocolSelectProps {

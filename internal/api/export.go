@@ -227,7 +227,12 @@ func (h *Handler) runAsyncExport(jobID, taskID, cacheKey, mergedPcap, exportDir 
 
 	// Handle results
 	if len(exportedFiles) == 0 {
-		h.jobMgr.UpdateExportTaskStatus(jobID, taskID, "error", fmt.Errorf("no files exported"))
+		// Preserve the underlying tshark error when available; otherwise keep generic message.
+		if firstError != nil {
+			h.jobMgr.UpdateExportTaskStatus(jobID, taskID, "error", firstError)
+		} else {
+			h.jobMgr.UpdateExportTaskStatus(jobID, taskID, "error", fmt.Errorf("no files exported"))
+		}
 		return
 	}
 
@@ -425,7 +430,8 @@ type ExportPacketsTextRequest struct {
 }
 
 // 支持的应用层协议列表
-var applicationProtocols = []string{"ngap", "nas-5gs", "pfcp", "s1ap", "gtpv2", "gtp"}
+// NOTE: http2 is included so SBI (HTTP2) packets are preserved end-to-end (export/text/flow).
+var applicationProtocols = []string{"ngap", "nas-5gs", "pfcp", "s1ap", "gtpv2", "gtp", "http2"}
 
 // generateTextCacheKey generates cache key for text export based on filter
 func generateTextCacheKey(filter string) string {

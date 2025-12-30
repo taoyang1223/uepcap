@@ -5,6 +5,8 @@ import (
 	"log"
 	"strconv"
 	"strings"
+
+	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
 
 // InferIPMappings analyzes packets and infers IP→NE (network element) mappings
@@ -18,6 +20,19 @@ import (
 // 4. GTPv2-C: UDP port 2123 → SGW/PGW (direction-based inference)
 // 5. GTP-U: UDP port 2152 → based on known endpoints from other protocols
 func InferIPMappings(compactJSON string) []IPMapping {
+	return inferIPMappings(compactJSON, nil)
+}
+
+// InferIPMappingsWithPacketColumns performs the same inference as InferIPMappings, but can optionally
+// use tshark packet columns (Protocol/Info) to improve role inference in ambiguous cases.
+//
+// This is especially useful for NGAP traces where SCTP port-based inference is ambiguous (e.g. both
+// sides use port 38412), but the Info column clearly indicates message direction (InitialUEMessage, etc.).
+func InferIPMappingsWithPacketColumns(compactJSON string, packetColumns map[string]*tshark.PacketColumns) []IPMapping {
+	return inferIPMappings(compactJSON, packetColumns)
+}
+
+func inferIPMappings(compactJSON string, packetColumns map[string]*tshark.PacketColumns) []IPMapping {
 	var packets []map[string]interface{}
 	if err := json.Unmarshal([]byte(compactJSON), &packets); err != nil {
 		log.Printf("[InferIPMappings] Failed to parse JSON: %v", err)
@@ -54,6 +69,23 @@ func InferIPMappings(compactJSON string) []IPMapping {
 
 	// First pass: Analyze each packet for protocol-specific rules
 	for _, pkt := range packets {
+		frameNum := ""
+		if frame, ok := pkt["frame"].(map[string]interface{}); ok {
+			frameNum = getString(frame, "number")
+		}
+		colProto := ""
+		colInfo := ""
+		if packetColumns != nil && frameNum != "" {
+			if c := packetColumns[frameNum]; c != nil {
+				colProto = strings.ToLower(strings.TrimSpace(c.Protocol))
+				// Prefer cleaned Info if available
+				colInfo = strings.TrimSpace(c.InfoClean)
+				if colInfo == "" {
+					colInfo = strings.TrimSpace(c.Info)
+				}
+			}
+		}
+
 		layers, _ := pkt["layers"].(map[string]interface{})
 		if layers == nil {
 			continue
@@ -68,10 +100,25 @@ func InferIPMappings(compactJSON string) []IPMapping {
 		app, _ := pkt["application"].(map[string]interface{})
 
 		// Rule 1: NGAP (SCTP port 38412)
-		if app != nil && app["ngap"] != nil {
+		isNGAP := app != nil && app["ngap"] != nil
+		// Fallback: use columns if compact JSON didn't include application.ngap (e.g. due to dissector differences)
+		if !isNGAP && colProto != "" && strings.Contains(colProto, "ngap") {
+			isNGAP = true
+		}
+		if isNGAP {
 			// NGAP uses SCTP, port 38412 is the well-known AMF port
 			if proto == "sctp" {
-				if srcPort == "38412" {
+				// Some traces (or test setups) may use 38412 on BOTH sides (srcPort==dstPort==38412),
+				// which makes a pure port-based inference ambiguous and can incorrectly label both
+				// endpoints as AMF. In that case, fall back to NGAP message direction heuristics.
+				if srcPort == "38412" && dstPort == "38412" {
+					// Prefer columns-based inference (more robust across dissector/JSON field differences).
+					if colInfo != "" {
+						inferNGAPRolesFromInfo(colInfo, srcIP, dstIP, updateRole)
+					} else if app != nil && app["ngap"] != nil {
+						inferNGAPRoles(app["ngap"], srcIP, dstIP, updateRole)
+					}
+				} else if srcPort == "38412" {
 					// Source is AMF (responds from 38412)
 					updateRole(srcIP, "AMF", "NGAP: SCTP source port 38412", 0.95)
 					updateRole(dstIP, "gNB", "NGAP: SCTP dest port != 38412", 0.90)
@@ -82,7 +129,11 @@ func InferIPMappings(compactJSON string) []IPMapping {
 				} else {
 					// No well-known port, infer from message direction
 					// Typically gNB → AMF for initial messages
-					inferNGAPRoles(app["ngap"], srcIP, dstIP, updateRole)
+					if colInfo != "" {
+						inferNGAPRolesFromInfo(colInfo, srcIP, dstIP, updateRole)
+					} else if app != nil && app["ngap"] != nil {
+						inferNGAPRoles(app["ngap"], srcIP, dstIP, updateRole)
+					}
 				}
 			}
 		}
@@ -149,6 +200,31 @@ func InferIPMappings(compactJSON string) []IPMapping {
 	}
 
 	return result
+}
+
+// inferNGAPRolesFromInfo infers gNB/AMF roles from Wireshark/tshark Info column content.
+// This is a robust fallback when JSON field extraction is incomplete.
+func inferNGAPRolesFromInfo(info string, srcIP, dstIP string, updateRole func(string, string, string, float64)) {
+	l := strings.ToLower(info)
+
+	// gNB → AMF (uplink / initial)
+	if strings.Contains(l, "initialuemessage") ||
+		strings.Contains(l, "uplinknastransport") ||
+		strings.Contains(l, "ngsetup") ||
+		strings.Contains(l, "initialuemsg") {
+		updateRole(srcIP, "gNB", "NGAP: Info indicates uplink/initial", 0.88)
+		updateRole(dstIP, "AMF", "NGAP: Info indicates uplink/initial", 0.88)
+		return
+	}
+
+	// AMF → gNB (downlink)
+	if strings.Contains(l, "downlinknastransport") ||
+		strings.Contains(l, "initialcontextsetup") ||
+		strings.Contains(l, "pdusessionresourcesetup") {
+		updateRole(srcIP, "AMF", "NGAP: Info indicates downlink", 0.88)
+		updateRole(dstIP, "gNB", "NGAP: Info indicates downlink", 0.88)
+		return
+	}
 }
 
 // inferNGAPRoles infers gNB/AMF roles from NGAP message content
@@ -392,7 +468,13 @@ func inferGTPURoles(srcIP, dstIP, srcPort, dstPort string, knownRoles ipRoleLook
 // InferIPMappingsWithEmptyStages calls InferIPMappings and returns a FlowAnnotationsV1
 // with the inferred ip_map and empty stages (no stage grouping).
 func InferIPMappingsWithEmptyStages(compactJSON string) *FlowAnnotationsV1 {
-	ipMappings := InferIPMappings(compactJSON)
+	return InferIPMappingsWithEmptyStagesAndColumns(compactJSON, nil)
+}
+
+// InferIPMappingsWithEmptyStagesAndColumns returns FlowAnnotationsV1 with inferred ip_map and empty stages,
+// optionally using tshark packet columns to improve inference.
+func InferIPMappingsWithEmptyStagesAndColumns(compactJSON string, packetColumns map[string]*tshark.PacketColumns) *FlowAnnotationsV1 {
+	ipMappings := InferIPMappingsWithPacketColumns(compactJSON, packetColumns)
 	if ipMappings == nil {
 		ipMappings = []IPMapping{}
 	}
@@ -404,4 +486,3 @@ func InferIPMappingsWithEmptyStages(compactJSON string) *FlowAnnotationsV1 {
 		Stages:   []FlowStage{}, // Empty stages - no stage grouping
 	}
 }
-
