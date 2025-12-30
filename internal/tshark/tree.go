@@ -110,7 +110,7 @@ func TsharkProtocolTree(ctx context.Context, pcapFile string, frameNumber int, p
 	args = appendNASDecryptPrefs(args, protocol, []string{protocol})
 
 	result, err := Exec(ctx, "tshark", args...)
-	tolerateTsharkCutShortWarning(result)
+	tolerateTsharkNonFatalWarnings(result)
 	if err != nil {
 		return nil, fmt.Errorf("tshark execution failed: %w", err)
 	}
@@ -292,7 +292,7 @@ func TsharkProtocolTreeBatch(ctx context.Context, pcapFile string, frameNumbers 
 	args = appendNASDecryptPrefs(args, protocol, []string{protocol})
 
 	result, err := Exec(ctx, "tshark", args...)
-	tolerateTsharkCutShortWarning(result)
+	tolerateTsharkNonFatalWarnings(result)
 	if err != nil {
 		return nil, fmt.Errorf("tshark batch execution failed: %w", err)
 	}

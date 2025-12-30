@@ -57,24 +57,37 @@ func Exec(ctx context.Context, name string, args ...string) (*ExecResult, error)
 //	tshark: The file "/path/to/file.pcap" appears to have been cut short in the middle of a packet.
 var tsharkCutShortWarningRegex = regexp.MustCompile(`(?m)^tshark: The file ".*" appears to have been cut short in the middle of a packet\.\s*$`)
 
-// isOnlyTsharkCutShortWarning returns true if stderr contains only the "cut short" warning (possibly repeated),
-// and nothing else. We can safely treat this as non-fatal for most read/export operations because tshark
-// still processes all complete packets and only fails on the final truncated one.
-func isOnlyTsharkCutShortWarning(stderr string) bool {
+// tsharkRunningAsRootWarningRegex matches the common warning printed when tshark is executed as root.
+// Example:
+//
+//	Running as user "root" and group "root". This could be dangerous.
+var tsharkRunningAsRootWarningRegex = regexp.MustCompile(`(?m)^Running as user "root" and group "root"\. This could be dangerous\.\s*$`)
+
+// isOnlyTsharkNonFatalWarnings returns true if stderr contains only known non-fatal warnings (possibly repeated),
+// and nothing else.
+//
+// Today we tolerate:
+// - truncated-capture warning ("cut short in the middle of a packet")
+// - running-as-root warning (some distros print this on stderr)
+//
+// Rationale: for read/export operations, tshark can still process all complete packets and only fails on the
+// final truncated one; and the root warning is informational noise that shouldn't fail exports.
+func isOnlyTsharkNonFatalWarnings(stderr string) bool {
 	s := strings.TrimSpace(stderr)
 	if s == "" {
 		return false
 	}
 	rest := tsharkCutShortWarningRegex.ReplaceAllString(s, "")
+	rest = tsharkRunningAsRootWarningRegex.ReplaceAllString(rest, "")
 	return strings.TrimSpace(rest) == ""
 }
 
-// tolerateTsharkCutShortWarning mutates result to downgrade the truncated-capture warning to exit code 0.
-func tolerateTsharkCutShortWarning(result *ExecResult) {
+// tolerateTsharkNonFatalWarnings mutates result to downgrade known non-fatal warnings to exit code 0.
+func tolerateTsharkNonFatalWarnings(result *ExecResult) {
 	if result == nil || result.ExitCode == 0 {
 		return
 	}
-	if isOnlyTsharkCutShortWarning(result.Stderr) {
+	if isOnlyTsharkNonFatalWarnings(result.Stderr) {
 		result.ExitCode = 0
 	}
 }
@@ -98,7 +111,7 @@ func TsharkFields(ctx context.Context, pcapFile string, filter string, fields []
 	// 添加 NAS 解密偏好设置
 	args = appendNASDecryptPrefs(args, filter, nil)
 	result, err := Exec(ctx, "tshark", args...)
-	tolerateTsharkCutShortWarning(result)
+	tolerateTsharkNonFatalWarnings(result)
 	return result, err
 }
 
@@ -114,7 +127,7 @@ func TsharkJSON(ctx context.Context, pcapFile string, filter string, protocols s
 	// 添加 NAS 解密偏好设置
 	args = appendNASDecryptPrefs(args, filter, strings.Fields(protocols))
 	result, err := Exec(ctx, "tshark", args...)
-	tolerateTsharkCutShortWarning(result)
+	tolerateTsharkNonFatalWarnings(result)
 	return result, err
 }
 
@@ -127,7 +140,7 @@ func TsharkVerbose(ctx context.Context, pcapFile string, filter string) (*ExecRe
 	// 添加 NAS 解密偏好设置
 	args = appendNASDecryptPrefs(args, filter, nil)
 	result, err := Exec(ctx, "tshark", args...)
-	tolerateTsharkCutShortWarning(result)
+	tolerateTsharkNonFatalWarnings(result)
 	return result, err
 }
 
@@ -140,7 +153,7 @@ func TsharkExport(ctx context.Context, inputPcap, outputPcap, filter string) err
 	// Keep export consistent with other tshark calls (NAS null decipher prefs etc.)
 	args = appendNASDecryptPrefs(args, filter, nil)
 	result, err := Exec(ctx, "tshark", args...)
-	tolerateTsharkCutShortWarning(result)
+	tolerateTsharkNonFatalWarnings(result)
 	if err != nil {
 		return err
 	}
@@ -174,7 +187,7 @@ func TsharkList(ctx context.Context, pcapFile string, filter string) (*ExecResul
 		args = append(args, "-Y", filter)
 	}
 	result, err := Exec(ctx, "tshark", args...)
-	tolerateTsharkCutShortWarning(result)
+	tolerateTsharkNonFatalWarnings(result)
 	return result, err
 }
 
@@ -274,7 +287,7 @@ func TsharkCompactJSON(ctx context.Context, pcapFile string, filter string, prot
 	// 添加 NAS 解密偏好设置
 	args = appendNASDecryptPrefs(args, filter, protocols)
 	result, err := Exec(ctx, "tshark", args...)
-	tolerateTsharkCutShortWarning(result)
+	tolerateTsharkNonFatalWarnings(result)
 	return result, err
 }
 
@@ -330,7 +343,7 @@ func TsharkPacketColumns(ctx context.Context, pcapFile string, filter string) (m
 	args = appendNASDecryptPrefs(args, filter, nil)
 
 	result, err := Exec(ctx, "tshark", args...)
-	tolerateTsharkCutShortWarning(result)
+	tolerateTsharkNonFatalWarnings(result)
 	if err != nil {
 		return nil, fmt.Errorf("tshark packet columns failed: %w", err)
 	}

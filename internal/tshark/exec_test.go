@@ -52,21 +52,32 @@ func TestExecWithTimeout(t *testing.T) {
 	}
 }
 
-func TestIsOnlyTsharkCutShortWarning(t *testing.T) {
+func TestIsOnlyTsharkNonFatalWarnings(t *testing.T) {
 	stderr := `tshark: The file "/tmp/a.pcap" appears to have been cut short in the middle of a packet.`
-	if !isOnlyTsharkCutShortWarning(stderr) {
+	if !isOnlyTsharkNonFatalWarnings(stderr) {
 		t.Fatalf("expected cut-short warning to be recognized")
 	}
 
 	stderr2 := `tshark: The file "/tmp/a.pcap" appears to have been cut short in the middle of a packet.
 tshark: The file "/tmp/a.pcap" appears to have been cut short in the middle of a packet.`
-	if !isOnlyTsharkCutShortWarning(stderr2) {
+	if !isOnlyTsharkNonFatalWarnings(stderr2) {
 		t.Fatalf("expected repeated cut-short warnings to be recognized")
 	}
 
-	stderr3 := `tshark: The file "/tmp/a.pcap" appears to have been cut short in the middle of a packet.
+	stderr3 := `Running as user "root" and group "root". This could be dangerous.
+tshark: The file "/tmp/a.pcap" appears to have been cut short in the middle of a packet.`
+	if !isOnlyTsharkNonFatalWarnings(stderr3) {
+		t.Fatalf("expected root warning + cut-short warning to be recognized")
+	}
+
+	stderr4 := `Running as user "root" and group "root". This could be dangerous.`
+	if !isOnlyTsharkNonFatalWarnings(stderr4) {
+		t.Fatalf("expected root warning to be recognized")
+	}
+
+	stderr5 := `tshark: The file "/tmp/a.pcap" appears to have been cut short in the middle of a packet.
 Some other error`
-	if isOnlyTsharkCutShortWarning(stderr3) {
-		t.Fatalf("expected mixed stderr to NOT be treated as only cut-short warning")
+	if isOnlyTsharkNonFatalWarnings(stderr5) {
+		t.Fatalf("expected mixed stderr to NOT be treated as only non-fatal warnings")
 	}
 }
