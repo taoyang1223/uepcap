@@ -548,6 +548,102 @@ Frame 101:
 	}
 }
 
+func assertStringSet(t *testing.T, name string, got map[string]bool, expected []string) {
+	t.Helper()
+	gotValues := setToSortedStrings(got)
+	sort.Strings(expected)
+	if len(gotValues) != len(expected) {
+		t.Fatalf("%s = %v, expected %v", name, gotValues, expected)
+	}
+	for i := range expected {
+		if gotValues[i] != expected[i] {
+			t.Fatalf("%s = %v, expected %v", name, gotValues, expected)
+		}
+	}
+}
+
+func TestExtractPFCPSEIDClosureFromFields(t *testing.T) {
+	resolver := &PFCPResolver{}
+	output := strings.Join([]string{
+		"460020731000002\t0x634fe100b08e8575,0x0000000000000ef6",
+		"\t0x0000000000000ef6,0xffd55036dc3d111c",
+		"\t0x0000000000000ef7,0xffd55036dc3d111c",
+		"\t0x0000000000000ef7,0x61075fbadfa2ba7f",
+		"\t0x0000000000000aaa",
+	}, "\n")
+
+	seids, hasIMSI := resolver.extractPFCPSEIDClosure(output, "460020731000002")
+	if !hasIMSI {
+		t.Fatal("expected IMSI seed packet")
+	}
+	assertStringSet(t, "pfcp seids", seids, []string{
+		"0x0000000000000ef6",
+		"0x0000000000000ef7",
+		"0x61075fbadfa2ba7f",
+		"0x634fe100b08e8575",
+		"0xffd55036dc3d111c",
+	})
+}
+
+func TestExtractS1APCorrelationFromFields(t *testing.T) {
+	resolver := &S1APResolver{}
+	output := strings.Join([]string{
+		// IMSI seed: InitialUEMessage / Attach request.
+		"460020731000002\t9\t18\t\t",
+		// Same MME ID discovers another eNB-side context.
+		"\t9\t16\t\t",
+		// Attached context carries an allocated M-TMSI.
+		"\t\t16\t939524113\t",
+		// A later Service request only carries S-TMSI/m-TMSI and a new ENB UE S1AP ID.
+		"\t\t20\t\t939524113",
+		// Unrelated UE context should not be pulled in.
+		"\t77\t88\t111\t111",
+	}, "\n")
+
+	corr := resolver.extractS1APCorrelation(output, "460020731000002")
+	if !corr.hasIMSIPacket {
+		t.Fatal("expected IMSI seed packet")
+	}
+	assertStringSet(t, "s1ap mme ids", corr.mmeIDs, []string{"9"})
+	assertStringSet(t, "s1ap enb ids", corr.enbIDs, []string{"16", "18", "20"})
+	assertStringSet(t, "s1ap tmsis", corr.tmsis, []string{"939524113"})
+}
+
+func TestExtractGTPv2CorrelationFromFields(t *testing.T) {
+	resolver := &GTPv2Resolver{}
+	output := strings.Join([]string{
+		// Create Session Request with IMSI and TEID=0; seq seeds the response.
+		"460020731000002\t0x00000000\t0x0007a3\t\t\t",
+		// Response with same seq discovers the first control-plane TEID and a user-plane F-TEID.
+		"\t0x07000020\t0x0007a3\t0x10000001\t\t",
+		// Subsequent request by known TEID discovers another seq.
+		"\t0x07000020\t0x0007a4\t0x10000002\t\t",
+		// Response by known seq discovers another control-plane TEID.
+		"\t0x0000000e\t0x0007a4\t\t\t",
+		// Unrelated session should not be pulled in.
+		"\t0x99999999\t0x000111\t0x22222222\t\t",
+	}, "\n")
+
+	corr := resolver.extractGTPv2Correlation(output, "460020731000002")
+	if !corr.hasIMSIPacket {
+		t.Fatal("expected IMSI seed packet")
+	}
+	assertStringSet(t, "gtpv2 header teids", corr.headerTEIDs, []string{
+		"0x0000000e",
+		"0x07000020",
+	})
+	assertStringSet(t, "gtpv2 seqs", corr.seqs, []string{
+		"0x0007a3",
+		"0x0007a4",
+	})
+	assertStringSet(t, "gtpv2 gtpu teids", corr.gtpuTEIDs, []string{
+		"0x0000000e",
+		"0x07000020",
+		"0x10000001",
+		"0x10000002",
+	})
+}
+
 // Integration test using the actual pcap file
 // This test is skipped if tshark is not installed or the pcap file doesn't exist
 func TestNGAPResolverIntegration(t *testing.T) {

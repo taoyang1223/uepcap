@@ -57,20 +57,6 @@ func (h *Handler) ExportPackets(w http.ResponseWriter, r *http.Request) {
 	// Generate cache key
 	cacheKey := generateCacheKey(req.IMSIs, req.Protocols)
 
-	// Check cache - if already exported, return immediately
-	if cachedPath, ok := h.jobMgr.GetCachedExport(id, cacheKey); ok {
-		if _, err := os.Stat(cachedPath); err == nil {
-			filename := filepath.Base(cachedPath)
-			writeSuccess(w, map[string]interface{}{
-				"download_url": fmt.Sprintf("/api/jobs/%s/download/%s", id, filename),
-				"filename":     filename,
-				"cached":       true,
-				"status":       "completed",
-			})
-			return
-		}
-	}
-
 	jobDir := h.jobMgr.GetJobDir(id)
 	exportDir := filepath.Join(jobDir, "exports")
 	os.MkdirAll(exportDir, 0755)
@@ -148,6 +134,23 @@ func (h *Handler) ExportPackets(w http.ResponseWriter, r *http.Request) {
 			wrappedFilters[i] = "(" + f + ")"
 		}
 		combinedFilter = strings.Join(wrappedFilters, " || ")
+	}
+
+	// Check cache after filter resolution so cached responses can still show the
+	// Wireshark display filter and IMSI count in the UI.
+	if cachedPath, ok := h.jobMgr.GetCachedExport(id, cacheKey); ok {
+		if _, err := os.Stat(cachedPath); err == nil {
+			filename := filepath.Base(cachedPath)
+			writeSuccess(w, map[string]interface{}{
+				"download_url": fmt.Sprintf("/api/jobs/%s/download/%s", id, filename),
+				"filename":     filename,
+				"cached":       true,
+				"status":       "completed",
+				"filter":       combinedFilter,
+				"imsi_count":   len(imsiFilters),
+			})
+			return
+		}
 	}
 
 	// Create async export task

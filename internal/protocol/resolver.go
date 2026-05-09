@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -118,6 +119,113 @@ func (r *FilterResolver) ResolveFilters(ctx context.Context, pcapFile, imsi stri
 func (r *FilterResolver) ResolveFilter(ctx context.Context, pcapFile, imsi string, protocols []string) (string, error) {
 	_, combined, err := r.ResolveFilters(ctx, pcapFile, imsi, protocols)
 	return combined, err
+}
+
+func splitTsharkValues(field string) []string {
+	field = strings.TrimSpace(field)
+	if field == "" {
+		return nil
+	}
+
+	rawParts := strings.FieldsFunc(field, func(r rune) bool {
+		return r == ',' || r == ';'
+	})
+
+	values := make([]string, 0, len(rawParts))
+	for _, part := range rawParts {
+		part = strings.TrimSpace(part)
+		part = strings.Trim(part, `"`)
+		if part != "" {
+			values = append(values, part)
+		}
+	}
+	return values
+}
+
+func parseUintField(value string, bitSize int) (uint64, bool) {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, `"`)
+	if value == "" {
+		return 0, false
+	}
+	if idx := strings.IndexAny(value, " \t("); idx >= 0 {
+		value = value[:idx]
+	}
+
+	var (
+		parsed uint64
+		err    error
+	)
+	if strings.HasPrefix(value, "0x") || strings.HasPrefix(value, "0X") {
+		parsed, err = strconv.ParseUint(value[2:], 16, bitSize)
+	} else {
+		parsed, err = strconv.ParseUint(value, 10, bitSize)
+	}
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
+}
+
+func normalizeUintDecimal(value string, bitSize int, allowZero bool) (string, bool) {
+	parsed, ok := parseUintField(value, bitSize)
+	if !ok {
+		return "", false
+	}
+	if parsed == 0 && !allowZero {
+		return "", false
+	}
+	return strconv.FormatUint(parsed, 10), true
+}
+
+func normalizeUintHex(value string, bitSize int, width int, allowZero bool) (string, bool) {
+	parsed, ok := parseUintField(value, bitSize)
+	if !ok {
+		return "", false
+	}
+	if parsed == 0 && !allowZero {
+		return "", false
+	}
+	return fmt.Sprintf("0x%0*x", width, parsed), true
+}
+
+func addSortedParts(parts []string, values map[string]bool, format func(string) string) []string {
+	keys := make([]string, 0, len(values))
+	for value := range values {
+		keys = append(keys, value)
+	}
+	sort.Strings(keys)
+	for _, value := range keys {
+		parts = append(parts, format(value))
+	}
+	return parts
+}
+
+func containsIMSIValue(field, imsi string) bool {
+	if imsi == "" {
+		return false
+	}
+	for _, value := range splitTsharkValues(field) {
+		if value == imsi || strings.Contains(value, imsi) {
+			return true
+		}
+	}
+	return strings.Contains(field, imsi)
+}
+
+func intersectsStringSet(a, b map[string]bool) bool {
+	if len(a) == 0 || len(b) == 0 {
+		return false
+	}
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	for value := range a {
+		if b[value] {
+			return true
+		}
+	}
+	return false
 }
 
 // NGAPResolver resolves NGAP filters for an IMSI
@@ -631,51 +739,113 @@ func NewPFCPResolver() *PFCPResolver {
 
 // ResolveFilter resolves PFCP display filter for an IMSI
 // Logic:
-// 1. Find IMSI in Session Establishment Request, extract SMF CP F-SEID from F-SEID IE
-// 2. Find Response where pfcp.seid == SMF CP F-SEID, extract UP F-SEID from F-SEID IE
-// 3. Build filter using both SEIDs
+// 1. Seed from PFCP packets that carry the target IMSI.
+// 2. Add every non-zero SEID found in those packets.
+// 3. Repeatedly include any PFCP packet containing a known SEID, adding newly discovered SEIDs.
+// This covers Session Establishment/Modification/Deletion request-response chains without
+// hard-coding a fixed number of hops.
 func (r *PFCPResolver) ResolveFilter(ctx context.Context, pcapFile, imsi string) (string, error) {
-	// Step 1: Scan Session Establishment Request (msg_type=50) for IMSI
-	// Extract SMF CP F-SEID from F-SEID IE
-	reqResult, err := tshark.TsharkVerbose(ctx, pcapFile, "pfcp.msg_type == 50")
+	result, err := tshark.TsharkFields(ctx, pcapFile, "pfcp", []string{
+		"e212.imsi",
+		"pfcp.user_id.supi",
+		"pfcp.seid",
+	})
 	if err != nil {
 		return "", err
 	}
-
-	smfSEIDs := r.extractSMFSEIDsFromRequest(reqResult.Stdout, imsi)
-	if len(smfSEIDs) == 0 {
+	if result.ExitCode != 0 {
 		return "", nil
 	}
 
-	// Collect all SEIDs
-	seidSet := make(map[string]bool)
-	for _, seid := range smfSEIDs {
-		seidSet[seid] = true
+	seidSet, hasIMSIPacket := r.extractPFCPSEIDClosure(result.Stdout, imsi)
+	if len(seidSet) == 0 && !hasIMSIPacket {
+		return "", nil
 	}
 
-	// Step 2: Scan Session Establishment Response (msg_type=51)
-	// Find Response where pfcp.seid matches SMF CP F-SEID, extract UP F-SEID
-	respResult, err := tshark.TsharkVerbose(ctx, pcapFile, "pfcp.msg_type == 51")
-	if err == nil {
-		upSEIDs := r.extractUPSEIDsFromResponse(respResult.Stdout, smfSEIDs)
-		for _, seid := range upSEIDs {
+	var parts []string
+	if hasIMSIPacket {
+		parts = append(parts, fmt.Sprintf("(pfcp && e212.imsi == \"%s\")", imsi))
+	}
+	parts = addSortedParts(parts, seidSet, func(seid string) string {
+		return fmt.Sprintf("pfcp.seid == %s", seid)
+	})
+
+	return strings.Join(parts, " || "), nil
+}
+
+type pfcpFieldFrame struct {
+	containsIMSI bool
+	seids        map[string]bool
+}
+
+func (r *PFCPResolver) extractPFCPSEIDClosure(output, imsi string) (map[string]bool, bool) {
+	frames := parsePFCPFieldFrames(output, imsi)
+	seidSet := make(map[string]bool)
+	hasIMSIPacket := false
+
+	for _, frame := range frames {
+		if !frame.containsIMSI {
+			continue
+		}
+		hasIMSIPacket = true
+		for seid := range frame.seids {
 			seidSet[seid] = true
 		}
 	}
 
-	// Build filter: include IMSI filter + SEID filters
-	var parts []string
-
-	// Add IMSI filter to capture original messages containing the IMSI
-	// Use e212.imsi with pfcp protocol filter (pfcp doesn't have dedicated imsi field)
-	parts = append(parts, fmt.Sprintf("(pfcp && e212.imsi == \"%s\")", imsi))
-
-	// Add SEID filters
-	for seid := range seidSet {
-		parts = append(parts, fmt.Sprintf("pfcp.seid == %s", seid))
+	for changed := true; changed; {
+		changed = false
+		for _, frame := range frames {
+			if !intersectsStringSet(frame.seids, seidSet) {
+				continue
+			}
+			for seid := range frame.seids {
+				if !seidSet[seid] {
+					seidSet[seid] = true
+					changed = true
+				}
+			}
+		}
 	}
 
-	return strings.Join(parts, " || "), nil
+	return seidSet, hasIMSIPacket
+}
+
+func parsePFCPFieldFrames(output, imsi string) []pfcpFieldFrame {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	frames := make([]pfcpFieldFrame, 0, len(lines))
+
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		cols := strings.Split(line, "\t")
+		for len(cols) < 3 {
+			cols = append(cols, "")
+		}
+		seidFieldIdx := 2
+		containsIMSI := containsIMSIValue(cols[0], imsi) || containsIMSIValue(cols[1], imsi)
+		if len(strings.Split(line, "\t")) == 2 {
+			// Backward-compatible path for unit tests / older captured field dumps:
+			// e212.imsi, pfcp.seid
+			seidFieldIdx = 1
+			containsIMSI = containsIMSIValue(cols[0], imsi)
+		}
+
+		frame := pfcpFieldFrame{
+			containsIMSI: containsIMSI,
+			seids:        make(map[string]bool),
+		}
+		for _, raw := range splitTsharkValues(cols[seidFieldIdx]) {
+			if seid, ok := normalizeUintHex(raw, 64, 16, false); ok {
+				frame.seids[seid] = true
+			}
+		}
+		frames = append(frames, frame)
+	}
+
+	return frames
 }
 
 // extractSMFSEIDsFromRequest extracts SMF CP F-SEID from F-SEID IE in Request messages containing IMSI
@@ -921,37 +1091,169 @@ func NewS1APResolver() *S1APResolver {
 
 // ResolveFilter resolves S1AP display filter for an IMSI
 func (r *S1APResolver) ResolveFilter(ctx context.Context, pcapFile, imsi string) (string, error) {
-	// Try direct field first
-	result, err := tshark.TsharkFields(ctx, pcapFile, fmt.Sprintf("e212.imsi == \"%s\"", imsi),
-		[]string{"s1ap.mme_ue_s1ap_id", "s1ap.enb_ue_s1ap_id"})
+	result, err := tshark.TsharkFields(ctx, pcapFile, "s1ap", []string{
+		"e212.imsi",
+		"s1ap.MME_UE_S1AP_ID",
+		"s1ap.ENB_UE_S1AP_ID",
+		"nas_eps.emm.m_tmsi",
+		"s1ap.m_TMSI",
+	})
 	if err != nil {
 		return "", err
 	}
-
-	mmeIDs, enbIDs := r.extractS1APIDs(result.Stdout)
-
-	// If direct field didn't work, try verbose scan
-	if len(mmeIDs) == 0 && len(enbIDs) == 0 {
-		verboseResult, err := tshark.TsharkVerbose(ctx, pcapFile, "s1ap")
-		if err != nil {
-			return "", err
-		}
-		mmeIDs, enbIDs = r.extractS1APIDsFromVerbose(verboseResult.Stdout, imsi)
+	if result.ExitCode != 0 {
+		return "", nil
 	}
 
-	if len(mmeIDs) == 0 && len(enbIDs) == 0 {
+	corr := r.extractS1APCorrelation(result.Stdout, imsi)
+
+	if len(corr.mmeIDs) == 0 && len(corr.enbIDs) == 0 && len(corr.tmsis) == 0 && !corr.hasIMSIPacket {
 		return "", nil
 	}
 
 	var parts []string
-	for _, id := range mmeIDs {
-		parts = append(parts, fmt.Sprintf("s1ap.mme_ue_s1ap_id == %s", id))
+	if corr.hasIMSIPacket {
+		parts = append(parts, fmt.Sprintf("(s1ap && e212.imsi == \"%s\")", imsi))
 	}
-	for _, id := range enbIDs {
-		parts = append(parts, fmt.Sprintf("s1ap.enb_ue_s1ap_id == %s", id))
-	}
+	parts = addSortedParts(parts, corr.mmeIDs, func(id string) string {
+		return fmt.Sprintf("s1ap.MME_UE_S1AP_ID == %s", id)
+	})
+	parts = addSortedParts(parts, corr.enbIDs, func(id string) string {
+		return fmt.Sprintf("s1ap.ENB_UE_S1AP_ID == %s", id)
+	})
+	parts = addSortedParts(parts, corr.tmsis, func(tmsi string) string {
+		return fmt.Sprintf("nas_eps.emm.m_tmsi == %s", tmsi)
+	})
+	parts = addSortedParts(parts, corr.tmsis, func(tmsi string) string {
+		return fmt.Sprintf("s1ap.m_TMSI == %s", tmsi)
+	})
 
 	return strings.Join(parts, " || "), nil
+}
+
+type s1apCorrelation struct {
+	mmeIDs        map[string]bool
+	enbIDs        map[string]bool
+	tmsis         map[string]bool
+	hasIMSIPacket bool
+}
+
+type s1apFieldFrame struct {
+	containsIMSI bool
+	mmeIDs       map[string]bool
+	enbIDs       map[string]bool
+	tmsis        map[string]bool
+}
+
+func (r *S1APResolver) extractS1APCorrelation(output, imsi string) s1apCorrelation {
+	frames := parseS1APFieldFrames(output, imsi)
+	corr := s1apCorrelation{
+		mmeIDs: make(map[string]bool),
+		enbIDs: make(map[string]bool),
+		tmsis:  make(map[string]bool),
+	}
+
+	addFrame := func(frame s1apFieldFrame) bool {
+		changed := false
+		for id := range frame.mmeIDs {
+			if !corr.mmeIDs[id] {
+				corr.mmeIDs[id] = true
+				changed = true
+			}
+		}
+		for id := range frame.enbIDs {
+			if !corr.enbIDs[id] {
+				corr.enbIDs[id] = true
+				changed = true
+			}
+		}
+		for tmsi := range frame.tmsis {
+			if !corr.tmsis[tmsi] {
+				corr.tmsis[tmsi] = true
+				changed = true
+			}
+		}
+		return changed
+	}
+
+	for _, frame := range frames {
+		if frame.containsIMSI {
+			corr.hasIMSIPacket = true
+			addFrame(frame)
+		}
+	}
+
+	for changed := true; changed; {
+		changed = false
+		for _, frame := range frames {
+			if intersectsStringSet(frame.mmeIDs, corr.mmeIDs) ||
+				intersectsStringSet(frame.enbIDs, corr.enbIDs) ||
+				intersectsStringSet(frame.tmsis, corr.tmsis) {
+				if addFrame(frame) {
+					changed = true
+				}
+			}
+		}
+	}
+
+	return corr
+}
+
+func parseS1APFieldFrames(output, imsi string) []s1apFieldFrame {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	frames := make([]s1apFieldFrame, 0, len(lines))
+
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		rawCols := strings.Split(line, "\t")
+		cols := rawCols
+		for len(cols) < 6 {
+			cols = append(cols, "")
+		}
+		mmeIdx, enbIdx, nasTMSIIdx, s1apTMSIIdx := 2, 3, 4, 5
+		containsIMSI := containsIMSIValue(cols[0], imsi) || containsIMSIValue(cols[1], imsi)
+		if len(rawCols) == 5 {
+			// Backward-compatible path for existing field dumps:
+			// e212.imsi, MME_UE_S1AP_ID, ENB_UE_S1AP_ID, nas_eps.emm.m_tmsi, s1ap.m_TMSI
+			mmeIdx, enbIdx, nasTMSIIdx, s1apTMSIIdx = 1, 2, 3, 4
+			containsIMSI = containsIMSIValue(cols[0], imsi)
+		}
+
+		frame := s1apFieldFrame{
+			containsIMSI: containsIMSI,
+			mmeIDs:       make(map[string]bool),
+			enbIDs:       make(map[string]bool),
+			tmsis:        make(map[string]bool),
+		}
+
+		for _, raw := range splitTsharkValues(cols[mmeIdx]) {
+			if id, ok := normalizeUintDecimal(raw, 32, false); ok {
+				frame.mmeIDs[id] = true
+			}
+		}
+		for _, raw := range splitTsharkValues(cols[enbIdx]) {
+			if id, ok := normalizeUintDecimal(raw, 32, false); ok {
+				frame.enbIDs[id] = true
+			}
+		}
+		for _, raw := range splitTsharkValues(cols[nasTMSIIdx]) {
+			if tmsi, ok := normalizeUintDecimal(raw, 32, false); ok {
+				frame.tmsis[tmsi] = true
+			}
+		}
+		for _, raw := range splitTsharkValues(cols[s1apTMSIIdx]) {
+			if tmsi, ok := normalizeUintDecimal(raw, 32, false); ok {
+				frame.tmsis[tmsi] = true
+			}
+		}
+
+		frames = append(frames, frame)
+	}
+
+	return frames
 }
 
 func (r *S1APResolver) extractS1APIDs(output string) (mmeIDs, enbIDs []string) {
@@ -1040,33 +1342,43 @@ func NewGTPv2Resolver() *GTPv2Resolver {
 
 // ResolveFilter resolves GTPv2 display filter for an IMSI
 func (r *GTPv2Resolver) ResolveFilter(ctx context.Context, pcapFile, imsi string) (string, error) {
-	// Try direct IMSI field
-	teids := r.extractTEIDs(ctx, pcapFile, imsi)
+	corr, err := r.resolveGTPv2Correlation(ctx, pcapFile, imsi)
+	if err != nil {
+		return "", err
+	}
 
 	// Cache for GTP-U (thread-safe)
 	r.mu.Lock()
-	r.teids = teids
+	r.teids = setToSortedStrings(corr.gtpuTEIDs)
 	r.mu.Unlock()
 
-	var parts []string
-
-	// Add direct IMSI filter using e212.imsi (gtpv2.imsi is not a valid field)
-	// Use combined filter to restrict to GTPv2 protocol
-	parts = append(parts, fmt.Sprintf("(gtpv2 && e212.imsi == \"%s\")", imsi))
-
-	// Add TEID filters
-	for _, teid := range teids {
-		parts = append(parts, fmt.Sprintf("gtpv2.teid == %s", teid))
+	if len(corr.headerTEIDs) == 0 && len(corr.seqs) == 0 && !corr.hasIMSIPacket {
+		return "", nil
 	}
+
+	var parts []string
+	if corr.hasIMSIPacket {
+		parts = append(parts, fmt.Sprintf("(gtpv2 && e212.imsi == \"%s\")", imsi))
+	}
+	parts = addSortedParts(parts, corr.headerTEIDs, func(teid string) string {
+		return fmt.Sprintf("gtpv2.teid == %s", teid)
+	})
+	parts = addSortedParts(parts, corr.seqs, func(seq string) string {
+		return fmt.Sprintf("gtpv2.seq == %s", seq)
+	})
 
 	return strings.Join(parts, " || "), nil
 }
 
 // ResolveGTPUFilter resolves GTP-U filter based on TEIDs from GTPv2
 func (r *GTPv2Resolver) ResolveGTPUFilter(ctx context.Context, pcapFile, imsi string) (string, error) {
-	// GTP-U runs in parallel with GTPv2, so we need to extract TEIDs independently
-	// This ensures we don't depend on GTPv2 finishing first
-	teids := r.extractTEIDs(ctx, pcapFile, imsi)
+	// GTP-U runs in parallel with GTPv2, so extract correlation independently.
+	// This ensures we don't depend on GTPv2 finishing first.
+	corr, err := r.resolveGTPv2Correlation(ctx, pcapFile, imsi)
+	if err != nil {
+		return "", err
+	}
+	teids := setToSortedStrings(corr.gtpuTEIDs)
 
 	if len(teids) == 0 {
 		return "", nil
@@ -1078,6 +1390,153 @@ func (r *GTPv2Resolver) ResolveGTPUFilter(ctx context.Context, pcapFile, imsi st
 	}
 
 	return strings.Join(parts, " || "), nil
+}
+
+type gtpv2Correlation struct {
+	hasIMSIPacket bool
+	headerTEIDs   map[string]bool
+	gtpuTEIDs     map[string]bool
+	seqs          map[string]bool
+}
+
+type gtpv2FieldFrame struct {
+	containsIMSI bool
+	headerTEIDs  map[string]bool
+	gtpuTEIDs    map[string]bool
+	seqs         map[string]bool
+}
+
+func (r *GTPv2Resolver) resolveGTPv2Correlation(ctx context.Context, pcapFile, imsi string) (gtpv2Correlation, error) {
+	result, err := tshark.TsharkFields(ctx, pcapFile, "gtpv2", []string{
+		"e212.imsi",
+		"gtpv2.teid",
+		"gtpv2.seq",
+		"gtpv2.f_teid_gre_key",
+		"gtpv2.teid_c",
+		"gtpv2.sgw_s1u_teid",
+	})
+	if err != nil {
+		return gtpv2Correlation{}, err
+	}
+	if result.ExitCode != 0 {
+		return gtpv2Correlation{
+			headerTEIDs: make(map[string]bool),
+			gtpuTEIDs:   make(map[string]bool),
+			seqs:        make(map[string]bool),
+		}, nil
+	}
+	return r.extractGTPv2Correlation(result.Stdout, imsi), nil
+}
+
+func (r *GTPv2Resolver) extractGTPv2Correlation(output, imsi string) gtpv2Correlation {
+	frames := parseGTPv2FieldFrames(output, imsi)
+	corr := gtpv2Correlation{
+		headerTEIDs: make(map[string]bool),
+		gtpuTEIDs:   make(map[string]bool),
+		seqs:        make(map[string]bool),
+	}
+
+	addFrame := func(frame gtpv2FieldFrame) bool {
+		changed := false
+		for teid := range frame.headerTEIDs {
+			if !corr.headerTEIDs[teid] {
+				corr.headerTEIDs[teid] = true
+				changed = true
+			}
+			if !corr.gtpuTEIDs[teid] {
+				corr.gtpuTEIDs[teid] = true
+				changed = true
+			}
+		}
+		for teid := range frame.gtpuTEIDs {
+			if !corr.gtpuTEIDs[teid] {
+				corr.gtpuTEIDs[teid] = true
+				changed = true
+			}
+		}
+		for seq := range frame.seqs {
+			if !corr.seqs[seq] {
+				corr.seqs[seq] = true
+				changed = true
+			}
+		}
+		return changed
+	}
+
+	for _, frame := range frames {
+		if frame.containsIMSI {
+			corr.hasIMSIPacket = true
+			addFrame(frame)
+		}
+	}
+
+	for changed := true; changed; {
+		changed = false
+		for _, frame := range frames {
+			if intersectsStringSet(frame.headerTEIDs, corr.headerTEIDs) ||
+				intersectsStringSet(frame.seqs, corr.seqs) {
+				if addFrame(frame) {
+					changed = true
+				}
+			}
+		}
+	}
+
+	return corr
+}
+
+func parseGTPv2FieldFrames(output, imsi string) []gtpv2FieldFrame {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	frames := make([]gtpv2FieldFrame, 0, len(lines))
+
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		cols := strings.Split(line, "\t")
+		for len(cols) < 6 {
+			cols = append(cols, "")
+		}
+
+		frame := gtpv2FieldFrame{
+			containsIMSI: containsIMSIValue(cols[0], imsi),
+			headerTEIDs:  make(map[string]bool),
+			gtpuTEIDs:    make(map[string]bool),
+			seqs:         make(map[string]bool),
+		}
+
+		for _, raw := range splitTsharkValues(cols[1]) {
+			if teid, ok := normalizeUintHex(raw, 32, 8, false); ok {
+				frame.headerTEIDs[teid] = true
+			}
+		}
+		for _, raw := range splitTsharkValues(cols[2]) {
+			if seq, ok := normalizeUintHex(raw, 24, 6, true); ok {
+				frame.seqs[seq] = true
+			}
+		}
+		for col := 3; col < 6; col++ {
+			for _, raw := range splitTsharkValues(cols[col]) {
+				if teid, ok := normalizeUintHex(raw, 32, 8, false); ok {
+					frame.gtpuTEIDs[teid] = true
+				}
+			}
+		}
+
+		frames = append(frames, frame)
+	}
+
+	return frames
+}
+
+func setToSortedStrings(set map[string]bool) []string {
+	values := make([]string, 0, len(set))
+	for value := range set {
+		values = append(values, value)
+	}
+	sort.Strings(values)
+	return values
 }
 
 func (r *GTPv2Resolver) extractTEIDs(ctx context.Context, pcapFile, imsi string) []string {
