@@ -3,6 +3,13 @@
 # Detect OS
 UNAME_S := $(shell uname -s)
 
+# Use sudo only when not running as root.
+SUDO := $(shell if [ "$$(id -u)" -eq 0 ]; then echo ""; else echo "sudo"; fi)
+
+# Frontend toolchain (Vite 6 / TypeScript 5.x) requires a modern Node.js runtime.
+NODE_MIN_MAJOR := 18
+NODESOURCE_MAJOR := 20
+
 # Default target
 all: build
 
@@ -33,21 +40,26 @@ ifeq ($(UNAME_S),Darwin)
 	brew install node
 else ifeq ($(UNAME_S),Linux)
 	@if [ -f /etc/debian_version ]; then \
-		echo "Detected Debian/Ubuntu, using apt-get..."; \
-		sudo apt-get update && sudo apt-get install -y nodejs npm; \
+		echo "Detected Debian/Ubuntu, installing Node.js $(NODESOURCE_MAJOR).x (required >= $(NODE_MIN_MAJOR))..."; \
+		$(SUDO) apt-get update; \
+		$(SUDO) apt-get install -y ca-certificates curl gnupg; \
+		curl -fsSL https://deb.nodesource.com/setup_$(NODESOURCE_MAJOR).x | $(SUDO) bash -; \
+		$(SUDO) apt-get remove -y nodejs npm libnode-dev libnode72 nodejs-doc || true; \
+		$(SUDO) apt-get autoremove -y || true; \
+		$(SUDO) apt-get install -y nodejs; \
 	elif [ -f /etc/redhat-release ]; then \
 		echo "Detected RHEL/CentOS/Fedora, using dnf/yum..."; \
 		if which dnf > /dev/null 2>&1; then \
-			sudo dnf install -y nodejs npm; \
+			$(SUDO) dnf install -y nodejs npm; \
 		else \
-			sudo yum install -y nodejs npm; \
+			$(SUDO) yum install -y nodejs npm; \
 		fi; \
 	elif [ -f /etc/arch-release ]; then \
 		echo "Detected Arch Linux, using pacman..."; \
-		sudo pacman -S --noconfirm nodejs npm; \
+		$(SUDO) pacman -S --noconfirm nodejs npm; \
 	elif [ -f /etc/alpine-release ]; then \
 		echo "Detected Alpine Linux, using apk..."; \
-		sudo apk add --no-cache nodejs npm; \
+		$(SUDO) apk add --no-cache nodejs npm; \
 	else \
 		echo "Error: Unsupported Linux distribution. Please install Node.js and npm manually."; \
 		exit 1; \
@@ -68,20 +80,20 @@ ifeq ($(UNAME_S),Darwin)
 else ifeq ($(UNAME_S),Linux)
 	@if [ -f /etc/debian_version ]; then \
 		echo "Detected Debian/Ubuntu, using apt-get..."; \
-		sudo apt-get update && sudo apt-get install -y tshark; \
+		$(SUDO) apt-get update && $(SUDO) apt-get install -y tshark; \
 	elif [ -f /etc/redhat-release ]; then \
 		echo "Detected RHEL/CentOS/Fedora, using dnf/yum..."; \
 		if which dnf > /dev/null 2>&1; then \
-			sudo dnf install -y wireshark-cli; \
+			$(SUDO) dnf install -y wireshark-cli; \
 		else \
-			sudo yum install -y wireshark; \
+			$(SUDO) yum install -y wireshark; \
 		fi; \
 	elif [ -f /etc/arch-release ]; then \
 		echo "Detected Arch Linux, using pacman..."; \
-		sudo pacman -S --noconfirm wireshark-cli; \
+		$(SUDO) pacman -S --noconfirm wireshark-cli; \
 	elif [ -f /etc/alpine-release ]; then \
 		echo "Detected Alpine Linux, using apk..."; \
-		sudo apk add --no-cache tshark; \
+		$(SUDO) apk add --no-cache tshark; \
 	else \
 		echo "Error: Unsupported Linux distribution. Please install tshark manually."; \
 		exit 1; \
@@ -94,7 +106,15 @@ endif
 
 # Check and install npm if needed
 ensure-npm:
-	@which npm > /dev/null 2>&1 || $(MAKE) install-npm
+	@if ! command -v npm >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then \
+		$(MAKE) install-npm; \
+	else \
+		node_major=$$(node -p "parseInt(process.versions.node.split('.')[0], 10)"); \
+		if [ "$$node_major" -lt "$(NODE_MIN_MAJOR)" ]; then \
+			echo "Node.js $$node_major detected, but frontend build requires Node >= $(NODE_MIN_MAJOR). Upgrading..."; \
+			$(MAKE) install-npm; \
+		fi; \
+	fi
 
 # Check and install tshark if needed
 ensure-tshark:
@@ -153,6 +173,7 @@ check-deps:
 	@which go > /dev/null || (echo "go not found. Please install Go 1.21+." && exit 1)
 	@which npm > /dev/null || (echo "npm not found. Run 'make install-npm' to install." && exit 1)
 	@which node > /dev/null || (echo "node not found. Run 'make install-npm' to install." && exit 1)
+	@node -p "parseInt(process.versions.node.split('.')[0], 10) >= $(NODE_MIN_MAJOR)" >/dev/null 2>&1 || (echo "Node.js version too old. Please install Node >= $(NODE_MIN_MAJOR) (recommended: $(NODESOURCE_MAJOR).x LTS) and retry." && exit 1)
 	@echo "All dependencies OK!"
 
 # Install MCP server (build and show config)
