@@ -40,6 +40,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/jobs/{id}/export/text", h.ExportPacketsText)
 	mux.HandleFunc("POST /api/jobs/{id}/export/text/download", h.DownloadPacketsText)
 
+	// Message statistics operations
+	mux.HandleFunc("POST /api/jobs/{id}/message-stats", h.GetMessageStats)
+
 	// Flow analysis operations
 	mux.HandleFunc("POST /api/jobs/{id}/flow/brief", h.GetFlowBrief)
 	mux.HandleFunc("POST /api/jobs/{id}/flow/generate", h.GenerateFlow)

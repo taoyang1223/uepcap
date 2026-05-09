@@ -4,6 +4,7 @@ import { IMSIList } from './components/IMSIList'
 import { ProtocolSelect } from './components/ProtocolSelect'
 import { ExportPanel } from './components/ExportPanel'
 import { JobInfo } from './components/JobInfo'
+import { MessageStatsPanel } from './components/MessageStatsPanel'
 import { TimelineViewer } from './components/TimelineViewer'
 import { InstallGuide } from './components/InstallGuide'
 import { FlowViewer } from './components/FlowViewer'
@@ -240,6 +241,12 @@ function App() {
                     onSelectionChange={setSelectedProtocols}
                   />
                 </div>
+
+                {/* Row 4: Message statistics */}
+                <MessageStatsPanel
+                  jobId={currentJob.id}
+                  selectedIMSIs={selectedIMSIs}
+                />
               </div>
             )}
           </main>
