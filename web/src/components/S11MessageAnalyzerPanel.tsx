@@ -1,12 +1,12 @@
 import { useCallback, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Activity, CheckCircle2, ChevronDown, Clock3, Copy, DatabaseZap, Loader2, RefreshCw, Search, Upload, X, XCircle } from 'lucide-react'
+import { Activity, CheckCircle2, ChevronDown, Clock3, Copy, DatabaseZap, Loader2, RefreshCw, RotateCw, Search, Timer, Upload, X, XCircle } from 'lucide-react'
 
 interface S11MessageAnalyzerPanelProps {
   jobId: string
 }
 
-type TransactionStatus = 'success' | 'failed' | 'no_response'
+type TransactionStatus = 'success' | 'failed' | 'no_response' | 'timeout' | 'retransmit'
 
 interface S11Statistics {
   total_messages: number
@@ -16,6 +16,8 @@ interface S11Statistics {
   successful: number
   failed: number
   no_response: number
+  timeout: number
+  retransmit: number
   success_rate: number
   create_session: number
   modify_bearer: number
@@ -46,6 +48,8 @@ interface S11Transaction {
   response_teid?: string
   apn?: string
   f_teid_ipv4?: string
+  retransmit_count: number
+  retransmit_frames?: number[]
   wireshark_filter: string
 }
 
@@ -98,12 +102,16 @@ const statusLabels: Record<TransactionStatus, string> = {
   success: '成功',
   failed: '失败',
   no_response: '无响应',
+  timeout: '超时',
+  retransmit: '重传',
 }
 
 const statusClasses: Record<TransactionStatus, string> = {
   success: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   failed: 'bg-rose-50 text-rose-700 border-rose-200',
   no_response: 'bg-amber-50 text-amber-700 border-amber-200',
+  timeout: 'bg-orange-50 text-orange-700 border-orange-200',
+  retransmit: 'bg-purple-50 text-purple-700 border-purple-200',
 }
 
 export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps) {
@@ -146,7 +154,8 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
   const filteredTransactions = useMemo(() => {
     if (!result) return []
     return result.transactions.filter(tx => {
-      if (statusFilter !== 'all' && tx.status !== statusFilter) return false
+      if (statusFilter === 'retransmit' && (tx.retransmit_count || 0) === 0) return false
+      if (statusFilter !== 'all' && statusFilter !== 'retransmit' && tx.status !== statusFilter) return false
       if (procedureFilter !== 'all' && tx.procedure !== procedureFilter) return false
       return true
     })
@@ -191,7 +200,7 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
             <div>
               <h3 className="text-lg font-bold tracking-tight text-slate-900">S11 Message Analyzer</h3>
               <p className="text-xs text-slate-500">
-                {collapsed && result ? `S11 ${stats?.total_messages || 0} · 成功率 ${(stats?.success_rate || 0).toFixed(1)}%` : 'GTPv2-C 事务 / Cause / TEID 分析'}
+                {collapsed && result ? `S11 ${stats?.total_transactions || 0} 个请求响应事务 · 成功率 ${(stats?.success_rate || 0).toFixed(1)}%` : 'GTPv2-C 请求响应事务 / Cause / TEID 分析'}
               </p>
             </div>
           </div>
@@ -231,11 +240,22 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
               </div>
 
               <div className="mb-6">
-                <p className="mb-3 text-sm font-bold text-slate-600">按 S11 事务状态统计</p>
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                <p className="mb-3 text-sm font-bold text-slate-600">按 S11 请求响应状态统计</p>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-5">
                   <FeatureCard active={statusFilter === 'success'} label="成功事务" value={stats?.successful || 0} tone="emerald" icon={<CheckCircle2 className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'success' ? 'all' : 'success')} />
                   <FeatureCard active={statusFilter === 'failed'} label="失败事务" value={stats?.failed || 0} tone="rose" icon={<XCircle className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'failed' ? 'all' : 'failed')} />
                   <FeatureCard active={statusFilter === 'no_response'} label="无响应" value={stats?.no_response || 0} tone="amber" icon={<Clock3 className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'no_response' ? 'all' : 'no_response')} />
+                  <FeatureCard active={statusFilter === 'timeout'} label="超时" value={stats?.timeout || 0} tone="orange" icon={<Timer className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'timeout' ? 'all' : 'timeout')} />
+                  <FeatureCard active={statusFilter === 'retransmit'} label="重传" value={stats?.retransmit || 0} tone="purple" icon={<RotateCw className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'retransmit' ? 'all' : 'retransmit')} />
+                </div>
+              </div>
+
+              <div className="mb-6 rounded-xl border border-slate-200 bg-slate-50 px-6 py-5">
+                <p className="mb-4 flex items-center gap-2 text-sm font-bold text-slate-600"><Clock3 className="h-4 w-4" />响应时间统计</p>
+                <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
+                  <ResponseMetric label="平均响应时间" value={stats?.avg_response_time_ms || 0} />
+                  <ResponseMetric label="最小响应时间" value={stats?.min_response_time_ms || 0} tone="emerald" />
+                  <ResponseMetric label="最大响应时间" value={stats?.max_response_time_ms || 0} tone="orange" />
                 </div>
               </div>
 
@@ -262,6 +282,7 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
                         <th className="px-4 py-3 text-left font-semibold text-orange-700">响应帧</th>
                         <th className="px-4 py-3 text-right font-semibold text-orange-700">耗时</th>
                         <th className="px-4 py-3 text-left font-semibold text-orange-700">Cause</th>
+                        <th className="px-4 py-3 text-right font-semibold text-orange-700">重传</th>
                         <th className="px-4 py-3 text-left font-semibold text-orange-700">APN</th>
                       </tr>
                     </thead>
@@ -275,6 +296,7 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
                           <td className="px-4 py-3 font-mono text-slate-700">{tx.response_frame || '-'}</td>
                           <td className="px-4 py-3 text-right font-semibold tabular-nums text-slate-900">{tx.response_frame ? formatDuration(tx.response_time_ms) : '-'}</td>
                           <td className="px-4 py-3 text-slate-700 whitespace-nowrap">{tx.cause_name || '-'}</td>
+                          <td className="px-4 py-3 text-right font-semibold tabular-nums text-slate-700">{tx.retransmit_count || '-'}</td>
                           <td className="px-4 py-3 font-mono text-xs text-slate-600">{tx.apn || '-'}</td>
                         </tr>
                       ))}
@@ -356,11 +378,18 @@ function TopMetric({ label, value, accent = 'slate' }: { label: string; value: n
   return <div className="min-w-20"><p className={`text-3xl font-black tabular-nums ${valueClass}`}>{value}</p><p className="mt-1 text-xs font-semibold text-slate-500">{label}</p></div>
 }
 
+function ResponseMetric({ label, value, tone = 'slate' }: { label: string; value: number; tone?: 'slate' | 'emerald' | 'orange' }) {
+  const valueClass = tone === 'emerald' ? 'text-emerald-600' : tone === 'orange' ? 'text-orange-600' : 'text-slate-900'
+  return <div><p className="mb-1 text-sm font-semibold text-slate-500">{label}</p><p className={`text-2xl font-black tabular-nums ${valueClass}`}>{formatDuration(value)}</p></div>
+}
+
 function FeatureCard({ active, label, value, tone, icon, onClick }: { active: boolean; label: string; value: number; tone: string; icon: ReactNode; onClick: () => void }) {
   const toneClasses: Record<string, string> = {
     emerald: 'text-emerald-600 bg-emerald-50 border-emerald-200',
     rose: 'text-rose-600 bg-rose-50 border-rose-200',
     amber: 'text-amber-600 bg-amber-50 border-amber-200',
+    orange: 'text-orange-600 bg-orange-50 border-orange-200',
+    purple: 'text-purple-600 bg-purple-50 border-purple-200',
   }
   return <button onClick={onClick} className={`min-h-24 rounded-xl border px-5 py-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-md ${toneClasses[tone]} ${active ? 'ring-2 ring-orange-500 ring-offset-2' : ''}`}><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-bold opacity-80">{label}</p><p className="mt-2 text-3xl font-black tabular-nums">{value}</p></div><span className="rounded-lg bg-white/80 p-2 shadow-sm">{icon}</span></div></button>
 }
@@ -385,7 +414,7 @@ function TransactionDetailModal({ transaction, copied, onCopy, onClose }: { tran
         <div className="space-y-5 p-6">
           <div className="rounded-xl border border-orange-200 bg-orange-50 px-5 py-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-sm font-bold text-orange-700">{transaction.request_type}</p><p className="mt-1 text-2xl font-black text-slate-900">{transaction.response_type || 'No Response'}</p></div><StatusBadge status={transaction.status} /></div></div>
           <DetailSection icon={<Clock3 className="h-4 w-4" />} title="时间信息"><div className="grid grid-cols-1 gap-3 md:grid-cols-3"><DetailValue label="请求时间" value={formatTimestamp(transaction.request_time)} /><DetailValue label="响应时间" value={transaction.response_time ? formatTimestamp(transaction.response_time) : '-'} /><DetailValue label="耗时" value={transaction.response_frame ? formatDuration(transaction.response_time_ms) : '-'} /></div></DetailSection>
-          <DetailSection icon={<Activity className="h-4 w-4" />} title="隧道与结果"><div className="grid grid-cols-1 gap-3 md:grid-cols-2"><DetailValue label="请求 TEID" value={transaction.request_teid || '-'} /><DetailValue label="响应 TEID" value={transaction.response_teid || '-'} /><DetailValue label="Cause" value={`${transaction.cause || '-'} ${transaction.cause_name || ''}`} /><DetailValue label="APN" value={transaction.apn || '-'} /><DetailValue label="F-TEID IPv4" value={transaction.f_teid_ipv4 || '-'} /></div></DetailSection>
+          <DetailSection icon={<Activity className="h-4 w-4" />} title="隧道与结果"><div className="grid grid-cols-1 gap-3 md:grid-cols-2"><DetailValue label="请求 TEID" value={transaction.request_teid || '-'} /><DetailValue label="响应 TEID" value={transaction.response_teid || '-'} /><DetailValue label="Cause" value={`${transaction.cause || '-'} ${transaction.cause_name || ''}`} /><DetailValue label="重传帧" value={transaction.retransmit_frames?.length ? transaction.retransmit_frames.join(', ') : '-'} /><DetailValue label="APN" value={transaction.apn || '-'} /><DetailValue label="F-TEID IPv4" value={transaction.f_teid_ipv4 || '-'} /></div></DetailSection>
           <FilterCopy filter={transaction.wireshark_filter} copied={copied} onCopy={onCopy} />
         </div>
       </div>

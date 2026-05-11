@@ -7,6 +7,7 @@ import { JobInfo } from './components/JobInfo'
 import { MessageStatsPanel } from './components/MessageStatsPanel'
 import { NGAPMessageAnalyzerPanel } from './components/NGAPMessageAnalyzerPanel'
 import { NASMessageAnalyzerPanel } from './components/NASMessageAnalyzerPanel'
+import { SMNASMessageAnalyzerPanel } from './components/SMNASMessageAnalyzerPanel'
 import { S11MessageAnalyzerPanel } from './components/S11MessageAnalyzerPanel'
 import { PFCPSessionPanel } from './components/PFCPSessionPanel'
 import { TimelineViewer } from './components/TimelineViewer'
@@ -258,10 +259,13 @@ function App() {
                 {/* Row 6: NAS message analysis */}
                 <NASMessageAnalyzerPanel jobId={currentJob.id} />
 
-                {/* Row 7: S11 message analysis */}
+                {/* Row 7: SM NAS message analysis */}
+                <SMNASMessageAnalyzerPanel jobId={currentJob.id} />
+
+                {/* Row 8: S11 message analysis */}
                 <S11MessageAnalyzerPanel jobId={currentJob.id} />
 
-                {/* Row 8: PFCP session transaction analysis */}
+                {/* Row 9: PFCP session transaction analysis */}
                 <PFCPSessionPanel jobId={currentJob.id} />
               </div>
             )}

@@ -47,6 +47,45 @@ func (a *Analyzer) AnalyzeFile(ctx context.Context, pcapFile string) (*AnalysisR
 	return analyze(pcapFile, messages), nil
 }
 
+func (a *Analyzer) AnalyzeSMFile(ctx context.Context, pcapFile string) (*AnalysisResult, error) {
+	result, err := a.AnalyzeFile(ctx, pcapFile)
+	if err != nil {
+		return nil, err
+	}
+	return FilterSMResult(result), nil
+}
+
+func FilterSMResult(result *AnalysisResult) *AnalysisResult {
+	if result == nil {
+		return nil
+	}
+
+	messages := make([]*Message, 0, result.Statistics.SMMessages)
+	for _, msg := range result.Messages {
+		if msg.Category == CategorySM {
+			messages = append(messages, msg)
+		}
+	}
+
+	flows := make([]*Flow, 0, result.Statistics.PDUSession)
+	for _, flow := range result.Flows {
+		if flow.FlowType == FlowPDUSessionEst {
+			flows = append(flows, flow)
+		}
+	}
+
+	filtered := &AnalysisResult{
+		Filename:     result.Filename,
+		AnalyzedAt:   result.AnalyzedAt,
+		TotalPackets: len(messages),
+		Messages:     messages,
+		TypeStats:    calculateTypeStats(messages),
+		Flows:        flows,
+	}
+	filtered.Statistics = calculateStatistics(messages, flows)
+	return filtered
+}
+
 func analyze(filename string, messages []*Message) *AnalysisResult {
 	sort.Slice(messages, func(i, j int) bool {
 		return messages[i].FrameNumber < messages[j].FrameNumber

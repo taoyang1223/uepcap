@@ -8,6 +8,8 @@ const (
 	StatusSuccess    TransactionStatus = "success"
 	StatusFailed     TransactionStatus = "failed"
 	StatusNoResponse TransactionStatus = "no_response"
+	StatusTimeout    TransactionStatus = "timeout"
+	StatusRetransmit TransactionStatus = "retransmit"
 )
 
 type Message struct {
@@ -29,26 +31,28 @@ type Message struct {
 }
 
 type Transaction struct {
-	ID              string            `json:"id"`
-	Procedure       string            `json:"procedure"`
-	Status          TransactionStatus `json:"status"`
-	SequenceNumber  int               `json:"sequence_number"`
-	RequestFrame    int               `json:"request_frame"`
-	ResponseFrame   int               `json:"response_frame,omitempty"`
-	RequestTime     time.Time         `json:"request_time"`
-	ResponseTime    time.Time         `json:"response_time,omitempty"`
-	ResponseTimeMs  float64           `json:"response_time_ms"`
-	RequestType     string            `json:"request_type"`
-	ResponseType    string            `json:"response_type,omitempty"`
-	Cause           string            `json:"cause,omitempty"`
-	CauseName       string            `json:"cause_name,omitempty"`
-	SourceIP        string            `json:"source_ip"`
-	DestinationIP   string            `json:"destination_ip"`
-	RequestTEID     string            `json:"request_teid,omitempty"`
-	ResponseTEID    string            `json:"response_teid,omitempty"`
-	APN             string            `json:"apn,omitempty"`
-	FTEIDIPv4       string            `json:"f_teid_ipv4,omitempty"`
-	WiresharkFilter string            `json:"wireshark_filter"`
+	ID               string            `json:"id"`
+	Procedure        string            `json:"procedure"`
+	Status           TransactionStatus `json:"status"`
+	SequenceNumber   int               `json:"sequence_number"`
+	RequestFrame     int               `json:"request_frame"`
+	ResponseFrame    int               `json:"response_frame,omitempty"`
+	RequestTime      time.Time         `json:"request_time"`
+	ResponseTime     time.Time         `json:"response_time,omitempty"`
+	ResponseTimeMs   float64           `json:"response_time_ms"`
+	RequestType      string            `json:"request_type"`
+	ResponseType     string            `json:"response_type,omitempty"`
+	Cause            string            `json:"cause,omitempty"`
+	CauseName        string            `json:"cause_name,omitempty"`
+	SourceIP         string            `json:"source_ip"`
+	DestinationIP    string            `json:"destination_ip"`
+	RequestTEID      string            `json:"request_teid,omitempty"`
+	ResponseTEID     string            `json:"response_teid,omitempty"`
+	APN              string            `json:"apn,omitempty"`
+	FTEIDIPv4        string            `json:"f_teid_ipv4,omitempty"`
+	RetransmitCount  int               `json:"retransmit_count"`
+	RetransmitFrames []int             `json:"retransmit_frames,omitempty"`
+	WiresharkFilter  string            `json:"wireshark_filter"`
 }
 
 type AnalysisResult struct {
@@ -70,6 +74,8 @@ type Statistics struct {
 	Successful        int     `json:"successful"`
 	Failed            int     `json:"failed"`
 	NoResponse        int     `json:"no_response"`
+	Timeout           int     `json:"timeout"`
+	Retransmit        int     `json:"retransmit"`
 	SuccessRate       float64 `json:"success_rate"`
 	CreateSession     int     `json:"create_session"`
 	ModifyBearer      int     `json:"modify_bearer"`

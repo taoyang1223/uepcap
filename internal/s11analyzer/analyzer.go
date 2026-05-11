@@ -12,6 +12,8 @@ import (
 	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
 
+const DefaultTimeout = 3 * time.Second
+
 var tsharkS11Fields = []string{
 	"frame.number",
 	"frame.time_epoch",
@@ -29,10 +31,18 @@ var tsharkS11Fields = []string{
 	"gtpv2.f_teid_ipv6",
 }
 
-type Analyzer struct{}
+type Analyzer struct {
+	timeout time.Duration
+}
 
 func NewAnalyzer() *Analyzer {
-	return &Analyzer{}
+	return &Analyzer{timeout: DefaultTimeout}
+}
+
+func (a *Analyzer) SetTimeout(timeout time.Duration) {
+	if timeout > 0 {
+		a.timeout = timeout
+	}
 }
 
 func (a *Analyzer) AnalyzeFile(ctx context.Context, pcapFile string) (*AnalysisResult, error) {
@@ -44,15 +54,15 @@ func (a *Analyzer) AnalyzeFile(ctx context.Context, pcapFile string) (*AnalysisR
 		return nil, fmt.Errorf("tshark S11 analysis failed: %s", strings.TrimSpace(result.Stderr))
 	}
 	messages := parseFieldRows(result.Stdout)
-	return analyze(pcapFile, messages), nil
+	return a.analyze(pcapFile, messages), nil
 }
 
-func analyze(filename string, messages []*Message) *AnalysisResult {
+func (a *Analyzer) analyze(filename string, messages []*Message) *AnalysisResult {
 	sort.Slice(messages, func(i, j int) bool { return messages[i].FrameNumber < messages[j].FrameNumber })
 	for i, msg := range messages {
 		msg.ID = fmt.Sprintf("s11-%d", i+1)
 	}
-	transactions := analyzeTransactions(messages)
+	transactions := a.analyzeTransactions(messages)
 	return &AnalysisResult{
 		Filename:       filename,
 		AnalyzedAt:     time.Now(),
@@ -104,14 +114,18 @@ func parseFieldRows(output string) []*Message {
 	return messages
 }
 
-func analyzeTransactions(messages []*Message) []*Transaction {
-	requests := make(map[string][]*Message)
+func (a *Analyzer) analyzeTransactions(messages []*Message) []*Transaction {
+	requests := make(map[string]*Message)
+	requestCounts := make(map[string][]int)
 	transactions := make([]*Transaction, 0)
 
 	for _, msg := range messages {
 		if isRequest(msg.MessageTypeCode) {
 			key := requestKey(msg, msg.MessageTypeCode)
-			requests[key] = append(requests[key], msg)
+			requestCounts[key] = append(requestCounts[key], msg.FrameNumber)
+			if _, exists := requests[key]; !exists {
+				requests[key] = msg
+			}
 			continue
 		}
 		reqType, ok := responseToRequest[msg.MessageTypeCode]
@@ -119,19 +133,16 @@ func analyzeTransactions(messages []*Message) []*Transaction {
 			continue
 		}
 		key := responseKey(msg, reqType)
-		list := requests[key]
-		if len(list) == 0 {
+		req, ok := requests[key]
+		if !ok {
 			continue
 		}
-		req := list[0]
-		requests[key] = list[1:]
-		transactions = append(transactions, buildTransaction(req, msg))
+		transactions = append(transactions, a.buildTransaction(req, msg, requestCounts[key]))
+		delete(requests, key)
 	}
 
-	for _, list := range requests {
-		for _, req := range list {
-			transactions = append(transactions, buildTransaction(req, nil))
-		}
+	for key, req := range requests {
+		transactions = append(transactions, a.buildTransaction(req, nil, requestCounts[key]))
 	}
 	sort.SliceStable(transactions, func(i, j int) bool { return transactions[i].RequestFrame < transactions[j].RequestFrame })
 	for i, tx := range transactions {
@@ -140,7 +151,7 @@ func analyzeTransactions(messages []*Message) []*Transaction {
 	return transactions
 }
 
-func buildTransaction(req, resp *Message) *Transaction {
+func (a *Analyzer) buildTransaction(req, resp *Message, requestFrames []int) *Transaction {
 	tx := &Transaction{
 		Procedure:       procedureName(req.MessageTypeCode),
 		Status:          StatusNoResponse,
@@ -155,7 +166,14 @@ func buildTransaction(req, resp *Message) *Transaction {
 		FTEIDIPv4:       req.FTEIDIPv4,
 		WiresharkFilter: fmt.Sprintf("gtpv2.seq == %d && %s && %s", req.SequenceNumber, addressFilter(req.SourceIP), addressFilter(req.DestinationIP)),
 	}
+	if len(requestFrames) > 1 {
+		tx.RetransmitCount = len(requestFrames) - 1
+		tx.RetransmitFrames = append([]int(nil), requestFrames[1:]...)
+	}
 	if resp == nil {
+		if tx.RetransmitCount > 0 {
+			tx.Status = StatusRetransmit
+		}
 		return tx
 	}
 	tx.ResponseFrame = resp.FrameNumber
@@ -172,7 +190,11 @@ func buildTransaction(req, resp *Message) *Transaction {
 		tx.FTEIDIPv4 = resp.FTEIDIPv4
 	}
 	if isAcceptedCause(resp.Cause) {
-		tx.Status = StatusSuccess
+		if resp.Timestamp.Sub(req.Timestamp) > a.timeout {
+			tx.Status = StatusTimeout
+		} else {
+			tx.Status = StatusSuccess
+		}
 	} else {
 		tx.Status = StatusFailed
 	}
@@ -237,6 +259,13 @@ func calculateStatistics(messages []*Message, transactions []*Transaction) Stati
 			stats.Failed++
 		case StatusNoResponse:
 			stats.NoResponse++
+		case StatusTimeout:
+			stats.Timeout++
+		case StatusRetransmit:
+			stats.Retransmit += tx.RetransmitCount
+		}
+		if tx.Status != StatusRetransmit {
+			stats.Retransmit += tx.RetransmitCount
 		}
 		switch tx.Procedure {
 		case "Create Session":
