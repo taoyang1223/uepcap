@@ -5,7 +5,9 @@ import { ProtocolSelect } from './components/ProtocolSelect'
 import { ExportPanel } from './components/ExportPanel'
 import { JobInfo } from './components/JobInfo'
 import { MessageStatsPanel } from './components/MessageStatsPanel'
+import { NGAPMessageAnalyzerPanel } from './components/NGAPMessageAnalyzerPanel'
 import { NASMessageAnalyzerPanel } from './components/NASMessageAnalyzerPanel'
+import { S11MessageAnalyzerPanel } from './components/S11MessageAnalyzerPanel'
 import { PFCPSessionPanel } from './components/PFCPSessionPanel'
 import { TimelineViewer } from './components/TimelineViewer'
 import { InstallGuide } from './components/InstallGuide'
@@ -250,10 +252,16 @@ function App() {
                   selectedIMSIs={selectedIMSIs}
                 />
 
-                {/* Row 5: NAS message analysis */}
+                {/* Row 5: NGAP message analysis */}
+                <NGAPMessageAnalyzerPanel jobId={currentJob.id} />
+
+                {/* Row 6: NAS message analysis */}
                 <NASMessageAnalyzerPanel jobId={currentJob.id} />
 
-                {/* Row 6: PFCP session transaction analysis */}
+                {/* Row 7: S11 message analysis */}
+                <S11MessageAnalyzerPanel jobId={currentJob.id} />
+
+                {/* Row 8: PFCP session transaction analysis */}
                 <PFCPSessionPanel jobId={currentJob.id} />
               </div>
             )}

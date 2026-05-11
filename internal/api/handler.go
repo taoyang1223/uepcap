@@ -42,7 +42,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// Message statistics operations
 	mux.HandleFunc("POST /api/jobs/{id}/message-stats", h.GetMessageStats)
+	mux.HandleFunc("POST /api/jobs/{id}/ngap-messages", h.GetNGAPMessages)
 	mux.HandleFunc("POST /api/jobs/{id}/nas-messages", h.GetNASMessages)
+	mux.HandleFunc("POST /api/jobs/{id}/s11-messages", h.GetS11Messages)
 
 	// PFCP session transaction analysis operations
 	mux.HandleFunc("POST /api/jobs/{id}/pfcp-sessions", h.GetPFCPSessions)

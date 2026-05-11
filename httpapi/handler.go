@@ -41,6 +41,10 @@
 //   - POST /api/jobs/{id}/export/text         - Export packets as JSON text
 //   - POST /api/jobs/{id}/export/text/download - Download packets as JSON
 //
+// Analysis Operations:
+//   - POST /api/jobs/{id}/message-stats       - Count signaling messages
+//   - POST /api/jobs/{id}/pfcp-sessions       - Analyze PFCP session transactions
+//
 // Flow Analysis:
 //   - POST /api/jobs/{id}/flow/brief          - Get brief flow summary
 //   - POST /api/jobs/{id}/flow/generate       - Generate Mermaid flow diagram
@@ -115,4 +119,3 @@ func (h *Handler) Stop() {
 func (h *Handler) App() *uepcap.App {
 	return h.app
 }
-

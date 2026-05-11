@@ -67,6 +67,11 @@
 //	POST   /api/jobs/{id}/export/text         Export packets as JSON text
 //	POST   /api/jobs/{id}/export/text/download Download packets as JSON
 //
+// Analysis Operations:
+//
+//	POST   /api/jobs/{id}/message-stats       Count signaling messages
+//	POST   /api/jobs/{id}/pfcp-sessions       Analyze PFCP session transactions
+//
 // Flow Analysis:
 //
 //	POST   /api/jobs/{id}/flow/brief          Get brief flow summary
@@ -103,4 +108,3 @@
 //
 // See [uepcap.Config] for all available configuration options.
 package httpapi
-

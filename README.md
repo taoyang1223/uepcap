@@ -157,6 +157,8 @@ func main() {
 | POST | `/api/jobs/{id}/export` | 导出过滤后的数据包（异步） |
 | GET | `/api/jobs/{id}/export/{taskId}/status` | 获取导出任务状态 |
 | GET | `/api/jobs/{id}/download/{filename}` | 下载导出文件 |
+| POST | `/api/jobs/{id}/message-stats` | 获取消息统计 |
+| POST | `/api/jobs/{id}/pfcp-sessions` | 分析 PFCP 会话事务 |
 | POST | `/api/jobs/{id}/flow/brief` | 获取流程摘要 |
 | POST | `/api/jobs/{id}/flow/generate` | 生成 Mermaid 流程图 |
 | POST | `/api/jobs/{id}/flow/generate/stream` | SSE 流式生成流程图 |
