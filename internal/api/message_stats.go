@@ -5,12 +5,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"gitee.com/yangdadayyds/uepcap/internal/protocol"
 	"gitee.com/yangdadayyds/uepcap/internal/statistics"
 )
+
+type messageStatsCacheStore struct {
+	mu      sync.Mutex
+	results map[string]*statistics.Result
+	calls   map[string]*messageStatsCall
+}
+
+type messageStatsCall struct {
+	done   chan struct{}
+	result *statistics.Result
+	err    error
+}
+
+func newMessageStatsCacheStore() *messageStatsCacheStore {
+	return &messageStatsCacheStore{
+		results: make(map[string]*statistics.Result),
+		calls:   make(map[string]*messageStatsCall),
+	}
+}
 
 // MessageStatsRequest represents a message statistics request body.
 type MessageStatsRequest struct {
@@ -32,22 +53,71 @@ func (h *Handler) GetMessageStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 	defer cancel()
 
-	scopeFilter, err := resolveMessageStatsScope(ctx, job.MergedPcap, req.IMSIs)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	result, err := statistics.Count(ctx, job.MergedPcap, scopeFilter)
+	result, err := h.messageStatsResult(ctx, id, job.MergedPcap, req.IMSIs)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	writeSuccess(w, result)
+}
+
+func (h *Handler) messageStatsResult(ctx context.Context, jobID, pcapFile string, imsis []string) (*statistics.Result, error) {
+	key := messageStatsCacheKey(jobID, imsis)
+
+	h.messageStats.mu.Lock()
+	if result, ok := h.messageStats.results[key]; ok {
+		h.messageStats.mu.Unlock()
+		return result, nil
+	}
+	if call, ok := h.messageStats.calls[key]; ok {
+		h.messageStats.mu.Unlock()
+		select {
+		case <-call.done:
+			return call.result, call.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	call := &messageStatsCall{done: make(chan struct{})}
+	h.messageStats.calls[key] = call
+	h.messageStats.mu.Unlock()
+
+	call.result, call.err = countMessageStats(ctx, pcapFile, imsis)
+
+	h.messageStats.mu.Lock()
+	delete(h.messageStats.calls, key)
+	if call.err == nil && call.result != nil {
+		h.messageStats.results[key] = call.result
+	}
+	close(call.done)
+	h.messageStats.mu.Unlock()
+
+	return call.result, call.err
+}
+
+func countMessageStats(ctx context.Context, pcapFile string, imsis []string) (*statistics.Result, error) {
+	scopeFilter, err := resolveMessageStatsScope(ctx, pcapFile, imsis)
+	if err != nil {
+		return nil, err
+	}
+	return statistics.Count(ctx, pcapFile, scopeFilter)
+}
+
+func messageStatsCacheKey(jobID string, imsis []string) string {
+	cleaned := make([]string, 0, len(imsis))
+	for _, imsi := range imsis {
+		imsi = strings.TrimSpace(imsi)
+		if imsi != "" {
+			cleaned = append(cleaned, imsi)
+		}
+	}
+	sort.Strings(cleaned)
+	return jobID + "|" + strings.Join(cleaned, ",")
 }
 
 func resolveMessageStatsScope(ctx context.Context, pcapFile string, imsis []string) (string, error) {

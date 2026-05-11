@@ -10,11 +10,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	uepcap "gitee.com/yangdadayyds/uepcap"
 	"gitee.com/yangdadayyds/uepcap/httpapi"
+	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
 
 //go:embed all:dist
@@ -24,8 +26,11 @@ func main() {
 	port := flag.Int("port", 8080, "HTTP server port")
 	dataDir := flag.String("data", "./data", "Data directory for temporary files")
 	ttl := flag.Duration("ttl", 1*time.Hour, "Job TTL (e.g., 1h, 30m)")
-	maxJobs := flag.Int("max-jobs", 3, "Maximum number of jobs to keep (0 = unlimited)")
+	maxJobs := flag.Int("max-jobs", 20, "Maximum number of jobs to keep (0 = unlimited)")
+	maxTshark := flag.Int("max-tshark", 0, "Maximum concurrent tshark/mergecap processes (0 = auto)")
 	flag.Parse()
+
+	tshark.SetMaxConcurrentProcesses(*maxTshark)
 
 	// Initialize uepcap handler using the public httpapi package
 	// This demonstrates how external projects would embed uepcap
@@ -82,6 +87,7 @@ func main() {
 
 	log.Printf("Data directory: %s", *dataDir)
 	log.Printf("Job TTL: %v", *ttl)
+	log.Printf("Max concurrent tshark/mergecap: %d", tshark.MaxConcurrentProcesses())
 	if *maxJobs > 0 {
 		log.Printf("Max jobs: %d (auto-cleanup enabled)", *maxJobs)
 	} else {
@@ -109,6 +115,7 @@ func spaHandler(fileServer http.Handler, fsys fs.FS) http.Handler {
 
 		// Check if file exists
 		if _, err := fs.Stat(fsys, path); err == nil {
+			setStaticCacheHeaders(w, path)
 			fileServer.ServeHTTP(w, r)
 			return
 		}
@@ -116,10 +123,23 @@ func spaHandler(fileServer http.Handler, fsys fs.FS) http.Handler {
 		// For SPA: serve index.html for non-existent paths (except /api)
 		if len(r.URL.Path) < 4 || r.URL.Path[:4] != "/api" {
 			r.URL.Path = "/"
+			setStaticCacheHeaders(w, "index.html")
 			fileServer.ServeHTTP(w, r)
 			return
 		}
 
 		http.NotFound(w, r)
 	})
+}
+
+func setStaticCacheHeaders(w http.ResponseWriter, path string) {
+	if path == "index.html" || path == "/" {
+		w.Header().Set("Cache-Control", "no-cache")
+		return
+	}
+	if strings.HasPrefix(path, "assets/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=3600")
 }

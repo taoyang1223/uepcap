@@ -19,14 +19,20 @@ func (h *Handler) GetNASMessages(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	result, err := nasanalyzer.NewAnalyzer().AnalyzeFile(ctx, job.MergedPcap)
+	value, err := h.analysis.getOrCompute(ctx, id+"|nas", func(ctx context.Context) (any, error) {
+		result, err := nasanalyzer.NewAnalyzer().AnalyzeFile(ctx, job.MergedPcap)
+		if err != nil {
+			return nil, err
+		}
+		result.Filename = displayPcapFilename(job.OriginalFiles, job.MergedPcap)
+		return result, nil
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	result.Filename = displayPcapFilename(job.OriginalFiles, job.MergedPcap)
 
-	writeSuccess(w, result)
+	writeSuccess(w, value)
 }
 
 func (h *Handler) GetSMNASMessages(w http.ResponseWriter, r *http.Request) {
@@ -40,12 +46,18 @@ func (h *Handler) GetSMNASMessages(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	result, err := nasanalyzer.NewAnalyzer().AnalyzeSMFile(ctx, job.MergedPcap)
+	value, err := h.analysis.getOrCompute(ctx, id+"|sm-nas", func(ctx context.Context) (any, error) {
+		result, err := nasanalyzer.NewAnalyzer().AnalyzeSMFile(ctx, job.MergedPcap)
+		if err != nil {
+			return nil, err
+		}
+		result.Filename = displayPcapFilename(job.OriginalFiles, job.MergedPcap)
+		return result, nil
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	result.Filename = displayPcapFilename(job.OriginalFiles, job.MergedPcap)
 
-	writeSuccess(w, result)
+	writeSuccess(w, value)
 }

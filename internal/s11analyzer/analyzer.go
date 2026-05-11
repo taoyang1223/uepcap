@@ -402,8 +402,13 @@ func parseInt(value string) int {
 	if value == "" {
 		return 0
 	}
-	parsed, _ := strconv.Atoi(value)
-	return parsed
+	if parsed, err := strconv.ParseInt(value, 0, 64); err == nil {
+		return int(parsed)
+	}
+	if parsed, err := strconv.ParseInt(value, 16, 64); err == nil {
+		return int(parsed)
+	}
+	return 0
 }
 
 func parseEpoch(value string) time.Time {

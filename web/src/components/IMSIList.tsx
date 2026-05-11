@@ -1,5 +1,6 @@
 import { useState, useMemo } from 'react'
 import { Radar, Search, CheckSquare, Square, Smartphone, Check, Copy, ChevronDown } from 'lucide-react'
+import { copyText } from '../utils/clipboard'
 
 interface IMSIListProps {
   imsiList: string[]
@@ -33,9 +34,10 @@ export function IMSIList({ imsiList, selectedIMSIs, onSelectionChange }: IMSILis
     }
   }
 
-  const handleCopy = (e: React.MouseEvent, imsi: string) => {
+  const handleCopy = async (e: React.MouseEvent, imsi: string) => {
     e.stopPropagation()
-    navigator.clipboard.writeText(imsi)
+    const copied = await copyText(imsi)
+    if (!copied) return
     setCopiedId(imsi)
     setTimeout(() => setCopiedId(null), 2000)
   }

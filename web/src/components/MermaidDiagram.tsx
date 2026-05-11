@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useId, useCallback } from 'react'
 import mermaid from 'mermaid'
 import { AlertCircle, ChevronDown, ChevronUp, Copy, Check } from 'lucide-react'
+import { copyText } from '../utils/clipboard'
 
 // Initialize mermaid with balanced settings for sequence diagrams - readable overview
 mermaid.initialize({
@@ -157,7 +158,6 @@ export function MermaidDiagram({
     if (seqNumEl && seqNumEl.textContent) {
       const parsed = parseInt(seqNumEl.textContent.trim(), 10)
       if (!isNaN(parsed) && parsed > 0) {
-        console.log('[MermaidDiagram] 🎯 Direct sequenceNumber click:', parsed)
         return parsed
       }
     }
@@ -172,7 +172,6 @@ export function MermaidDiagram({
         if (siblingText?.textContent) {
           const parsed = parseInt(siblingText.textContent.trim(), 10)
           if (!isNaN(parsed) && parsed > 0) {
-            console.log('[MermaidDiagram] 🎯 sequenceNumber rect click, sibling text:', parsed)
             return parsed
           }
         }
@@ -210,7 +209,6 @@ export function MermaidDiagram({
       if (closestEl && closestDist < Y_THRESHOLD && closestEl.textContent) {
         const parsed = parseInt(closestEl.textContent.trim(), 10)
         if (!isNaN(parsed) && parsed > 0) {
-          console.log('[MermaidDiagram] 🎯 Nearest sequenceNumber by Y:', parsed, 'dist:', closestDist.toFixed(1))
           return parsed
         }
       }
@@ -224,7 +222,6 @@ export function MermaidDiagram({
     if (messageTextEl) {
       const idx = textEls.indexOf(messageTextEl as SVGTextElement)
       if (idx >= 0) {
-        console.log('[MermaidDiagram] ⚠️ Fallback to DOM order for messageText, idx:', idx + 1)
         return idx + 1
       }
     }
@@ -238,7 +235,6 @@ export function MermaidDiagram({
         if (siblingText) {
           const idx = textEls.indexOf(siblingText as SVGTextElement)
           if (idx >= 0) {
-            console.log('[MermaidDiagram] ⚠️ Fallback to DOM order for line sibling, idx:', idx + 1)
             return idx + 1
           }
         }
@@ -249,7 +245,6 @@ export function MermaidDiagram({
       if (lineEls.length === textEls.length) {
         const idx = lineEls.indexOf(lineEl as SVGPathElement)
         if (idx >= 0) {
-          console.log('[MermaidDiagram] ⚠️ Fallback to DOM order for line, idx:', idx + 1)
           return idx + 1
         }
       }
@@ -282,10 +277,7 @@ export function MermaidDiagram({
   // @ts-ignore - Temporarily disabled, kept for future use
   const _adjustMessageAlignment = useCallback((container: HTMLDivElement) => {
     const svg = container.querySelector('svg')
-    if (!svg) {
-      console.log('[adjustMessageAlignment] ❌ SVG not found')
-      return
-    }
+    if (!svg) return
 
     // Try multiple selectors for message lines (Mermaid version compatibility)
     // Old versions: path.messageLine0, path.messageLine1
@@ -298,34 +290,12 @@ export function MermaidDiagram({
     if (messageLines.length === 0) {
       // Try finding lines within message-related groups
       messageLines = Array.from(svg.querySelectorAll<SVGLineElement>('line'))
-      console.log('[adjustMessageAlignment] 🔍 Fallback: found', messageLines.length, 'line elements')
     }
     
     const messageTexts = Array.from(svg.querySelectorAll<SVGTextElement>('text.messageText'))
 
-    console.log('[adjustMessageAlignment] 📊 Found elements:', {
-      messageLines: messageLines.length,
-      messageTexts: messageTexts.length,
-    })
-
-    // If no lines found, log SVG structure for debugging
+    // If no lines found, stop; Mermaid versions differ in rendered SVG structure.
     if (messageLines.length === 0) {
-      console.log('[adjustMessageAlignment] ⚠️ No message lines found. SVG element types:')
-      const allElements = svg.querySelectorAll('*')
-      const tagCounts: Record<string, number> = {}
-      allElements.forEach(el => {
-        const tag = el.tagName.toLowerCase()
-        tagCounts[tag] = (tagCounts[tag] || 0) + 1
-      })
-      console.log('[adjustMessageAlignment] Element counts:', tagCounts)
-      
-      // Log classes of line and path elements
-      svg.querySelectorAll('line, path').forEach((el, i) => {
-        if (i < 10) { // Only first 10
-          const classes = (el as SVGElement).className?.baseVal || ''
-          if (classes) console.log(`[adjustMessageAlignment] ${el.tagName}[${i}] class:`, classes)
-        }
-      })
       return
     }
 
@@ -348,8 +318,6 @@ export function MermaidDiagram({
         // getBBox can fail for hidden elements
       }
     }
-
-    console.log('[adjustMessageAlignment] 📍 Lines mapped by Y:', linesByY.size)
 
     for (const textEl of messageTexts) {
       const textBbox = textEl.getBBox()
@@ -424,8 +392,6 @@ export function MermaidDiagram({
         textEl.setAttribute('x', String(leftEdge))
       }
     }
-    
-    console.log('[adjustMessageAlignment] ✅ Alignment adjustment completed')
   }, [])
 
   // Preprocess Mermaid code to wrap long Note text with <br/> tags
@@ -529,20 +495,8 @@ export function MermaidDiagram({
       const t = e.target
       if (!(t instanceof Element)) return
 
-      // 📌 Log: 原始点击目标
-      console.log('[MermaidDiagram] 🖱️ SVG Click Event:', {
-        targetElement: t.tagName,
-        targetClass: t.className,
-        targetText: t.textContent?.substring(0, 50),
-      })
-
       const messageIdx = resolveMessageIndexFromTarget(t)
       if (messageIdx) {
-        // 📌 Log: 解析出的消息索引
-        console.log('[MermaidDiagram] ✅ Message Click Detected:', {
-          messageIndex: messageIdx,
-          hasCallback: !!onMessageClick,
-        })
         if (onMessageClick) {
           onMessageClick(messageIdx)
         }
@@ -551,26 +505,17 @@ export function MermaidDiagram({
 
       const actorName = resolveActorNameFromTarget(t)
       if (actorName) {
-        // 📌 Log: 解析出的 Actor 名称
-        console.log('[MermaidDiagram] ✅ Actor Click Detected:', {
-          actorName,
-          hasCallback: !!onActorClick,
-        })
         if (onActorClick) {
           onActorClick(actorName)
         }
         return
       }
 
-      // 📌 Log: 未识别的点击
-      console.log('[MermaidDiagram] ⚠️ Click not recognized as message or actor')
     }
 
     svg.addEventListener('click', handler)
-    console.log('[MermaidDiagram] 🎯 Click handler attached to SVG')
     return () => {
       svg.removeEventListener('click', handler)
-      console.log('[MermaidDiagram] 🎯 Click handler removed from SVG')
     }
   }, [svgReady, onActorClick, onMessageClick, resolveActorNameFromTarget, resolveMessageIndexFromTarget])
 
@@ -582,7 +527,8 @@ export function MermaidDiagram({
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(code)
+      const copied = await copyText(code)
+      if (!copied) return
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     } catch (err) {
@@ -764,4 +710,3 @@ export function MermaidDiagram({
     </div>
   )
 }
-

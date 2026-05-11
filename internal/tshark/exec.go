@@ -4,9 +4,14 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -20,6 +25,66 @@ type ExecResult struct {
 	ExitCode int
 }
 
+var processLimiter = newLimiter(defaultMaxConcurrentProcesses())
+
+type limiter struct {
+	mu sync.RWMutex
+	ch chan struct{}
+}
+
+func newLimiter(size int) *limiter {
+	if size <= 0 {
+		size = 1
+	}
+	return &limiter{ch: make(chan struct{}, size)}
+}
+
+func defaultMaxConcurrentProcesses() int {
+	if value := strings.TrimSpace(os.Getenv("UEPCAP_TSHARK_CONCURRENCY")); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	cpus := runtime.NumCPU()
+	if cpus <= 2 {
+		return 1
+	}
+	if cpus <= 4 {
+		return 2
+	}
+	return 3
+}
+
+// SetMaxConcurrentProcesses limits concurrent tshark/mergecap child processes.
+// Values <= 0 reset to a conservative default.
+func SetMaxConcurrentProcesses(max int) {
+	if max <= 0 {
+		max = defaultMaxConcurrentProcesses()
+	}
+	processLimiter.mu.Lock()
+	processLimiter.ch = make(chan struct{}, max)
+	processLimiter.mu.Unlock()
+}
+
+func MaxConcurrentProcesses() int {
+	processLimiter.mu.RLock()
+	defer processLimiter.mu.RUnlock()
+	return cap(processLimiter.ch)
+}
+
+func (l *limiter) acquire(ctx context.Context) (func(), error) {
+	l.mu.RLock()
+	ch := l.ch
+	l.mu.RUnlock()
+
+	select {
+	case ch <- struct{}{}:
+		return func() { <-ch }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 // CheckInstalled verifies if a command is available in PATH
 func CheckInstalled(name string) error {
 	_, err := exec.LookPath(name)
@@ -28,6 +93,16 @@ func CheckInstalled(name string) error {
 
 // Exec runs a command with context and timeout
 func Exec(ctx context.Context, name string, args ...string) (*ExecResult, error) {
+	var release func()
+	if shouldLimitProcess(name) {
+		var err error
+		release, err = processLimiter.acquire(ctx)
+		if err != nil {
+			return &ExecResult{ExitCode: -1}, err
+		}
+		defer release()
+	}
+
 	cmd := exec.CommandContext(ctx, name, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -49,6 +124,11 @@ func Exec(ctx context.Context, name string, args ...string) (*ExecResult, error)
 	}
 
 	return result, nil
+}
+
+func shouldLimitProcess(name string) bool {
+	base := strings.ToLower(filepath.Base(name))
+	return base == "tshark" || base == "tshark.exe" || base == "mergecap" || base == "mergecap.exe"
 }
 
 // tsharkCutShortWarningRegex matches the common warning when an input capture is truncated.

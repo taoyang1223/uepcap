@@ -85,6 +85,14 @@ type moduleDefinition struct {
 	Items    []messageDefinition
 }
 
+type definitionIndex struct {
+	nasMM map[string][]messageDefinition
+	nasSM map[string][]messageDefinition
+	ngap  map[string][]messageDefinition
+	gtpv2 map[string][]messageDefinition
+	pfcp  map[string][]messageDefinition
+}
+
 var moduleDefinitions = []moduleDefinition{
 	{
 		Key:      "nas",
@@ -299,6 +307,7 @@ func Count(ctx context.Context, pcapFile, scopeFilter string) (*Result, error) {
 
 func countFieldRows(output string) *Result {
 	itemsByKey := make(map[string]*Item)
+	index := newDefinitionIndex()
 	result := &Result{
 		Modules: make([]Module, 0, len(moduleDefinitions)),
 	}
@@ -317,6 +326,7 @@ func countFieldRows(output string) *Result {
 				Filter: def.Filter,
 			}
 			itemsByKey[def.Key] = &module.Items[i]
+			index.add(def)
 		}
 		result.Modules = append(result.Modules, module)
 	}
@@ -327,14 +337,42 @@ func countFieldRows(output string) *Result {
 			continue
 		}
 		row := parseFieldRow(line)
-		for _, moduleDef := range moduleDefinitions {
-			for _, def := range moduleDef.Items {
-				if matchesDefinition(def, row) {
-					itemsByKey[def.Key].RawCount++
-					if def.Kind == matchNASMM && containsValue(row.nasMMElemIDs, "0x71") {
-						nasMMCorrections[def.Key] = true
-					}
+		matched := make(map[string]bool)
+		inc := func(def messageDefinition) {
+			if matched[def.Key] {
+				return
+			}
+			matched[def.Key] = true
+			itemsByKey[def.Key].RawCount++
+			if def.Kind == matchNASMM && containsValue(row.nasMMElemIDs, "0x71") {
+				nasMMCorrections[def.Key] = true
+			}
+		}
+		for _, value := range row.nasMMMessageTypes {
+			for _, def := range index.nasMM[value] {
+				inc(def)
+			}
+		}
+		for _, value := range row.nasSMMessageTypes {
+			for _, def := range index.nasSM[value] {
+				inc(def)
+			}
+		}
+		for _, procedure := range row.ngapProcedures {
+			for _, pdu := range row.ngapPDUs {
+				for _, def := range index.ngap[compoundKey(procedure, pdu)] {
+					inc(def)
 				}
+			}
+		}
+		for _, value := range row.gtpv2MessageTypes {
+			for _, def := range index.gtpv2[value] {
+				inc(def)
+			}
+		}
+		for _, value := range row.pfcpMessageTypes {
+			for _, def := range index.pfcp[value] {
+				inc(def)
 			}
 		}
 	}
@@ -361,6 +399,36 @@ func countFieldRows(output string) *Result {
 	}
 
 	return result
+}
+
+func newDefinitionIndex() *definitionIndex {
+	return &definitionIndex{
+		nasMM: make(map[string][]messageDefinition),
+		nasSM: make(map[string][]messageDefinition),
+		ngap:  make(map[string][]messageDefinition),
+		gtpv2: make(map[string][]messageDefinition),
+		pfcp:  make(map[string][]messageDefinition),
+	}
+}
+
+func (idx *definitionIndex) add(def messageDefinition) {
+	switch def.Kind {
+	case matchNASMM:
+		idx.nasMM[def.Value] = append(idx.nasMM[def.Value], def)
+	case matchNASSM:
+		idx.nasSM[def.Value] = append(idx.nasSM[def.Value], def)
+	case matchNGAP:
+		key := compoundKey(def.Value, def.PDU)
+		idx.ngap[key] = append(idx.ngap[key], def)
+	case matchGTPv2:
+		idx.gtpv2[def.Value] = append(idx.gtpv2[def.Value], def)
+	case matchPFCP:
+		idx.pfcp[def.Value] = append(idx.pfcp[def.Value], def)
+	}
+}
+
+func compoundKey(parts ...string) string {
+	return strings.Join(parts, "\x00")
 }
 
 func sortValueByItemKey(key string) int {

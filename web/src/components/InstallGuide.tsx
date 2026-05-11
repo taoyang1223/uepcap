@@ -1,5 +1,6 @@
 import { ArrowLeft, ExternalLink, Copy, Check, Terminal, Server, Globe, Box, Info, Cpu, Sparkles } from 'lucide-react'
 import { useState } from 'react'
+import { copyText } from '../utils/clipboard'
 
 interface InstallGuideProps {
   onBack: () => void
@@ -9,7 +10,8 @@ const CodeBlock = ({ code, label }: { code: string; label?: string }) => {
   const [copied, setCopied] = useState(false)
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(code)
+    const copied = await copyText(code)
+    if (!copied) return
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
@@ -56,7 +58,8 @@ const MCPConfigCard = ({
   const [copied, setCopied] = useState(false)
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(config)
+    const copied = await copyText(config)
+    if (!copied) return
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }

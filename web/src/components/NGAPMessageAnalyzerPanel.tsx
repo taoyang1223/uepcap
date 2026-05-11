@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Activity, CheckCircle2, ChevronDown, Clock3, Copy, Layers3, Loader2, Network, RefreshCw, Search, Upload, X, XCircle } from 'lucide-react'
+import { copyText } from '../utils/clipboard'
 
 interface NGAPMessageAnalyzerPanelProps {
   jobId: string
@@ -205,7 +206,8 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
   }, [result, procedureFilter, pduFilter, query])
 
   const handleCopy = useCallback(async (id: string, filter: string) => {
-    await navigator.clipboard.writeText(filter)
+    const copied = await copyText(filter)
+    if (!copied) return
     setCopiedId(id)
     window.setTimeout(() => setCopiedId(null), 1200)
   }, [])
@@ -638,10 +640,10 @@ function DetailValue({ label, value }: { label: string; value: string | number }
 function FilterCopy({ filter, copied, onCopy }: { filter: string; copied: boolean; onCopy: () => void }) {
   return (
     <DetailSection icon={<Copy className="h-4 w-4" />} title="Wireshark 过滤器">
-      <button onClick={onCopy} className="flex w-full items-center justify-between gap-3 rounded-lg bg-slate-100 px-4 py-3 text-left font-mono text-xs text-slate-700 hover:bg-slate-200">
+      <div className="flex items-center justify-between gap-3 rounded-lg bg-slate-100 px-4 py-3 font-mono text-xs text-slate-700">
         <span className="break-all">{filter}</span>
-        <span className="shrink-0 rounded-md bg-white px-2 py-1 font-sans text-xs font-bold text-sky-600">{copied ? '已复制' : '复制'}</span>
-      </button>
+        <button type="button" onClick={event => { event.preventDefault(); event.stopPropagation(); onCopy() }} className="shrink-0 rounded-md bg-white px-2 py-1 font-sans text-xs font-bold text-sky-600 shadow-sm hover:bg-sky-50 active:scale-95">{copied ? '已复制' : '复制'}</button>
+      </div>
     </DetailSection>
   )
 }

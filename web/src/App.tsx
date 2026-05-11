@@ -1,19 +1,20 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { lazy, Suspense, useState, useCallback, useEffect, useRef } from 'react'
 import { FileUpload } from './components/FileUpload'
 import { IMSIList } from './components/IMSIList'
 import { ProtocolSelect } from './components/ProtocolSelect'
 import { ExportPanel } from './components/ExportPanel'
 import { JobInfo } from './components/JobInfo'
 import { MessageStatsPanel } from './components/MessageStatsPanel'
-import { NGAPMessageAnalyzerPanel } from './components/NGAPMessageAnalyzerPanel'
-import { NASMessageAnalyzerPanel } from './components/NASMessageAnalyzerPanel'
-import { SMNASMessageAnalyzerPanel } from './components/SMNASMessageAnalyzerPanel'
-import { S11MessageAnalyzerPanel } from './components/S11MessageAnalyzerPanel'
-import { PFCPSessionPanel } from './components/PFCPSessionPanel'
-import { TimelineViewer } from './components/TimelineViewer'
-import { InstallGuide } from './components/InstallGuide'
-import { FlowViewer } from './components/FlowViewer'
 import { Network, BookOpen } from 'lucide-react'
+
+const NGAPMessageAnalyzerPanel = lazy(() => import('./components/NGAPMessageAnalyzerPanel').then(module => ({ default: module.NGAPMessageAnalyzerPanel })))
+const NASMessageAnalyzerPanel = lazy(() => import('./components/NASMessageAnalyzerPanel').then(module => ({ default: module.NASMessageAnalyzerPanel })))
+const SMNASMessageAnalyzerPanel = lazy(() => import('./components/SMNASMessageAnalyzerPanel').then(module => ({ default: module.SMNASMessageAnalyzerPanel })))
+const S11MessageAnalyzerPanel = lazy(() => import('./components/S11MessageAnalyzerPanel').then(module => ({ default: module.S11MessageAnalyzerPanel })))
+const PFCPSessionPanel = lazy(() => import('./components/PFCPSessionPanel').then(module => ({ default: module.PFCPSessionPanel })))
+const TimelineViewer = lazy(() => import('./components/TimelineViewer').then(module => ({ default: module.TimelineViewer })))
+const InstallGuide = lazy(() => import('./components/InstallGuide').then(module => ({ default: module.InstallGuide })))
+const FlowViewer = lazy(() => import('./components/FlowViewer').then(module => ({ default: module.FlowViewer })))
 
 interface Job {
   id: string
@@ -35,6 +36,26 @@ function App() {
   const [viewMode, setViewMode] = useState<ViewMode>('main')
   const [timelinePackets, setTimelinePackets] = useState<any[]>([])
   const [flowFilter, setFlowFilter] = useState<string>('')
+  const pendingIMSIs = useRef<Set<string>>(new Set())
+  const imsiFlushTimer = useRef<number | null>(null)
+
+  const flushPendingIMSIs = useCallback(() => {
+    if (pendingIMSIs.current.size === 0) return
+    const batch = Array.from(pendingIMSIs.current)
+    pendingIMSIs.current.clear()
+    setImsiList(prev => {
+      const seen = new Set(prev)
+      let changed = false
+      for (const imsi of batch) {
+        if (!seen.has(imsi)) {
+          seen.add(imsi)
+          changed = true
+        }
+      }
+      if (!changed) return prev
+      return Array.from(seen).sort()
+    })
+  }, [])
 
   const handleUploadComplete = useCallback((jobId: string, fileCount: number) => {
     setCurrentJob({ id: jobId, status: 'ready', file_count: fileCount })
@@ -55,15 +76,21 @@ function App() {
 
     eventSource.addEventListener('imsi', (event) => {
       const imsi = JSON.parse(event.data)
-      setImsiList(prev => {
-        // Avoid duplicates and keep sorted
-        if (prev.includes(imsi)) return prev
-        const newList = [...prev, imsi]
-        return newList.sort()
-      })
+      pendingIMSIs.current.add(imsi)
+      if (imsiFlushTimer.current == null) {
+        imsiFlushTimer.current = window.setTimeout(() => {
+          imsiFlushTimer.current = null
+          flushPendingIMSIs()
+        }, 200)
+      }
     })
 
     eventSource.addEventListener('done', () => {
+      if (imsiFlushTimer.current != null) {
+        window.clearTimeout(imsiFlushTimer.current)
+        imsiFlushTimer.current = null
+      }
+      flushPendingIMSIs()
       eventSource.close()
       setLoading(false)
     })
@@ -72,15 +99,25 @@ function App() {
       if (event instanceof MessageEvent) {
         setError('扫描IMSI失败: ' + JSON.parse(event.data))
       }
+      if (imsiFlushTimer.current != null) {
+        window.clearTimeout(imsiFlushTimer.current)
+        imsiFlushTimer.current = null
+      }
+      pendingIMSIs.current.clear()
       eventSource.close()
       setLoading(false)
     })
 
     eventSource.onerror = () => {
+      if (imsiFlushTimer.current != null) {
+        window.clearTimeout(imsiFlushTimer.current)
+        imsiFlushTimer.current = null
+      }
+      flushPendingIMSIs()
       eventSource.close()
       setLoading(false)
     }
-  }, [currentJob])
+  }, [currentJob, flushPendingIMSIs])
 
   const handleReset = useCallback(() => {
     setCurrentJob(null)
@@ -90,6 +127,11 @@ function App() {
     setViewMode('main')
     setTimelinePackets([])
     setFlowFilter('')
+    pendingIMSIs.current.clear()
+    if (imsiFlushTimer.current != null) {
+      window.clearTimeout(imsiFlushTimer.current)
+      imsiFlushTimer.current = null
+    }
   }, [])
 
   // 从时间线返回主视图
@@ -136,23 +178,29 @@ function App() {
       {/* Timeline View - 使用 CSS 控制显示/隐藏，避免组件卸载导致的状态丢失 */}
       <div className={viewMode === 'timeline' ? '' : 'hidden'}>
         {timelinePackets.length > 0 && (
-          <TimelineViewer packets={timelinePackets} onBack={handleBackFromTimeline} />
+          <Suspense fallback={<PageLoading />}>
+            <TimelineViewer packets={timelinePackets} onBack={handleBackFromTimeline} />
+          </Suspense>
         )}
       </div>
 
       {/* Install Guide View */}
       <div className={viewMode === 'guide' ? '' : 'hidden'}>
-        <InstallGuide onBack={handleBackFromGuide} />
+        <Suspense fallback={<PageLoading />}>
+          <InstallGuide onBack={handleBackFromGuide} />
+        </Suspense>
       </div>
 
       {/* Flow Viewer */}
       <div className={viewMode === 'flow' ? '' : 'hidden'}>
         {currentJob && flowFilter && (
-          <FlowViewer
-            jobId={currentJob.id}
-            filter={flowFilter}
-            onBack={handleBackFromFlow}
-          />
+          <Suspense fallback={<PageLoading />}>
+            <FlowViewer
+              jobId={currentJob.id}
+              filter={flowFilter}
+              onBack={handleBackFromFlow}
+            />
+          </Suspense>
         )}
       </div>
 
@@ -253,20 +301,22 @@ function App() {
                   selectedIMSIs={selectedIMSIs}
                 />
 
-                {/* Row 5: NGAP message analysis */}
-                <NGAPMessageAnalyzerPanel jobId={currentJob.id} />
+                <Suspense fallback={<ModuleLoading />}>
+                  {/* Row 5: NGAP message analysis */}
+                  <NGAPMessageAnalyzerPanel jobId={currentJob.id} />
 
-                {/* Row 6: NAS message analysis */}
-                <NASMessageAnalyzerPanel jobId={currentJob.id} />
+                  {/* Row 6: NAS message analysis */}
+                  <NASMessageAnalyzerPanel jobId={currentJob.id} />
 
-                {/* Row 7: SM NAS message analysis */}
-                <SMNASMessageAnalyzerPanel jobId={currentJob.id} />
+                  {/* Row 7: SM NAS message analysis */}
+                  <SMNASMessageAnalyzerPanel jobId={currentJob.id} />
 
-                {/* Row 8: S11 message analysis */}
-                <S11MessageAnalyzerPanel jobId={currentJob.id} />
+                  {/* Row 8: S11 message analysis */}
+                  <S11MessageAnalyzerPanel jobId={currentJob.id} />
 
-                {/* Row 9: PFCP session transaction analysis */}
-                <PFCPSessionPanel jobId={currentJob.id} />
+                  {/* Row 9: PFCP session transaction analysis */}
+                  <PFCPSessionPanel jobId={currentJob.id} />
+                </Suspense>
               </div>
             )}
           </main>
@@ -287,3 +337,19 @@ function App() {
 }
 
 export default App
+
+function PageLoading() {
+  return (
+    <div className="min-h-screen bg-slate-50 px-4 py-8 text-center text-sm font-semibold text-slate-500">
+      正在加载模块...
+    </div>
+  )
+}
+
+function ModuleLoading() {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm font-semibold text-slate-500 shadow-sm">
+      正在加载分析模块...
+    </div>
+  )
+}

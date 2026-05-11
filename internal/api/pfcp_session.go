@@ -35,19 +35,25 @@ func (h *Handler) GetPFCPSessions(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	analyzer := pfcpsession.NewAnalyzer()
-	if req.TimeoutSeconds > 0 {
-		analyzer.SetTimeout(time.Duration(req.TimeoutSeconds) * time.Second)
-	}
-
-	result, err := analyzer.AnalyzeFile(ctx, job.MergedPcap)
+	timeoutSeconds := req.TimeoutSeconds
+	value, err := h.analysis.getOrCompute(ctx, fmt.Sprintf("%s|pfcp-session|timeout=%d", id, timeoutSeconds), func(ctx context.Context) (any, error) {
+		analyzer := pfcpsession.NewAnalyzer()
+		if timeoutSeconds > 0 {
+			analyzer.SetTimeout(time.Duration(timeoutSeconds) * time.Second)
+		}
+		result, err := analyzer.AnalyzeFile(ctx, job.MergedPcap)
+		if err != nil {
+			return nil, err
+		}
+		result.Filename = displayPcapFilename(job.OriginalFiles, job.MergedPcap)
+		return result, nil
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	result.Filename = displayPcapFilename(job.OriginalFiles, job.MergedPcap)
 
-	writeSuccess(w, result)
+	writeSuccess(w, value)
 }
 
 func displayPcapFilename(originalFiles []string, fallback string) string {

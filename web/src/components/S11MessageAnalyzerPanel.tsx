@@ -1,12 +1,14 @@
 import { useCallback, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Activity, CheckCircle2, ChevronDown, Clock3, Copy, DatabaseZap, Loader2, RefreshCw, RotateCw, Search, Timer, Upload, X, XCircle } from 'lucide-react'
+import { Activity, CheckCircle2, ChevronDown, Clock3, Copy, DatabaseZap, Loader2, RefreshCw, RotateCw, Timer, Upload, X, XCircle } from 'lucide-react'
+import { copyText } from '../utils/clipboard'
 
 interface S11MessageAnalyzerPanelProps {
   jobId: string
 }
 
 type TransactionStatus = 'success' | 'failed' | 'no_response' | 'timeout' | 'retransmit'
+type ResponseTimeFilter = 'all' | 'min' | 'max'
 
 interface S11Statistics {
   total_messages: number
@@ -53,29 +55,6 @@ interface S11Transaction {
   wireshark_filter: string
 }
 
-interface S11Message {
-  id: string
-  frame_number: number
-  timestamp: string
-  source_ip: string
-  destination_ip: string
-  message_type_code: number
-  message_type: string
-  sequence_number: number
-  teid?: string
-  cause?: string
-  cause_name?: string
-  apn?: string
-  f_teid_ipv4?: string
-  wireshark_filter: string
-}
-
-interface TypeCount {
-  code: number
-  name: string
-  count: number
-}
-
 interface ProcedureCount {
   name: string
   count: number
@@ -86,8 +65,6 @@ interface S11AnalysisResult {
   analyzed_at: string
   total_packets: number
   statistics: S11Statistics
-  messages: S11Message[]
-  type_stats: TypeCount[]
   transactions: S11Transaction[]
   procedure_stats: ProcedureCount[]
 }
@@ -121,10 +98,8 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
   const [collapsed, setCollapsed] = useState(false)
   const [statusFilter, setStatusFilter] = useState<'all' | TransactionStatus>('all')
   const [procedureFilter, setProcedureFilter] = useState<string>('all')
-  const [typeFilter, setTypeFilter] = useState<number | 'all'>('all')
-  const [query, setQuery] = useState('')
+  const [responseTimeFilter, setResponseTimeFilter] = useState<ResponseTimeFilter>('all')
   const [selectedTransaction, setSelectedTransaction] = useState<S11Transaction | null>(null)
-  const [selectedMessage, setSelectedMessage] = useState<S11Message | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
 
   const handleAnalyze = useCallback(async () => {
@@ -140,10 +115,8 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
       setResult(data.data)
       setStatusFilter('all')
       setProcedureFilter('all')
-      setTypeFilter('all')
-      setQuery('')
+      setResponseTimeFilter('all')
       setSelectedTransaction(null)
-      setSelectedMessage(null)
     } catch (err) {
       setError('S11消息分析失败: ' + (err as Error).message)
     } finally {
@@ -153,41 +126,38 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
 
   const filteredTransactions = useMemo(() => {
     if (!result) return []
+    const targetResponseTime = responseTimeFilter === 'min'
+      ? result.statistics.min_response_time_ms
+      : responseTimeFilter === 'max'
+        ? result.statistics.max_response_time_ms
+        : null
     return result.transactions.filter(tx => {
       if (statusFilter === 'retransmit' && (tx.retransmit_count || 0) === 0) return false
       if (statusFilter !== 'all' && statusFilter !== 'retransmit' && tx.status !== statusFilter) return false
       if (procedureFilter !== 'all' && tx.procedure !== procedureFilter) return false
+      if (targetResponseTime != null && !sameResponseTime(tx.response_time_ms, targetResponseTime)) return false
       return true
+    }).sort((left, right) => {
+      const rightDuration = right.response_frame ? right.response_time_ms || 0 : -1
+      const leftDuration = left.response_frame ? left.response_time_ms || 0 : -1
+      if (rightDuration !== leftDuration) return rightDuration - leftDuration
+      return left.request_frame - right.request_frame
     })
-  }, [result, statusFilter, procedureFilter])
-
-  const filteredMessages = useMemo(() => {
-    if (!result) return []
-    const normalizedQuery = query.trim().toLowerCase()
-    return result.messages.filter(message => {
-      if (typeFilter !== 'all' && message.message_type_code !== typeFilter) return false
-      if (!normalizedQuery) return true
-      return [
-        message.message_type,
-        String(message.message_type_code),
-        String(message.sequence_number),
-        message.source_ip,
-        message.destination_ip,
-        message.teid || '',
-        message.cause_name || '',
-        message.apn || '',
-      ].some(value => value.toLowerCase().includes(normalizedQuery))
-    })
-  }, [result, typeFilter, query])
+  }, [result, statusFilter, procedureFilter, responseTimeFilter])
 
   const handleCopy = useCallback(async (id: string, filter: string) => {
-    await navigator.clipboard.writeText(filter)
+    const copied = await copyText(filter)
+    if (!copied) return
     setCopiedId(id)
     window.setTimeout(() => setCopiedId(null), 1200)
   }, [])
 
   const stats = result?.statistics
-  const topTypes = result?.type_stats.slice(0, 6) || []
+  const transactionTypes = useMemo(() => {
+    if (!result) return []
+    const wanted = new Set(['Create Session', 'Modify Bearer', 'Delete Session'])
+    return result.procedure_stats.filter(item => wanted.has(item.name))
+  }, [result])
 
   return (
     <div className="bg-white rounded-2xl shadow-lg shadow-slate-900/5 overflow-hidden">
@@ -250,25 +220,35 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
                 </div>
               </div>
 
+              <div className="mb-6">
+                <p className="mb-3 text-sm font-bold text-slate-600">按 S11 事务类型统计</p>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                  {transactionTypes.map(item => (
+                    <TypeCard key={item.name} active={procedureFilter === item.name} label={item.name} value={item.count} onClick={() => setProcedureFilter(procedureFilter === item.name ? 'all' : item.name)} />
+                  ))}
+                </div>
+              </div>
+
               <div className="mb-6 rounded-xl border border-slate-200 bg-slate-50 px-6 py-5">
                 <p className="mb-4 flex items-center gap-2 text-sm font-bold text-slate-600"><Clock3 className="h-4 w-4" />响应时间统计</p>
                 <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
                   <ResponseMetric label="平均响应时间" value={stats?.avg_response_time_ms || 0} />
-                  <ResponseMetric label="最小响应时间" value={stats?.min_response_time_ms || 0} tone="emerald" />
-                  <ResponseMetric label="最大响应时间" value={stats?.max_response_time_ms || 0} tone="orange" />
+                  <ResponseMetric active={responseTimeFilter === 'min'} label="最小响应时间" value={stats?.min_response_time_ms || 0} tone="emerald" onClick={() => setResponseTimeFilter(responseTimeFilter === 'min' ? 'all' : 'min')} />
+                  <ResponseMetric active={responseTimeFilter === 'max'} label="最大响应时间" value={stats?.max_response_time_ms || 0} tone="orange" onClick={() => setResponseTimeFilter(responseTimeFilter === 'max' ? 'all' : 'max')} />
                 </div>
               </div>
 
-              <div className="mb-6 rounded-xl border border-slate-200 overflow-hidden">
+              <div className="rounded-xl border border-slate-200 overflow-hidden">
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-4">
                   <div className="flex flex-wrap items-center gap-3">
                     <p className="text-base font-bold text-slate-900">S11 事务列表</p>
                     <span className="text-sm text-slate-500">共 {filteredTransactions.length} 条事务</span>
                     {statusFilter !== 'all' && <FilterPill label={`状态：${statusLabels[statusFilter]}`} />}
                     {procedureFilter !== 'all' && <FilterPill label={`流程：${procedureFilter}`} />}
+                    {responseTimeFilter !== 'all' && <FilterPill label={`响应时间：${responseTimeFilter === 'min' ? '最小' : '最大'}`} />}
                   </div>
-                  {(statusFilter !== 'all' || procedureFilter !== 'all') && (
-                    <button onClick={() => { setStatusFilter('all'); setProcedureFilter('all') }} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700">清除筛选</button>
+                  {(statusFilter !== 'all' || procedureFilter !== 'all' || responseTimeFilter !== 'all') && (
+                    <button onClick={() => { setStatusFilter('all'); setProcedureFilter('all'); setResponseTimeFilter('all') }} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700">清除筛选</button>
                   )}
                 </div>
                 <div className="overflow-x-auto">
@@ -306,69 +286,12 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
                 {filteredTransactions.length === 0 && <div className="py-8 text-center text-sm text-slate-500">没有匹配的 S11 事务</div>}
               </div>
 
-              <div className="mb-6">
-                <p className="mb-3 text-sm font-bold text-slate-600">按消息类型统计（筛选消息列表）</p>
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-                  {topTypes.map(item => (
-                    <TypeCard key={item.code} active={typeFilter === item.code} label={item.name} code={`Type ${item.code}`} value={item.count} onClick={() => setTypeFilter(typeFilter === item.code ? 'all' : item.code)} />
-                  ))}
-                </div>
-              </div>
-
-              <div className="animate-fade-in rounded-xl border border-slate-200 overflow-hidden">
-                <div className="flex flex-col gap-3 border-b border-slate-200 bg-white px-4 py-4 md:flex-row md:items-center md:justify-between">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <p className="text-base font-bold text-slate-900">S11 消息列表</p>
-                    <span className="text-sm text-slate-500">共 {filteredMessages.length} 条记录</span>
-                    {typeFilter !== 'all' && <FilterPill label={`Type：${typeFilter}`} />}
-                  </div>
-                  <div className="flex flex-col gap-2 md:flex-row md:items-center">
-                    {(typeFilter !== 'all' || query.trim() !== '') && <button onClick={() => { setTypeFilter('all'); setQuery('') }} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700">清除消息筛选</button>}
-                    <label className="relative block md:w-72">
-                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                      <input value={query} onChange={event => setQuery(event.target.value)} className="w-full rounded-lg border border-slate-200 bg-slate-50 pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/30 focus:border-orange-400" placeholder="搜索 IP / SEQ / TEID / APN" />
-                    </label>
-                  </div>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-slate-200 text-sm">
-                    <thead className="bg-slate-50">
-                      <tr>
-                        <th className="px-4 py-3 text-left font-semibold text-orange-700">Frame</th>
-                        <th className="px-4 py-3 text-left font-semibold text-orange-700">消息类型</th>
-                        <th className="px-4 py-3 text-left font-semibold text-orange-700">SEQ</th>
-                        <th className="px-4 py-3 text-left font-semibold text-orange-700">源 IP</th>
-                        <th className="px-4 py-3 text-left font-semibold text-orange-700">目的 IP</th>
-                        <th className="px-4 py-3 text-left font-semibold text-orange-700">TEID</th>
-                        <th className="px-4 py-3 text-left font-semibold text-orange-700">Cause</th>
-                        <th className="px-4 py-3 text-left font-semibold text-orange-700">APN</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 bg-white">
-                      {filteredMessages.map(message => (
-                        <tr key={message.id} onClick={() => setSelectedMessage(message)} className="cursor-pointer hover:bg-orange-50/60">
-                          <td className="px-4 py-3 font-mono text-slate-700">{message.frame_number}</td>
-                          <td className="px-4 py-3 font-semibold text-slate-800 whitespace-nowrap">{message.message_type}</td>
-                          <td className="px-4 py-3 font-mono text-slate-700">{message.sequence_number}</td>
-                          <td className="px-4 py-3 font-mono text-xs text-slate-600 whitespace-nowrap">{message.source_ip}</td>
-                          <td className="px-4 py-3 font-mono text-xs text-slate-600 whitespace-nowrap">{message.destination_ip}</td>
-                          <td className="px-4 py-3 font-mono text-xs text-slate-600">{message.teid || '-'}</td>
-                          <td className="px-4 py-3 text-slate-700 whitespace-nowrap">{message.cause_name || '-'}</td>
-                          <td className="px-4 py-3 font-mono text-xs text-slate-600">{message.apn || '-'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {filteredMessages.length === 0 && <div className="py-8 text-center text-sm text-slate-500">没有匹配的 S11 消息</div>}
-              </div>
             </>
           )}
         </div>
       )}
 
       {selectedTransaction && <TransactionDetailModal transaction={selectedTransaction} copied={copiedId === selectedTransaction.id} onCopy={() => handleCopy(selectedTransaction.id, selectedTransaction.wireshark_filter)} onClose={() => setSelectedTransaction(null)} />}
-      {selectedMessage && <MessageDetailModal message={selectedMessage} copied={copiedId === selectedMessage.id} onCopy={() => handleCopy(selectedMessage.id, selectedMessage.wireshark_filter)} onClose={() => setSelectedMessage(null)} />}
     </div>
   )
 }
@@ -378,9 +301,11 @@ function TopMetric({ label, value, accent = 'slate' }: { label: string; value: n
   return <div className="min-w-20"><p className={`text-3xl font-black tabular-nums ${valueClass}`}>{value}</p><p className="mt-1 text-xs font-semibold text-slate-500">{label}</p></div>
 }
 
-function ResponseMetric({ label, value, tone = 'slate' }: { label: string; value: number; tone?: 'slate' | 'emerald' | 'orange' }) {
+function ResponseMetric({ active = false, label, value, tone = 'slate', onClick }: { active?: boolean; label: string; value: number; tone?: 'slate' | 'emerald' | 'orange'; onClick?: () => void }) {
   const valueClass = tone === 'emerald' ? 'text-emerald-600' : tone === 'orange' ? 'text-orange-600' : 'text-slate-900'
-  return <div><p className="mb-1 text-sm font-semibold text-slate-500">{label}</p><p className={`text-2xl font-black tabular-nums ${valueClass}`}>{formatDuration(value)}</p></div>
+  const content = <><p className="mb-1 text-sm font-semibold text-slate-500">{label}</p><p className={`text-2xl font-black tabular-nums ${valueClass}`}>{formatDuration(value)}</p></>
+  if (!onClick) return <div>{content}</div>
+  return <button type="button" onClick={onClick} className={`rounded-xl px-4 py-3 text-left transition-all hover:bg-white hover:shadow-sm ${active ? 'bg-white ring-2 ring-orange-500' : ''}`}>{content}</button>
 }
 
 function FeatureCard({ active, label, value, tone, icon, onClick }: { active: boolean; label: string; value: number; tone: string; icon: ReactNode; onClick: () => void }) {
@@ -394,8 +319,8 @@ function FeatureCard({ active, label, value, tone, icon, onClick }: { active: bo
   return <button onClick={onClick} className={`min-h-24 rounded-xl border px-5 py-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-md ${toneClasses[tone]} ${active ? 'ring-2 ring-orange-500 ring-offset-2' : ''}`}><div className="flex items-start justify-between gap-3"><div><p className="text-sm font-bold opacity-80">{label}</p><p className="mt-2 text-3xl font-black tabular-nums">{value}</p></div><span className="rounded-lg bg-white/80 p-2 shadow-sm">{icon}</span></div></button>
 }
 
-function TypeCard({ active, label, code, value, onClick }: { active: boolean; label: string; code: string; value: number; onClick: () => void }) {
-  return <button onClick={onClick} className={`rounded-xl border border-orange-200 bg-orange-50 px-5 py-4 text-left text-orange-600 transition-all hover:-translate-y-0.5 hover:shadow-md ${active ? 'ring-2 ring-orange-500 ring-offset-2' : ''}`}><div className="flex items-start justify-between gap-4"><div className="min-w-0"><p className="truncate text-sm font-bold text-slate-700">{label}</p><p className="mt-1 text-xs font-semibold text-orange-500">{code}</p></div><p className="text-3xl font-black tabular-nums">{value}</p></div></button>
+function TypeCard({ active, label, value, onClick }: { active: boolean; label: string; value: number; onClick: () => void }) {
+  return <button onClick={onClick} className={`rounded-xl border border-orange-200 bg-orange-50 px-5 py-4 text-left text-orange-600 transition-all hover:-translate-y-0.5 hover:shadow-md ${active ? 'ring-2 ring-orange-500 ring-offset-2' : ''}`}><div className="flex items-start justify-between gap-4"><p className="truncate text-sm font-bold text-slate-700">{label}</p><p className="text-3xl font-black tabular-nums">{value}</p></div></button>
 }
 
 function StatusBadge({ status }: { status: TransactionStatus }) {
@@ -422,20 +347,6 @@ function TransactionDetailModal({ transaction, copied, onCopy, onClose }: { tran
   )
 }
 
-function MessageDetailModal({ message, copied, onCopy, onClose }: { message: S11Message; copied: boolean; onCopy: () => void; onClose: () => void }) {
-  return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
-      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
-        <ModalHeader title="S11 消息详情" subtitle={`Frame ${message.frame_number} · ${message.message_type}`} onClose={onClose} />
-        <div className="space-y-5 p-6">
-          <DetailSection icon={<Activity className="h-4 w-4" />} title="消息字段"><div className="grid grid-cols-1 gap-3 md:grid-cols-2"><DetailValue label="Message Type" value={`${message.message_type_code} · ${message.message_type}`} /><DetailValue label="Sequence" value={message.sequence_number} /><DetailValue label="TEID" value={message.teid || '-'} /><DetailValue label="Cause" value={`${message.cause || '-'} ${message.cause_name || ''}`} /><DetailValue label="APN" value={message.apn || '-'} /><DetailValue label="F-TEID IPv4" value={message.f_teid_ipv4 || '-'} /></div></DetailSection>
-          <FilterCopy filter={message.wireshark_filter} copied={copied} onCopy={onCopy} />
-        </div>
-      </div>
-    </div>
-  )
-}
-
 function ModalHeader({ title, subtitle, onClose }: { title: string; subtitle: string; onClose: () => void }) {
   return <div className="flex items-start justify-between border-b border-slate-200 px-6 py-5"><div className="flex items-center gap-3"><div className="rounded-full bg-orange-50 p-2 text-orange-600"><DatabaseZap className="h-5 w-5" /></div><div><h4 className="text-xl font-bold text-slate-900">{title}</h4><p className="mt-1 text-sm font-mono text-slate-500">{subtitle}</p></div></div><button onClick={onClose} className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-700"><X className="h-5 w-5" /></button></div>
 }
@@ -449,7 +360,7 @@ function DetailValue({ label, value }: { label: string; value: string | number }
 }
 
 function FilterCopy({ filter, copied, onCopy }: { filter: string; copied: boolean; onCopy: () => void }) {
-  return <DetailSection icon={<Copy className="h-4 w-4" />} title="Wireshark 过滤器"><button onClick={onCopy} className="flex w-full items-center justify-between gap-3 rounded-lg bg-slate-100 px-4 py-3 text-left font-mono text-xs text-slate-700 hover:bg-slate-200"><span className="break-all">{filter}</span><span className="shrink-0 rounded-md bg-white px-2 py-1 font-sans text-xs font-bold text-orange-600">{copied ? '已复制' : '复制'}</span></button></DetailSection>
+  return <DetailSection icon={<Copy className="h-4 w-4" />} title="Wireshark 过滤器"><div className="flex items-center justify-between gap-3 rounded-lg bg-slate-100 px-4 py-3 font-mono text-xs text-slate-700"><span className="break-all">{filter}</span><button type="button" onClick={event => { event.preventDefault(); event.stopPropagation(); onCopy() }} className="shrink-0 rounded-md bg-white px-2 py-1 font-sans text-xs font-bold text-orange-600 shadow-sm hover:bg-orange-50 active:scale-95">{copied ? '已复制' : '复制'}</button></div></DetailSection>
 }
 
 function formatDuration(value?: number) {
@@ -464,6 +375,11 @@ function formatTimestamp(value?: string) {
   if (Number.isNaN(date.getTime())) return value
   const base = date.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
   return `${base}.${String(date.getMilliseconds()).padStart(3, '0')}`
+}
+
+function sameResponseTime(value: number | undefined, target: number): boolean {
+  if (value == null) return false
+  return Math.abs(value - target) < 0.000001
 }
 
 function shortFilename(filename?: string) {

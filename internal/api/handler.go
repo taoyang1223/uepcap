@@ -9,13 +9,17 @@ import (
 
 // Handler handles API requests
 type Handler struct {
-	jobMgr *job.Manager
+	jobMgr       *job.Manager
+	messageStats *messageStatsCacheStore
+	analysis     *analysisCacheStore
 }
 
 // NewHandler creates a new API handler
 func NewHandler(jobMgr *job.Manager) *Handler {
 	return &Handler{
-		jobMgr: jobMgr,
+		jobMgr:       jobMgr,
+		messageStats: newMessageStatsCacheStore(),
+		analysis:     newAnalysisCacheStore(128),
 	}
 }
 

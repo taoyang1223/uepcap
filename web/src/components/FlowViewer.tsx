@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { ArrowLeft, Loader2, AlertCircle, Code, AlertTriangle, Search, FileText, Copy, Check } from 'lucide-react'
 import { MermaidDiagram } from './MermaidDiagram'
 import { DraggableWindow } from './DraggableWindow'
+import { copyText } from '../utils/clipboard'
 import { 
   deriveFlowDetails,
   deriveFlowDetailsFromTsharkColumns,
@@ -256,10 +257,6 @@ export function FlowViewer({ jobId, filter, onBack }: FlowViewerProps) {
           for (const line of lines) {
             if (line.startsWith('event: ')) {
               currentEvent = line.substring(7).trim()
-              // Log non-chunk events
-              if (currentEvent !== 'chunk') {
-                console.log('[FlowViewer] 📥 SSE event received:', currentEvent)
-              }
             } else if (line.startsWith('data: ')) {
               const data = line.substring(6)
               
@@ -274,17 +271,14 @@ export function FlowViewer({ jobId, filter, onBack }: FlowViewerProps) {
                 try {
                   const params = JSON.parse(data) as KeyParams
                   keyParamsRef.current = params
-                  console.log('[FlowViewer] Received key_params:', params)
                 } catch (e) {
                   console.error('Failed to parse key_params:', e)
                 }
               } else if (currentEvent === 'input_json') {
-                console.log('[FlowViewer] 🔵 input_json event detected, data length:', data.length, ', first 100 chars:', data.substring(0, 100))
                 try {
                   // input_json is double-escaped JSON string
                   const inputJSON = JSON.parse(data) as string
                   inputJSONRef.current = inputJSON
-                  console.log('[FlowViewer] ✅ Received input_json:', inputJSON.length, 'bytes')
                 } catch (e) {
                   console.error('[FlowViewer] ❌ Failed to parse input_json:', e, 'data preview:', data.substring(0, 500))
                 }
@@ -292,7 +286,6 @@ export function FlowViewer({ jobId, filter, onBack }: FlowViewerProps) {
                 try {
                   const detailsMap = JSON.parse(data) as FlowDetailMapping[]
                   detailsMapRef.current = detailsMap
-                  console.log('[FlowViewer] Received details_map:', detailsMap.length, 'entries')
                 } catch (e) {
                   console.error('Failed to parse details_map:', e)
                 }
@@ -300,13 +293,6 @@ export function FlowViewer({ jobId, filter, onBack }: FlowViewerProps) {
                 try {
                   const payload = JSON.parse(data) as FlowFinalPayload
                   flowFinalRef.current = payload
-                  console.log('[FlowViewer] ✅ Received flow_final:', {
-                    mode: payload.mode,
-                    stats: payload.stats,
-                    reasons: payload.reasons,
-                    details_map_len: payload.details_map?.length,
-                    mermaid_len: payload.mermaid?.length,
-                  })
                 } catch (e) {
                   console.error('[FlowViewer] ❌ Failed to parse flow_final:', e)
                 }
@@ -333,7 +319,6 @@ export function FlowViewer({ jobId, filter, onBack }: FlowViewerProps) {
                     let derived: RichFlowDetail[] = []
                     if (finalPayload.packet_columns && finalPayload.details_map?.length) {
                       // New: Use tshark-extracted columns for accurate Wireshark-style display
-                      console.log('[FlowViewer] Using packet_columns for details:', Object.keys(finalPayload.packet_columns).length, 'frames')
                       derived = deriveFlowDetailsFromTsharkColumns(
                         finalPayload.details_map,
                         finalPayload.packet_columns,
@@ -341,7 +326,6 @@ export function FlowViewer({ jobId, filter, onBack }: FlowViewerProps) {
                       )
                     } else if (inputJSONRef.current && finalPayload.details_map?.length) {
                       // Fallback: derive from input_json (legacy method)
-                      console.log('[FlowViewer] Falling back to deriveFlowDetails (no packet_columns)')
                       derived = deriveFlowDetails(inputJSONRef.current, finalPayload.details_map, finalPayload.annotations)
                     }
 
@@ -643,15 +627,9 @@ export function FlowViewer({ jobId, filter, onBack }: FlowViewerProps) {
               code={flowData.mermaid}
               className="w-full"
               onMessageClick={(idx) => {
-                console.log('[FlowViewer] 📩 onMessageClick callback received:', {
-                  clickedIndex: idx,
-                  matchingDetail: flowData.details?.find((d) => d.idx === idx),
-                })
                 openDetailByIdx(idx)
               }}
-              onActorClick={(actorName) => {
-                console.log('[FlowViewer] 📩 onActorClick callback received:', { actorName })
-              }}
+              onActorClick={() => {}}
             />
           </div>
         )}
@@ -683,8 +661,9 @@ export function FlowViewer({ jobId, filter, onBack }: FlowViewerProps) {
                   </div>
                   {protocolTree && (
                     <button
-                      onClick={() => {
-                        navigator.clipboard.writeText(protocolTree)
+                      onClick={async () => {
+                        const copied = await copyText(protocolTree)
+                        if (!copied) return
                         setProtocolTreeCopied(true)
                         setTimeout(() => setProtocolTreeCopied(false), 2000)
                       }}

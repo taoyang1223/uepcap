@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Activity, AlertTriangle, CheckCircle2, ChevronDown, Clock3, Copy, Loader2, RefreshCw, Search, Upload, X, XCircle, Zap } from 'lucide-react'
+import { copyText } from '../utils/clipboard'
 
 interface PFCPSessionPanelProps {
   jobId: string
@@ -153,7 +154,8 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
   }, [result, statusFilter, messageTypeFilter, responseTimeFilter, query])
 
   const handleCopyFilter = useCallback(async (tx: PFCPSessionTransaction) => {
-    await navigator.clipboard.writeText(tx.wireshark_filter)
+    const copied = await copyText(tx.wireshark_filter)
+    if (!copied) return
     setCopiedId(tx.id)
     window.setTimeout(() => setCopiedId(null), 1200)
   }, [])
@@ -556,13 +558,11 @@ function TransactionDetailModal({ transaction, copied, onCopy, onClose }: { tran
           </DetailSection>
 
           <DetailSection title="Wireshark 过滤器">
-            <button
-              onClick={onCopy}
-              className="flex w-full items-start gap-2 rounded-lg bg-slate-950 px-4 py-3 text-left text-cyan-200 hover:bg-slate-900"
-            >
+            <div className="flex w-full items-start gap-2 rounded-lg bg-slate-950 px-4 py-3 text-cyan-200">
               <Copy className="mt-0.5 h-4 w-4 flex-shrink-0" />
-              <code className="break-all text-xs leading-5">{copied ? '已复制' : transaction.wireshark_filter}</code>
-            </button>
+              <code className="min-w-0 flex-1 break-all text-xs leading-5">{transaction.wireshark_filter}</code>
+              <button type="button" onClick={event => { event.preventDefault(); event.stopPropagation(); onCopy() }} className="shrink-0 rounded-md bg-white/10 px-2 py-1 text-xs font-bold text-cyan-100 hover:bg-white/20 active:scale-95">{copied ? '已复制' : '复制'}</button>
+            </div>
           </DetailSection>
         </div>
       </div>

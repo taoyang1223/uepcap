@@ -19,12 +19,18 @@ func (h *Handler) GetNGAPMessages(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	result, err := ngapanalyzer.NewAnalyzer().AnalyzeFile(ctx, job.MergedPcap)
+	value, err := h.analysis.getOrCompute(ctx, id+"|ngap", func(ctx context.Context) (any, error) {
+		result, err := ngapanalyzer.NewAnalyzer().AnalyzeFile(ctx, job.MergedPcap)
+		if err != nil {
+			return nil, err
+		}
+		result.Filename = displayPcapFilename(job.OriginalFiles, job.MergedPcap)
+		return result, nil
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	result.Filename = displayPcapFilename(job.OriginalFiles, job.MergedPcap)
 
-	writeSuccess(w, result)
+	writeSuccess(w, value)
 }

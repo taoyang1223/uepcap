@@ -19,12 +19,18 @@ func (h *Handler) GetS11Messages(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	result, err := s11analyzer.NewAnalyzer().AnalyzeFile(ctx, job.MergedPcap)
+	value, err := h.analysis.getOrCompute(ctx, id+"|s11", func(ctx context.Context) (any, error) {
+		result, err := s11analyzer.NewAnalyzer().AnalyzeFile(ctx, job.MergedPcap)
+		if err != nil {
+			return nil, err
+		}
+		result.Filename = displayPcapFilename(job.OriginalFiles, job.MergedPcap)
+		return result, nil
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	result.Filename = displayPcapFilename(job.OriginalFiles, job.MergedPcap)
 
-	writeSuccess(w, result)
+	writeSuccess(w, value)
 }
