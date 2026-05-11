@@ -2,17 +2,28 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
 	"gitee.com/yangdadayyds/uepcap/internal/nasanalyzer"
 )
 
+type NASMessagesRequest struct {
+	Limit int `json:"limit,omitempty"`
+}
+
 func (h *Handler) GetNASMessages(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	job, ok := h.jobMgr.GetJob(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+
+	var req NASMessagesRequest
+	if err := decodeOptionalJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
 		return
 	}
 
@@ -32,7 +43,14 @@ func (h *Handler) GetNASMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccess(w, value)
+	result, ok := value.(*nasanalyzer.AnalysisResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "invalid NAS analysis result")
+		return
+	}
+
+	out := windowNASAnalysis(result, normalizedAnalysisLimit(req.Limit))
+	writeSuccess(w, out)
 }
 
 func (h *Handler) GetSMNASMessages(w http.ResponseWriter, r *http.Request) {
@@ -40,6 +58,12 @@ func (h *Handler) GetSMNASMessages(w http.ResponseWriter, r *http.Request) {
 	job, ok := h.jobMgr.GetJob(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+
+	var req NASMessagesRequest
+	if err := decodeOptionalJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
 		return
 	}
 
@@ -59,5 +83,12 @@ func (h *Handler) GetSMNASMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccess(w, value)
+	result, ok := value.(*nasanalyzer.AnalysisResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "invalid SM NAS analysis result")
+		return
+	}
+
+	out := windowNASAnalysis(result, normalizedAnalysisLimit(req.Limit))
+	writeSuccess(w, out)
 }

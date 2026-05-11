@@ -160,6 +160,7 @@ export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps)
       const response = await fetch(`/api/jobs/${jobId}/nas-messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limit: 500 }),
       })
       const data = (await response.json()) as APIResponse<NASAnalysisResult>
       if (!data.success || !data.data) {

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useDeferredValue, useState, useMemo } from 'react'
 import { Radar, Search, CheckSquare, Square, Smartphone, Check, Copy, ChevronDown } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
 
@@ -12,14 +12,23 @@ export function IMSIList({ imsiList, selectedIMSIs, onSelectionChange }: IMSILis
   const [searchTerm, setSearchTerm] = useState('')
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
+  const deferredSearchTerm = useDeferredValue(searchTerm.trim())
+  const selectedSet = useMemo(() => new Set(selectedIMSIs), [selectedIMSIs])
 
   const filteredList = useMemo(() => {
-    if (!searchTerm) return imsiList
-    return imsiList.filter(imsi => imsi.includes(searchTerm))
-  }, [imsiList, searchTerm])
+    if (!deferredSearchTerm) return imsiList
+    return imsiList.filter(imsi => imsi.includes(deferredSearchTerm))
+  }, [imsiList, deferredSearchTerm])
+
+  const visibleList = useMemo(() => filteredList.slice(0, 200), [filteredList])
+  const hiddenCount = Math.max(0, filteredList.length - visibleList.length)
+  const allFilteredSelected = useMemo(
+    () => filteredList.length > 0 && filteredList.every(imsi => selectedSet.has(imsi)),
+    [filteredList, selectedSet]
+  )
 
   const toggleIMSI = (imsi: string) => {
-    if (selectedIMSIs.includes(imsi)) {
+    if (selectedSet.has(imsi)) {
       onSelectionChange(selectedIMSIs.filter(i => i !== imsi))
     } else {
       onSelectionChange([...selectedIMSIs, imsi])
@@ -27,7 +36,7 @@ export function IMSIList({ imsiList, selectedIMSIs, onSelectionChange }: IMSILis
   }
 
   const toggleAll = () => {
-    if (selectedIMSIs.length === filteredList.length) {
+    if (allFilteredSelected) {
       onSelectionChange([])
     } else {
       onSelectionChange([...filteredList])
@@ -98,7 +107,7 @@ export function IMSIList({ imsiList, selectedIMSIs, onSelectionChange }: IMSILis
           onClick={toggleAll}
           className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-colors"
         >
-          {selectedIMSIs.length === filteredList.length && filteredList.length > 0 ? (
+          {allFilteredSelected ? (
             <CheckSquare className="w-4 h-4 text-indigo-600" />
           ) : (
             <Square className="w-4 h-4" />
@@ -120,9 +129,9 @@ export function IMSIList({ imsiList, selectedIMSIs, onSelectionChange }: IMSILis
             </p>
           </div>
         ) : (
-          filteredList.map(imsi => {
+          visibleList.map(imsi => {
             const formatted = formatIMSI(imsi)
-            const isSelected = selectedIMSIs.includes(imsi)
+            const isSelected = selectedSet.has(imsi)
             
             return (
               <div
@@ -175,6 +184,11 @@ export function IMSIList({ imsiList, selectedIMSIs, onSelectionChange }: IMSILis
           })
         )}
       </div>
+      {hiddenCount > 0 && (
+        <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center text-xs font-semibold text-slate-500">
+          已显示前 {visibleList.length} 个 IMSI，还有 {hiddenCount} 个未渲染；可通过搜索快速定位。
+        </div>
+      )}
         </>
       )}
     </div>

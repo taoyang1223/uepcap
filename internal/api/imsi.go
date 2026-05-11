@@ -14,19 +14,15 @@ import (
 // GetIMSIList handles GET /api/jobs/{id}/imsis - scan and return IMSI list (legacy)
 func (h *Handler) GetIMSIList(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	log.Printf("[IMSI] GetIMSIList called for job: %s", id)
 
 	job, ok := h.jobMgr.GetJob(id)
 	if !ok {
-		log.Printf("[IMSI] Job not found: %s", id)
 		writeError(w, http.StatusNotFound, "job not found")
 		return
 	}
-	log.Printf("[IMSI] Job found, MergedPcap: %s", job.MergedPcap)
 
 	// Check if already scanned
 	if imsiList, ok := h.jobMgr.GetJobIMSIList(id); ok {
-		log.Printf("[IMSI] Returning cached IMSI list: %d items", len(imsiList))
 		writeSuccess(w, map[string]interface{}{
 			"imsis":  imsiList,
 			"cached": true,
@@ -34,47 +30,30 @@ func (h *Handler) GetIMSIList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update status to scanning
-	h.jobMgr.UpdateJobStatus(id, "scanning", nil)
-	log.Printf("[IMSI] Starting IMSI scan for job: %s", id)
-
-	// Scan IMSI list from merged pcap
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	scanner := protocol.NewIMSIScanner()
-	imsiList, err := scanner.ScanIMSIs(ctx, job.MergedPcap)
+	imsiList, shared, err := h.scanIMSIsOnce(ctx, id, job.MergedPcap)
 	if err != nil {
-		log.Printf("[IMSI] Scan failed for job %s: %v", id, err)
-		h.jobMgr.UpdateJobStatus(id, "error", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	log.Printf("[IMSI] Scan completed for job %s: found %d IMSIs", id, len(imsiList))
-
-	// Cache results
-	h.jobMgr.SetJobIMSIList(id, imsiList)
-	h.jobMgr.UpdateJobStatus(id, "ready", nil)
-
 	writeSuccess(w, map[string]interface{}{
 		"imsis":  imsiList,
-		"cached": false,
+		"cached": shared,
 	})
 }
 
 // StreamIMSIList handles GET /api/jobs/{id}/imsis/stream - SSE stream for real-time IMSI updates
 func (h *Handler) StreamIMSIList(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	log.Printf("[IMSI-Stream] StreamIMSIList called for job: %s", id)
 
 	job, ok := h.jobMgr.GetJob(id)
 	if !ok {
-		log.Printf("[IMSI-Stream] Job not found: %s", id)
 		writeError(w, http.StatusNotFound, "job not found")
 		return
 	}
-	log.Printf("[IMSI-Stream] Job found, MergedPcap: %s", job.MergedPcap)
 
 	// Set SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -84,24 +63,41 @@ func (h *Handler) StreamIMSIList(w http.ResponseWriter, r *http.Request) {
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		log.Printf("[IMSI-Stream] Streaming not supported for job: %s", id)
 		writeError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
 
 	// Check if already scanned - send cached results immediately
 	if imsiList, ok := h.jobMgr.GetJobIMSIList(id); ok {
-		log.Printf("[IMSI-Stream] Returning cached IMSI list: %d items", len(imsiList))
-		for _, imsi := range imsiList {
-			sendSSEEvent(w, flusher, "imsi", imsi)
-		}
+		sendSSEEvent(w, flusher, "imsis", imsiList)
 		sendSSEEvent(w, flusher, "done", "cached")
 		return
 	}
 
+	if call, ok := h.activeIMSIScan(id); ok {
+		select {
+		case <-call.done:
+			if call.err != nil {
+				sendSSEEvent(w, flusher, "error", call.err.Error())
+				return
+			}
+			sendSSEEvent(w, flusher, "imsis", call.imsis)
+			sendSSEEvent(w, flusher, "done", fmt.Sprintf("shared:%d", len(call.imsis)))
+			return
+		case <-r.Context().Done():
+			return
+		}
+	}
+
 	// Update status to scanning
 	h.jobMgr.UpdateJobStatus(id, "scanning", nil)
-	log.Printf("[IMSI-Stream] Starting IMSI stream scan for job: %s", id)
+
+	call := h.beginIMSIScan(id)
+	if call == nil {
+		sendSSEEvent(w, flusher, "error", "scan already running")
+		return
+	}
+	defer h.finishIMSIScan(id, call)
 
 	// Create channel for streaming results
 	imsiChan := make(chan string, 100)
@@ -112,10 +108,8 @@ func (h *Handler) StreamIMSIList(w http.ResponseWriter, r *http.Request) {
 
 	// Start scanning in background
 	go func() {
-		log.Printf("[IMSI-Stream] Background scan goroutine started for job: %s", id)
 		scanner := protocol.NewIMSIScanner()
 		err := scanner.ScanIMSIsStream(ctx, job.MergedPcap, imsiChan)
-		log.Printf("[IMSI-Stream] Background scan completed for job %s, error: %v", id, err)
 		doneChan <- err
 	}()
 
@@ -131,10 +125,11 @@ func (h *Handler) StreamIMSIList(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			allIMSIs = append(allIMSIs, imsi)
-			log.Printf("[IMSI-Stream] Found IMSI: %s (total: %d)", imsi, len(allIMSIs))
 			sendSSEEvent(w, flusher, "imsi", imsi)
 
 		case err := <-doneChan:
+			call.imsis = allIMSIs
+			call.err = err
 			if err != nil {
 				log.Printf("[IMSI-Stream] Scan error for job %s: %v", id, err)
 				h.jobMgr.UpdateJobStatus(id, "error", err)
@@ -149,7 +144,7 @@ func (h *Handler) StreamIMSIList(w http.ResponseWriter, r *http.Request) {
 			return
 
 		case <-ctx.Done():
-			log.Printf("[IMSI-Stream] Context timeout for job: %s", id)
+			call.err = ctx.Err()
 			sendSSEEvent(w, flusher, "error", "timeout")
 			return
 		}
@@ -157,9 +152,70 @@ func (h *Handler) StreamIMSIList(w http.ResponseWriter, r *http.Request) {
 }
 
 // sendSSEEvent sends a Server-Sent Event
-func sendSSEEvent(w http.ResponseWriter, flusher http.Flusher, event, data string) {
+func sendSSEEvent(w http.ResponseWriter, flusher http.Flusher, event string, data any) {
 	fmt.Fprintf(w, "event: %s\n", event)
 	jsonData, _ := json.Marshal(data)
 	fmt.Fprintf(w, "data: %s\n\n", jsonData)
 	flusher.Flush()
+}
+
+func (h *Handler) scanIMSIsOnce(ctx context.Context, jobID, pcapFile string) ([]string, bool, error) {
+	if imsis, ok := h.jobMgr.GetJobIMSIList(jobID); ok {
+		return imsis, true, nil
+	}
+
+	call := h.beginIMSIScan(jobID)
+	if call == nil {
+		existing, ok := h.activeIMSIScan(jobID)
+		if !ok {
+			return nil, false, fmt.Errorf("IMSI scan state changed")
+		}
+		select {
+		case <-existing.done:
+			return existing.imsis, true, existing.err
+		case <-ctx.Done():
+			return nil, true, ctx.Err()
+		}
+	}
+	defer h.finishIMSIScan(jobID, call)
+
+	h.jobMgr.UpdateJobStatus(jobID, "scanning", nil)
+	scanner := protocol.NewIMSIScanner()
+	imsis, err := scanner.ScanIMSIs(ctx, pcapFile)
+	call.imsis = imsis
+	call.err = err
+	if err != nil {
+		h.jobMgr.UpdateJobStatus(jobID, "error", err)
+		return nil, false, err
+	}
+	h.jobMgr.SetJobIMSIList(jobID, imsis)
+	h.jobMgr.UpdateJobStatus(jobID, "ready", nil)
+	return imsis, false, nil
+}
+
+func (h *Handler) beginIMSIScan(jobID string) *imsiScanCall {
+	h.imsiScanMu.Lock()
+	defer h.imsiScanMu.Unlock()
+	if h.imsiScans[jobID] != nil {
+		return nil
+	}
+	call := &imsiScanCall{done: make(chan struct{})}
+	h.imsiScans[jobID] = call
+	return call
+}
+
+func (h *Handler) activeIMSIScan(jobID string) (*imsiScanCall, bool) {
+	h.imsiScanMu.Lock()
+	defer h.imsiScanMu.Unlock()
+	call := h.imsiScans[jobID]
+	return call, call != nil
+}
+
+func (h *Handler) finishIMSIScan(jobID string, call *imsiScanCall) {
+	h.imsiScanMu.Lock()
+	if h.imsiScans[jobID] == call {
+		delete(h.imsiScans, jobID)
+	}
+	h.imsiScanMu.Unlock()
+	close(call.done)
 }

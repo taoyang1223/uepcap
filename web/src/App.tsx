@@ -85,6 +85,18 @@ function App() {
       }
     })
 
+    eventSource.addEventListener('imsis', (event) => {
+      const imsis = JSON.parse(event.data) as string[]
+      for (const imsi of imsis) {
+        pendingIMSIs.current.add(imsi)
+      }
+      if (imsiFlushTimer.current != null) {
+        window.clearTimeout(imsiFlushTimer.current)
+        imsiFlushTimer.current = null
+      }
+      flushPendingIMSIs()
+    })
+
     eventSource.addEventListener('done', () => {
       if (imsiFlushTimer.current != null) {
         window.clearTimeout(imsiFlushTimer.current)

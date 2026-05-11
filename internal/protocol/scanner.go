@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
@@ -15,6 +16,19 @@ import (
 type IMSIScanner struct {
 	imsiPattern *regexp.Regexp
 }
+
+var imsiFieldCandidates = []string{
+	"e212.imsi",        // Generic E.212 IMSI (covers GTPv2, S1AP, NGAP, etc.)
+	"gsm_a.imsi",       // GSM/UMTS IMSI
+	"nas_5gs.mm.imsi",  // 5G NAS IMSI on newer Wireshark versions
+	"nas_eps.emm.imsi", // LTE NAS IMSI on newer Wireshark versions
+	"pfcp.user_id",     // PFCP User ID on newer Wireshark versions
+}
+
+var (
+	imsiFieldsOnce sync.Once
+	imsiFields     []string
+)
 
 // NewIMSIScanner creates a new IMSI scanner
 func NewIMSIScanner() *IMSIScanner {
@@ -72,14 +86,9 @@ func (s *IMSIScanner) scanByFieldsFast(ctx context.Context, pcapFile string) map
 	imsiSet := make(map[string]bool)
 	log.Printf("[IMSIScanner] scanByFieldsFast starting, pcapFile: %s", pcapFile)
 
-	// Comprehensive IMSI fields - extracted in one call
-	// Note: gtpv2.imsi is NOT a valid field, GTPv2 IMSI is extracted via e212.imsi
-	fields := []string{
-		"e212.imsi",        // Generic E.212 IMSI (covers GTPv2, S1AP, NGAP, etc.)
-		"gsm_a.imsi",       // GSM/UMTS IMSI
-		"nas_5gs.mm.imsi",  // 5G NAS IMSI
-		"nas_eps.emm.imsi", // LTE NAS IMSI
-		"pfcp.user_id",     // PFCP User ID (may contain IMSI)
+	fields := supportedIMSIFields(ctx)
+	if len(fields) == 0 {
+		return imsiSet
 	}
 
 	// Single tshark call with combined filter for signaling protocols
@@ -210,13 +219,10 @@ func (s *IMSIScanner) ScanIMSIsStream(ctx context.Context, pcapFile string, imsi
 func (s *IMSIScanner) scanByFieldsStream(ctx context.Context, pcapFile string, sendIMSI func(string)) {
 	log.Printf("[IMSIScanner] scanByFieldsStream starting, pcapFile: %s", pcapFile)
 
-	// Note: gtpv2.imsi is NOT a valid field, GTPv2 IMSI is extracted via e212.imsi
-	fields := []string{
-		"e212.imsi",
-		"gsm_a.imsi",
-		"nas_5gs.mm.imsi",
-		"nas_eps.emm.imsi",
-		"pfcp.user_id",
+	fields := supportedIMSIFields(ctx)
+	if len(fields) == 0 {
+		log.Printf("[IMSIScanner] scanByFieldsStream skipped: no supported IMSI fields")
+		return
 	}
 
 	filter := "gtpv2 or s1ap or ngap or nas_5gs or nas_eps or diameter or pfcp"
@@ -305,4 +311,42 @@ func (s *IMSIScanner) isValidIMSI(val string) bool {
 		return false
 	}
 	return true
+}
+
+func supportedIMSIFields(ctx context.Context) []string {
+	imsiFieldsOnce.Do(func() {
+		imsiFields = detectSupportedIMSIFields(ctx)
+	})
+	return append([]string(nil), imsiFields...)
+}
+
+func detectSupportedIMSIFields(parent context.Context) []string {
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	defer cancel()
+
+	result, err := tshark.Exec(ctx, "tshark", "-G", "fields")
+	if err != nil || result.ExitCode != 0 {
+		log.Printf("[IMSIScanner] failed to detect tshark IMSI fields, using e212.imsi only: %v", err)
+		return []string{"e212.imsi"}
+	}
+
+	available := make(map[string]bool)
+	for _, line := range strings.Split(result.Stdout, "\n") {
+		cols := strings.Split(line, "\t")
+		if len(cols) >= 3 {
+			available[cols[2]] = true
+		}
+	}
+
+	fields := make([]string, 0, len(imsiFieldCandidates))
+	for _, field := range imsiFieldCandidates {
+		if available[field] {
+			fields = append(fields, field)
+		}
+	}
+	if len(fields) == 0 && available["e212.imsi"] {
+		fields = append(fields, "e212.imsi")
+	}
+	log.Printf("[IMSIScanner] supported IMSI fields: %v", fields)
+	return fields
 }

@@ -105,10 +105,24 @@ func countMessageStats(ctx context.Context, pcapFile string, imsis []string) (*s
 	if err != nil {
 		return nil, err
 	}
-	return statistics.Count(ctx, pcapFile, scopeFilter)
+	result, err := statistics.Count(ctx, pcapFile, scopeFilter)
+	if err != nil {
+		return nil, err
+	}
+	if len(imsis) > 0 {
+		result.ScopeFilter = fmt.Sprintf("%d 个 UE", len(cleanIMSIs(imsis)))
+	} else {
+		result.ScopeFilter = "全量抓包"
+	}
+	return result, nil
 }
 
 func messageStatsCacheKey(jobID string, imsis []string) string {
+	cleaned := cleanIMSIs(imsis)
+	return jobID + "|" + strings.Join(cleaned, ",")
+}
+
+func cleanIMSIs(imsis []string) []string {
 	cleaned := make([]string, 0, len(imsis))
 	for _, imsi := range imsis {
 		imsi = strings.TrimSpace(imsi)
@@ -117,7 +131,7 @@ func messageStatsCacheKey(jobID string, imsis []string) string {
 		}
 	}
 	sort.Strings(cleaned)
-	return jobID + "|" + strings.Join(cleaned, ",")
+	return cleaned
 }
 
 func resolveMessageStatsScope(ctx context.Context, pcapFile string, imsis []string) (string, error) {

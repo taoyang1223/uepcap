@@ -159,6 +159,7 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
       const response = await fetch(`/api/jobs/${jobId}/ngap-messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limit: 500 }),
       })
       const data = (await response.json()) as APIResponse<NGAPAnalysisResult>
       if (!data.success || !data.data) {

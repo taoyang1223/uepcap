@@ -2,7 +2,10 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
+	"sync"
 
 	"gitee.com/yangdadayyds/uepcap/internal/job"
 )
@@ -12,6 +15,14 @@ type Handler struct {
 	jobMgr       *job.Manager
 	messageStats *messageStatsCacheStore
 	analysis     *analysisCacheStore
+	imsiScans    map[string]*imsiScanCall
+	imsiScanMu   sync.Mutex
+}
+
+type imsiScanCall struct {
+	done  chan struct{}
+	imsis []string
+	err   error
 }
 
 // NewHandler creates a new API handler
@@ -20,6 +31,7 @@ func NewHandler(jobMgr *job.Manager) *Handler {
 		jobMgr:       jobMgr,
 		messageStats: newMessageStatsCacheStore(),
 		analysis:     newAnalysisCacheStore(128),
+		imsiScans:    make(map[string]*imsiScanCall),
 	}
 }
 
@@ -85,4 +97,15 @@ func writeSuccess(w http.ResponseWriter, data interface{}) {
 // writeError writes an error response
 func writeError(w http.ResponseWriter, status int, err string) {
 	writeJSON(w, status, APIResponse{Success: false, Error: err})
+}
+
+func decodeOptionalJSON(r *http.Request, dst any) error {
+	if r.Body == nil {
+		return nil
+	}
+	err := json.NewDecoder(r.Body).Decode(dst)
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	return err
 }

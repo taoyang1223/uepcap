@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -13,7 +12,9 @@ import (
 )
 
 type PFCPSessionRequest struct {
-	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+	TimeoutSeconds     int    `json:"timeout_seconds,omitempty"`
+	Limit              int    `json:"limit,omitempty"`
+	ResponseTimeFilter string `json:"response_time_filter,omitempty"`
 }
 
 func (h *Handler) GetPFCPSessions(w http.ResponseWriter, r *http.Request) {
@@ -25,11 +26,9 @@ func (h *Handler) GetPFCPSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req PFCPSessionRequest
-	if r.Body != nil {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
-			return
-		}
+	if err := decodeOptionalJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
@@ -53,7 +52,14 @@ func (h *Handler) GetPFCPSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccess(w, value)
+	result, ok := value.(*pfcpsession.AnalysisResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "invalid PFCP analysis result")
+		return
+	}
+
+	out := windowPFCPAnalysis(result, normalizedAnalysisLimit(req.Limit), req.ResponseTimeFilter)
+	writeSuccess(w, out)
 }
 
 func displayPcapFilename(originalFiles []string, fallback string) string {

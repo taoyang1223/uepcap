@@ -2,17 +2,28 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
 	"gitee.com/yangdadayyds/uepcap/internal/ngapanalyzer"
 )
 
+type NGAPMessagesRequest struct {
+	Limit int `json:"limit,omitempty"`
+}
+
 func (h *Handler) GetNGAPMessages(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	job, ok := h.jobMgr.GetJob(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+
+	var req NGAPMessagesRequest
+	if err := decodeOptionalJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
 		return
 	}
 
@@ -32,5 +43,12 @@ func (h *Handler) GetNGAPMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccess(w, value)
+	result, ok := value.(*ngapanalyzer.AnalysisResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "invalid NGAP analysis result")
+		return
+	}
+
+	out := windowNGAPAnalysis(result, normalizedAnalysisLimit(req.Limit))
+	writeSuccess(w, out)
 }

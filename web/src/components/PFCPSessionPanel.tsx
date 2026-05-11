@@ -106,7 +106,7 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
       const response = await fetch(`/api/jobs/${jobId}/pfcp-sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ timeout_seconds: 3 }),
+        body: JSON.stringify({ timeout_seconds: 3, limit: 500 }),
       })
       const data = (await response.json()) as APIResponse<PFCPSessionResult>
       if (!data.success || !data.data) {

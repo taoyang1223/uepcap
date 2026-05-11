@@ -132,6 +132,7 @@ export function SMNASMessageAnalyzerPanel({ jobId }: SMNASMessageAnalyzerPanelPr
       const response = await fetch(`/api/jobs/${jobId}/sm-nas-messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limit: 500 }),
       })
       const data = (await response.json()) as APIResponse<SMNASAnalysisResult>
       if (!data.success || !data.data) throw new Error(data.error || 'SM NAS消息分析失败')

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { startTransition, useCallback, useEffect, useMemo, useState } from 'react'
 import { BarChart3, ChevronDown, Download, Loader2, RefreshCw, Sigma } from 'lucide-react'
 
 interface MessageStatsPanelProps {
@@ -50,6 +50,7 @@ export function MessageStatsPanel({ jobId, selectedIMSIs }: MessageStatsPanelPro
   }, [jobId, selectedIMSIs])
 
   const handleLoadStats = useCallback(async () => {
+    if (loading) return
     setLoading(true)
     setError(null)
 
@@ -65,14 +66,16 @@ export function MessageStatsPanel({ jobId, selectedIMSIs }: MessageStatsPanelPro
         throw new Error(data.error || '消息统计失败')
       }
 
-      setResult(data.data)
-      setActiveModuleKey(data.data.modules[0]?.key || '')
+      startTransition(() => {
+        setResult(data.data!)
+        setActiveModuleKey(data.data!.modules[0]?.key || '')
+      })
     } catch (err) {
       setError('消息统计失败: ' + (err as Error).message)
     } finally {
       setLoading(false)
     }
-  }, [jobId, selectedIMSIs])
+  }, [jobId, selectedIMSIs, loading])
 
   const activeModule = useMemo(() => {
     if (!result) return null

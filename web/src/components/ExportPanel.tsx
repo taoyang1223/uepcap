@@ -59,6 +59,7 @@ export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols, onViewFlo
   const [copied, setCopied] = useState(false)
   const [pcapGenerating, setPcapGenerating] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
+  const [filterExpanded, setFilterExpanded] = useState(false)
   const pollingRef = useRef<number | null>(null)
 
   // 数据包文本相关状态
@@ -117,6 +118,7 @@ export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols, onViewFlo
     setExporting(true)
     setError(null)
     setResult(null)
+    setFilterExpanded(false)
     setPcapGenerating(false)
 
     // Clear any existing polling
@@ -185,6 +187,7 @@ export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols, onViewFlo
       pollingRef.current = null
     }
     setResult(null)
+    setFilterExpanded(false)
     setPcapGenerating(false)
     setError(null)
     setTextCopied(false)
@@ -286,6 +289,10 @@ export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols, onViewFlo
   }, [jobId, result])
 
   const isComplete = result?.status === 'completed' || result?.cached
+  const filterPreview = result?.filter && result.filter.length > 700 && !filterExpanded
+    ? `${result.filter.slice(0, 700)} ...`
+    : result?.filter
+  const filterIsLong = (result?.filter?.length || 0) > 700
 
   return (
     <div className="bg-white rounded-2xl shadow-lg shadow-slate-900/5 p-6 overflow-hidden relative">
@@ -366,31 +373,49 @@ export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols, onViewFlo
           {result.filter && (
             <div className="p-3 bg-white/60 rounded-xl mb-3">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Wireshark 过滤条件</span>
-                <button
-                  onClick={handleCopyFilter}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg transition-all ${
-                    copied 
-                      ? 'bg-emerald-100 text-emerald-700' 
-                      : 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100'
-                  }`}
-                >
-                  {copied ? (
-                    <>
-                      <CopyCheck className="w-3.5 h-3.5" />
-                      已复制
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-3.5 h-3.5" />
-                      复制
-                    </>
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  Wireshark 过滤条件
+                  <span className="ml-2 normal-case text-slate-400">{result.filter.length.toLocaleString()} 字符</span>
+                </span>
+                <div className="flex items-center gap-2">
+                  {filterIsLong && (
+                    <button
+                      onClick={() => setFilterExpanded(value => !value)}
+                      className="rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600 hover:bg-slate-200"
+                    >
+                      {filterExpanded ? '收起' : '展开'}
+                    </button>
                   )}
-                </button>
+                  <button
+                    onClick={handleCopyFilter}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-lg transition-all ${
+                      copied 
+                        ? 'bg-emerald-100 text-emerald-700' 
+                        : 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100'
+                    }`}
+                  >
+                    {copied ? (
+                      <>
+                        <CopyCheck className="w-3.5 h-3.5" />
+                        已复制
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        复制
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
-              <code className="block text-xs text-slate-600 bg-white p-2.5 rounded-lg overflow-x-auto max-h-24 font-mono break-all shadow-sm">
-                {result.filter}
+              <code className={`block text-xs text-slate-600 bg-white p-2.5 rounded-lg overflow-x-auto font-mono break-all shadow-sm ${filterExpanded ? 'max-h-72' : 'max-h-24'}`}>
+                {filterPreview}
               </code>
+              {filterIsLong && !filterExpanded && (
+                <p className="mt-2 text-xs font-medium text-slate-500">
+                  过滤器较长，已折叠展示；复制、查看流程和导出仍使用完整过滤条件。
+                </p>
+              )}
             </div>
           )}
 
