@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { Loader2, BadgeCheck, FileArchive, RefreshCw, Copy, CopyCheck, Download, Clock, PackageOpen, FileText, ClipboardCopy, GitBranch, ChevronRight } from 'lucide-react'
+import { Loader2, BadgeCheck, FileArchive, RefreshCw, Copy, CopyCheck, Download, Clock, PackageOpen, FileText, ClipboardCopy, GitBranch, ChevronRight, ChevronDown } from 'lucide-react'
 
 // 安全的剪贴板复制函数，带 fallback
 async function copyToClipboard(text: string): Promise<boolean> {
@@ -58,6 +58,7 @@ export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols, onViewFlo
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [pcapGenerating, setPcapGenerating] = useState(false)
+  const [collapsed, setCollapsed] = useState(false)
   const pollingRef = useRef<number | null>(null)
 
   // 数据包文本相关状态
@@ -288,12 +289,38 @@ export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols, onViewFlo
 
   return (
     <div className="bg-white rounded-2xl shadow-lg shadow-slate-900/5 p-6 overflow-hidden relative">
-      <h3 className="text-lg font-bold text-slate-800 flex items-center gap-3 mb-5">
-        <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-sm">
-          <PackageOpen className="w-5 h-5 text-white" />
+      <div className={`flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between ${collapsed ? '' : 'mb-5'}`}>
+        <h3 className="text-lg font-bold text-slate-800 flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-sm">
+            <PackageOpen className="w-5 h-5 text-white" />
+          </div>
+          <span>导出数据包</span>
+          {collapsed && (
+            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-500">
+              UE {selectedIMSIs.length} · 协议 {selectedProtocols.length}
+            </span>
+          )}
+        </h3>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setCollapsed(value => !value)}
+            className="inline-flex items-center justify-center gap-2 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold rounded-lg transition-all active:scale-[0.98]"
+          >
+            <ChevronDown className={`w-4 h-4 transition-transform ${collapsed ? '' : 'rotate-180'}`} />
+            <span>{collapsed ? '展开' : '收起'}</span>
+          </button>
         </div>
-        <span>导出数据包</span>
-      </h3>
+      </div>
+
+      {collapsed && error && (
+        <div className="mt-4 p-3 bg-red-50 rounded-xl text-red-700 text-sm flex items-center animate-fade-in">
+          <svg className="w-4 h-4 mr-2 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" /></svg>
+          {error}
+        </div>
+      )}
+
+      {!collapsed && (
+        <>
 
       {/* Summary */}
       <div className="p-4 bg-slate-50/80 rounded-xl mb-6">
@@ -488,6 +515,8 @@ export function ExportPanel({ jobId, selectedIMSIs, selectedProtocols, onViewFlo
           <RefreshCw className="w-3.5 h-3.5" />
           重新生成
         </button>
+      )}
+        </>
       )}
     </div>
   )

@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { Radar, Search, CheckSquare, Square, Smartphone, Check, Copy } from 'lucide-react'
+import { Radar, Search, CheckSquare, Square, Smartphone, Check, Copy, ChevronDown } from 'lucide-react'
 
 interface IMSIListProps {
   imsiList: string[]
@@ -10,6 +10,7 @@ interface IMSIListProps {
 export function IMSIList({ imsiList, selectedIMSIs, onSelectionChange }: IMSIListProps) {
   const [searchTerm, setSearchTerm] = useState('')
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [collapsed, setCollapsed] = useState(false)
 
   const filteredList = useMemo(() => {
     if (!searchTerm) return imsiList
@@ -52,7 +53,7 @@ export function IMSIList({ imsiList, selectedIMSIs, onSelectionChange }: IMSILis
 
   return (
     <div className="bg-white rounded-2xl shadow-lg shadow-slate-900/5 p-6 transition-all">
-      <div className="flex items-center justify-between mb-6">
+      <div className={`flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between ${collapsed ? '' : 'mb-6'}`}>
         <h3 className="text-lg font-bold text-slate-800 flex items-center gap-3">
           <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-sm">
             <Radar className="w-5 h-5 text-white" />
@@ -61,13 +62,24 @@ export function IMSIList({ imsiList, selectedIMSIs, onSelectionChange }: IMSILis
           <span className="text-xs font-semibold text-slate-500 bg-slate-100 px-2.5 py-1 rounded-full">{imsiList.length}</span>
         </h3>
         
-        {selectedIMSIs.length > 0 && (
-          <span className="px-3 py-1.5 bg-indigo-50 text-indigo-600 text-sm font-medium rounded-full animate-fade-in">
-            已选 {selectedIMSIs.length} 个 UE
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          {selectedIMSIs.length > 0 && (
+            <span className="px-3 py-1.5 bg-indigo-50 text-indigo-600 text-sm font-medium rounded-full animate-fade-in">
+              已选 {selectedIMSIs.length} 个 UE
+            </span>
+          )}
+          <button
+            onClick={() => setCollapsed(value => !value)}
+            className="inline-flex items-center justify-center gap-2 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold rounded-lg transition-all active:scale-[0.98]"
+          >
+            <ChevronDown className={`w-4 h-4 transition-transform ${collapsed ? '' : 'rotate-180'}`} />
+            <span>{collapsed ? '展开' : '收起'}</span>
+          </button>
+        </div>
       </div>
 
+      {!collapsed && (
+        <>
       {/* Search & Toolbar */}
       <div className="flex items-center gap-3 mb-4">
         <div className="relative flex-1">
@@ -161,6 +173,8 @@ export function IMSIList({ imsiList, selectedIMSIs, onSelectionChange }: IMSILis
           })
         )}
       </div>
+        </>
+      )}
     </div>
   )
 }

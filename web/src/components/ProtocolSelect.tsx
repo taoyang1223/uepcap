@@ -1,4 +1,5 @@
-import { SlidersHorizontal, Check } from 'lucide-react'
+import { useState } from 'react'
+import { SlidersHorizontal, Check, ChevronDown } from 'lucide-react'
 
 interface Protocol {
   id: string
@@ -23,6 +24,8 @@ interface ProtocolSelectProps {
 }
 
 export function ProtocolSelect({ selectedProtocols, onSelectionChange }: ProtocolSelectProps) {
+  const [collapsed, setCollapsed] = useState(false)
+
   const toggleProtocol = (id: string) => {
     if (selectedProtocols.includes(id)) {
       onSelectionChange(selectedProtocols.filter(p => p !== id))
@@ -41,12 +44,29 @@ export function ProtocolSelect({ selectedProtocols, onSelectionChange }: Protoco
 
   return (
     <div className="bg-white rounded-2xl shadow-lg shadow-slate-900/5 p-6 transition-all">
-      <h3 className="text-lg font-bold text-slate-800 flex items-center gap-3 mb-2">
-        <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center shadow-sm">
-          <SlidersHorizontal className="w-5 h-5 text-white" />
-        </div>
-        <span>协议配置</span>
-      </h3>
+      <div className={`flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between ${collapsed ? '' : 'mb-2'}`}>
+        <h3 className="text-lg font-bold text-slate-800 flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center shadow-sm">
+            <SlidersHorizontal className="w-5 h-5 text-white" />
+          </div>
+          <span>协议配置</span>
+          {collapsed && (
+            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-500">
+              已选 {selectedProtocols.length}
+            </span>
+          )}
+        </h3>
+        <button
+          onClick={() => setCollapsed(value => !value)}
+          className="inline-flex items-center justify-center gap-2 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold rounded-lg transition-all active:scale-[0.98]"
+        >
+          <ChevronDown className={`w-4 h-4 transition-transform ${collapsed ? '' : 'rotate-180'}`} />
+          <span>{collapsed ? '展开' : '收起'}</span>
+        </button>
+      </div>
+
+      {!collapsed && (
+        <>
 
       <p className="text-sm text-slate-500 mb-5 leading-relaxed pl-12">
         选择需要提取的信令协议，支持多选
@@ -94,6 +114,8 @@ export function ProtocolSelect({ selectedProtocols, onSelectionChange }: Protoco
            <svg className="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
           <span className="leading-5">请至少选择一个协议以进行导出，否则将无法生成有效的数据包。</span>
         </p>
+      )}
+        </>
       )}
     </div>
   )

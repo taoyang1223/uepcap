@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { BarChart3, Download, Loader2, RefreshCw, Sigma } from 'lucide-react'
+import { BarChart3, ChevronDown, Download, Loader2, RefreshCw, Sigma } from 'lucide-react'
 
 interface MessageStatsPanelProps {
   jobId: string
@@ -41,6 +41,7 @@ export function MessageStatsPanel({ jobId, selectedIMSIs }: MessageStatsPanelPro
   const [result, setResult] = useState<MessageStatsResult | null>(null)
   const [activeModuleKey, setActiveModuleKey] = useState<string>('')
   const [error, setError] = useState<string | null>(null)
+  const [collapsed, setCollapsed] = useState(false)
 
   useEffect(() => {
     setResult(null)
@@ -102,12 +103,17 @@ export function MessageStatsPanel({ jobId, selectedIMSIs }: MessageStatsPanelPro
 
   return (
     <div className="bg-white rounded-2xl shadow-lg shadow-slate-900/5 p-6 overflow-hidden">
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between mb-5">
+      <div className={`flex flex-col gap-4 md:flex-row md:items-center md:justify-between ${collapsed ? '' : 'mb-5'}`}>
         <h3 className="text-lg font-bold text-slate-800 flex items-center gap-3">
           <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-500 to-cyan-600 flex items-center justify-center shadow-sm">
             <BarChart3 className="w-5 h-5 text-white" />
           </div>
           <span>消息统计</span>
+          {collapsed && (
+            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-500">
+              {result ? `统计 ${finalTotal}` : scopeLabel}
+            </span>
+          )}
         </h3>
 
         <div className="flex items-center gap-2">
@@ -128,8 +134,25 @@ export function MessageStatsPanel({ jobId, selectedIMSIs }: MessageStatsPanelPro
             <Download className="w-4 h-4" />
             <span>下载Excel</span>
           </button>
+
+          <button
+            onClick={() => setCollapsed(value => !value)}
+            className="inline-flex items-center justify-center gap-2 px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold rounded-lg transition-all active:scale-[0.98]"
+          >
+            <ChevronDown className={`w-4 h-4 transition-transform ${collapsed ? '' : 'rotate-180'}`} />
+            <span>{collapsed ? '展开' : '收起'}</span>
+          </button>
         </div>
       </div>
+
+      {collapsed && error && (
+        <div className="mt-4 p-3 bg-red-50 rounded-lg text-red-700 text-sm font-medium">
+          {error}
+        </div>
+      )}
+
+      {!collapsed && (
+        <>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
         <div className="bg-slate-50 rounded-lg px-4 py-3">
@@ -230,6 +253,9 @@ export function MessageStatsPanel({ jobId, selectedIMSIs }: MessageStatsPanelPro
             </table>
           </div>
         </div>
+      )}
+
+        </>
       )}
     </div>
   )
