@@ -127,12 +127,13 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
 
   const filteredTransactions = useMemo(() => {
     if (!result) return []
+    const transactions = result.transactions || []
     const targetResponseTime = responseTimeFilter === 'min'
       ? result.statistics.min_response_time_ms
       : responseTimeFilter === 'max'
         ? result.statistics.max_response_time_ms
         : null
-    return result.transactions.filter(tx => {
+    return transactions.filter(tx => {
       if (statusFilter === 'retransmit' && (tx.retransmit_count || 0) === 0) return false
       if (statusFilter !== 'all' && statusFilter !== 'retransmit' && tx.status !== statusFilter) return false
       if (procedureFilter !== 'all' && tx.procedure !== procedureFilter) return false
@@ -156,8 +157,7 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
   const stats = result?.statistics
   const transactionTypes = useMemo(() => {
     if (!result) return []
-    const wanted = new Set(['Create Session', 'Modify Bearer', 'Delete Session'])
-    return result.procedure_stats.filter(item => wanted.has(item.name))
+    return result.procedure_stats || []
   }, [result])
 
   return (
@@ -223,7 +223,7 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
 
               <div className="mb-6">
                 <p className="mb-3 text-sm font-bold text-slate-600">按 S11 事务类型统计</p>
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {transactionTypes.map(item => (
                     <TypeCard key={item.name} active={procedureFilter === item.name} label={item.name} value={item.count} onClick={() => setProcedureFilter(procedureFilter === item.name ? 'all' : item.name)} />
                   ))}

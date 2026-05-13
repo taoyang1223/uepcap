@@ -101,11 +101,6 @@ interface APIResponse<T> {
   error?: string
 }
 
-const categoryLabels: Record<NASCategory, string> = {
-  '5gmm': '5GMM',
-  '5gsm': '5GSM',
-}
-
 const directionLabels: Record<NASDirection, string> = {
   uplink: '上行',
   downlink: '下行',
@@ -137,18 +132,24 @@ const flowStatusClasses: Record<NASFlowStatus, string> = {
   in_progress: 'bg-amber-50 text-amber-700 border-amber-200',
 }
 
+const categoryLabels: Record<NASCategory, string> = {
+  '5gmm': '5GMM',
+  '5gsm': '5GSM',
+}
+
+const PAGE_SIZE = 15
+
 export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps) {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<NASAnalysisResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
-  const [categoryFilter, setCategoryFilter] = useState<'all' | NASCategory>('all')
-  const [directionFilter, setDirectionFilter] = useState<'all' | NASDirection>('all')
-  const [securityFilter, setSecurityFilter] = useState<'all' | 'plain' | 'protected'>('all')
-  const [typeFilter, setTypeFilter] = useState<string>('all')
   const [flowStatusFilter, setFlowStatusFilter] = useState<'all' | NASFlowStatus>('all')
   const [flowTypeFilter, setFlowTypeFilter] = useState<'all' | NASFlowType>('all')
+  const [typeFilter, setTypeFilter] = useState<string>('all')
   const [query, setQuery] = useState('')
+  const [flowPage, setFlowPage] = useState(1)
+  const [messagePage, setMessagePage] = useState(1)
   const [selectedMessage, setSelectedMessage] = useState<NASMessage | null>(null)
   const [selectedFlow, setSelectedFlow] = useState<NASFlow | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
@@ -167,15 +168,14 @@ export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps)
         throw new Error(data.error || 'NAS消息分析失败')
       }
       setResult(data.data)
-      setCategoryFilter('all')
-      setDirectionFilter('all')
-      setSecurityFilter('all')
-      setTypeFilter('all')
       setFlowStatusFilter('all')
       setFlowTypeFilter('all')
+      setTypeFilter('all')
+      setQuery('')
+      setFlowPage(1)
+      setMessagePage(1)
       setSelectedMessage(null)
       setSelectedFlow(null)
-      setQuery('')
     } catch (err) {
       setError('NAS消息分析失败: ' + (err as Error).message)
     } finally {
@@ -183,15 +183,64 @@ export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps)
     }
   }, [jobId])
 
+  const handleCopyFlowFilter = useCallback(async (flow: NASFlow) => {
+    const copied = await copyText(flow.wireshark_filter)
+    if (!copied) return
+    setCopiedId(flow.id)
+    window.setTimeout(() => setCopiedId(null), 1200)
+  }, [])
+
+  const handleCopyMessageFilter = useCallback(async (message: NASMessage) => {
+    const copied = await copyText(message.wireshark_filter)
+    if (!copied) return
+    setCopiedId(message.id)
+    window.setTimeout(() => setCopiedId(null), 1200)
+  }, [])
+
+  const filteredFlows = useMemo(() => {
+    if (!result) return []
+    const flows = result.flows || []
+    return flows.filter(flow => {
+      if (flowStatusFilter !== 'all' && flow.status !== flowStatusFilter) return false
+      if (flowTypeFilter !== 'all' && flow.flow_type !== flowTypeFilter) return false
+      return true
+    }).sort((left, right) => {
+      const rightDuration = right.duration_ms ?? -1
+      const leftDuration = left.duration_ms ?? -1
+      if (rightDuration !== leftDuration) return rightDuration - leftDuration
+      return left.start_frame - right.start_frame
+    })
+  }, [result, flowStatusFilter, flowTypeFilter])
+
+  const stats = result?.statistics
+  const statusCounts = useMemo(() => {
+    const counts: Record<NASFlowStatus, number> = { success: 0, failed: 0, in_progress: 0 }
+    for (const flow of result?.flows || []) {
+      if (flowTypeFilter !== 'all' && flow.flow_type !== flowTypeFilter) continue
+      counts[flow.status] += 1
+    }
+    return counts
+  }, [result, flowTypeFilter])
+  const typeCounts = useMemo(() => {
+    const counts: Record<NASFlowType, number> = {
+      registration: 0,
+      authentication: 0,
+      security_mode: 0,
+      pdu_session_establishment: 0,
+    }
+    for (const flow of result?.flows || []) {
+      if (flowStatusFilter !== 'all' && flow.status !== flowStatusFilter) continue
+      counts[flow.flow_type] += 1
+    }
+    return counts
+  }, [result, flowStatusFilter])
+  const topTypes = (result?.type_stats || []).slice(0, 6)
   const filteredMessages = useMemo(() => {
     if (!result) return []
+    const messages = result.messages || []
     const normalizedQuery = query.trim().toLowerCase()
-    return result.messages.filter(message => {
-      if (categoryFilter !== 'all' && message.category !== categoryFilter) return false
-      if (directionFilter !== 'all' && message.direction !== directionFilter) return false
-      if (securityFilter === 'plain' && isProtected(message)) return false
-      if (securityFilter === 'protected' && !isProtected(message)) return false
-      if (typeFilter !== 'all' && typeKey(message) !== typeFilter) return false
+    return messages.filter(message => {
+      if (typeFilter !== 'all' && `${message.category}:${message.message_type_code}` !== typeFilter) return false
       if (!normalizedQuery) return true
       return [
         message.message_type,
@@ -203,33 +252,9 @@ export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps)
         message.security_header_name || '',
       ].some(value => value.toLowerCase().includes(normalizedQuery))
     })
-  }, [result, categoryFilter, directionFilter, securityFilter, typeFilter, query])
-
-  const handleCopyFilter = useCallback(async (message: NASMessage) => {
-    const copied = await copyText(message.wireshark_filter)
-    if (!copied) return
-    setCopiedId(message.id)
-    window.setTimeout(() => setCopiedId(null), 1200)
-  }, [])
-
-  const handleCopyFlowFilter = useCallback(async (flow: NASFlow) => {
-    const copied = await copyText(flow.wireshark_filter)
-    if (!copied) return
-    setCopiedId(flow.id)
-    window.setTimeout(() => setCopiedId(null), 1200)
-  }, [])
-
-  const filteredFlows = useMemo(() => {
-    if (!result) return []
-    return result.flows.filter(flow => {
-      if (flowStatusFilter !== 'all' && flow.status !== flowStatusFilter) return false
-      if (flowTypeFilter !== 'all' && flow.flow_type !== flowTypeFilter) return false
-      return true
-    })
-  }, [result, flowStatusFilter, flowTypeFilter])
-
-  const stats = result?.statistics
-  const topTypes = result?.type_stats.slice(0, 6) || []
+  }, [result, typeFilter, query])
+  const pagedFlows = useMemo(() => paginate(filteredFlows, flowPage), [filteredFlows, flowPage])
+  const pagedMessages = useMemo(() => paginate(filteredMessages, messagePage), [filteredMessages, messagePage])
 
   return (
     <div className="bg-white rounded-2xl shadow-lg shadow-slate-900/5 overflow-hidden">
@@ -300,21 +325,21 @@ export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps)
               </div>
 
               <div className="mb-6">
-                <p className="mb-3 text-sm font-bold text-slate-600">按流程状态统计</p>
+                <p className="mb-3 text-sm font-bold text-slate-600">按流程状态统计（可与流程类型组合）</p>
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                  <FeatureCard active={flowStatusFilter === 'success'} label="成功流程" value={stats?.successful_flows || 0} tone="emerald" icon={<CheckCircle2 className="w-5 h-5" />} onClick={() => setFlowStatusFilter(flowStatusFilter === 'success' ? 'all' : 'success')} />
-                  <FeatureCard active={flowStatusFilter === 'failed'} label="失败流程" value={stats?.failed_flows || 0} tone="rose" icon={<XCircle className="w-5 h-5" />} onClick={() => setFlowStatusFilter(flowStatusFilter === 'failed' ? 'all' : 'failed')} />
-                  <FeatureCard active={flowStatusFilter === 'in_progress'} label="未完成流程" value={stats?.in_progress_flows || 0} tone="amber" icon={<Clock3 className="w-5 h-5" />} onClick={() => setFlowStatusFilter(flowStatusFilter === 'in_progress' ? 'all' : 'in_progress')} />
+                  <FeatureCard active={flowStatusFilter === 'success'} label="成功流程" value={statusCounts.success} tone="emerald" icon={<CheckCircle2 className="w-5 h-5" />} onClick={() => { setFlowStatusFilter(flowStatusFilter === 'success' ? 'all' : 'success'); setFlowPage(1) }} />
+                  <FeatureCard active={flowStatusFilter === 'failed'} label="失败流程" value={statusCounts.failed} tone="rose" icon={<XCircle className="w-5 h-5" />} onClick={() => { setFlowStatusFilter(flowStatusFilter === 'failed' ? 'all' : 'failed'); setFlowPage(1) }} />
+                  <FeatureCard active={flowStatusFilter === 'in_progress'} label="未完成流程" value={statusCounts.in_progress} tone="amber" icon={<Clock3 className="w-5 h-5" />} onClick={() => { setFlowStatusFilter(flowStatusFilter === 'in_progress' ? 'all' : 'in_progress'); setFlowPage(1) }} />
                 </div>
               </div>
 
               <div className="mb-6">
-                <p className="mb-3 text-sm font-bold text-slate-600">按流程类型统计</p>
+                <p className="mb-3 text-sm font-bold text-slate-600">按流程类型统计（可与流程状态组合）</p>
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-                  <FeatureCard active={flowTypeFilter === 'registration'} label="Registration" value={stats?.registration_flows || 0} tone="indigo" icon={<Radio className="w-5 h-5" />} onClick={() => setFlowTypeFilter(flowTypeFilter === 'registration' ? 'all' : 'registration')} />
-                  <FeatureCard active={flowTypeFilter === 'authentication'} label="Authentication" value={stats?.authentication_flows || 0} tone="slate" icon={<KeyRound className="w-5 h-5" />} onClick={() => setFlowTypeFilter(flowTypeFilter === 'authentication' ? 'all' : 'authentication')} />
-                  <FeatureCard active={flowTypeFilter === 'security_mode'} label="Security Mode" value={stats?.security_mode_flows || 0} tone="emerald" icon={<Shield className="w-5 h-5" />} onClick={() => setFlowTypeFilter(flowTypeFilter === 'security_mode' ? 'all' : 'security_mode')} />
-                  <FeatureCard active={flowTypeFilter === 'pdu_session_establishment'} label="PDU Session" value={stats?.pdu_session_flows || 0} tone="cyan" icon={<Layers3 className="w-5 h-5" />} onClick={() => setFlowTypeFilter(flowTypeFilter === 'pdu_session_establishment' ? 'all' : 'pdu_session_establishment')} />
+                  <FeatureCard active={flowTypeFilter === 'registration'} label="Registration" value={typeCounts.registration} tone="indigo" icon={<Radio className="w-5 h-5" />} onClick={() => { setFlowTypeFilter(flowTypeFilter === 'registration' ? 'all' : 'registration'); setFlowPage(1) }} />
+                  <FeatureCard active={flowTypeFilter === 'authentication'} label="Authentication" value={typeCounts.authentication} tone="slate" icon={<KeyRound className="w-5 h-5" />} onClick={() => { setFlowTypeFilter(flowTypeFilter === 'authentication' ? 'all' : 'authentication'); setFlowPage(1) }} />
+                  <FeatureCard active={flowTypeFilter === 'security_mode'} label="Security Mode" value={typeCounts.security_mode} tone="emerald" icon={<Shield className="w-5 h-5" />} onClick={() => { setFlowTypeFilter(flowTypeFilter === 'security_mode' ? 'all' : 'security_mode'); setFlowPage(1) }} />
+                  <FeatureCard active={flowTypeFilter === 'pdu_session_establishment'} label="PDU Session" value={typeCounts.pdu_session_establishment} tone="cyan" icon={<Layers3 className="w-5 h-5" />} onClick={() => { setFlowTypeFilter(flowTypeFilter === 'pdu_session_establishment' ? 'all' : 'pdu_session_establishment'); setFlowPage(1) }} />
                 </div>
               </div>
 
@@ -331,6 +356,7 @@ export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps)
                       onClick={() => {
                         setFlowStatusFilter('all')
                         setFlowTypeFilter('all')
+                        setFlowPage(1)
                       }}
                       className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700"
                     >
@@ -353,7 +379,7 @@ export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps)
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 bg-white">
-                      {filteredFlows.map(flow => (
+                      {pagedFlows.map(flow => (
                         <tr key={flow.id} onClick={() => setSelectedFlow(flow)} className="cursor-pointer hover:bg-indigo-50/60">
                           <td className="px-4 py-3 font-semibold text-slate-800 whitespace-nowrap">{flowTypeLabels[flow.flow_type]}</td>
                           <td className="px-4 py-3"><FlowStatusBadge status={flow.status} /></td>
@@ -371,6 +397,9 @@ export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps)
                 {filteredFlows.length === 0 && (
                   <div className="py-8 text-center text-sm text-slate-500">没有匹配的 NAS 流程</div>
                 )}
+                {filteredFlows.length > 0 && (
+                  <PaginationControls total={filteredFlows.length} page={flowPage} onPageChange={setFlowPage} />
+                )}
               </div>
 
               <div className="mb-6">
@@ -383,7 +412,10 @@ export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps)
                       label={item.name}
                       code={`${categoryLabels[item.category]} ${displayCode(item.code)}`}
                       value={item.count}
-                      onClick={() => setTypeFilter(typeFilter === `${item.category}:${item.code}` ? 'all' : `${item.category}:${item.code}`)}
+                      onClick={() => {
+                        setTypeFilter(typeFilter === `${item.category}:${item.code}` ? 'all' : `${item.category}:${item.code}`)
+                        setMessagePage(1)
+                      }}
                     />
                   ))}
                 </div>
@@ -394,33 +426,31 @@ export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps)
                   <div className="flex flex-wrap items-center gap-3">
                     <p className="text-base font-bold text-slate-900">NAS 消息列表</p>
                     <span className="text-sm text-slate-500">共 {filteredMessages.length} 条记录</span>
-                    {categoryFilter !== 'all' && <FilterPill label={`分类：${categoryLabels[categoryFilter]}`} />}
-                    {directionFilter !== 'all' && <FilterPill label={`方向：${directionLabels[directionFilter]}`} />}
-                    {securityFilter !== 'all' && <FilterPill label={`安全：${securityFilter === 'plain' ? 'Plain NAS' : '安全保护'}`} />}
                     {typeFilter !== 'all' && <FilterPill label="消息类型" />}
-                    {(categoryFilter !== 'all' || directionFilter !== 'all' || securityFilter !== 'all' || typeFilter !== 'all') && (
+                  </div>
+                  <div className="flex flex-col gap-2 md:flex-row md:items-center">
+                    {(typeFilter !== 'all' || query.trim() !== '') && (
                       <button
                         onClick={() => {
-                          setCategoryFilter('all')
-                          setDirectionFilter('all')
-                          setSecurityFilter('all')
                           setTypeFilter('all')
+                          setQuery('')
+                          setMessagePage(1)
                         }}
-                        className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700"
+                        className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700"
                       >
-                        清除筛选
+                        清除消息筛选
                       </button>
                     )}
+                    <label className="relative block md:w-72">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                      <input
+                        value={query}
+                        onChange={event => { setQuery(event.target.value); setMessagePage(1) }}
+                        className="w-full rounded-lg border border-slate-200 bg-slate-50 pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400"
+                        placeholder="搜索 IP / 帧号 / 消息类型"
+                      />
+                    </label>
                   </div>
-                  <label className="relative block md:w-72">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                    <input
-                      value={query}
-                      onChange={event => setQuery(event.target.value)}
-                      className="w-full rounded-lg border border-slate-200 bg-slate-50 pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400"
-                      placeholder="搜索 IP / 帧号 / 消息类型"
-                    />
-                  </label>
                 </div>
 
                 <div className="overflow-x-auto">
@@ -438,12 +468,8 @@ export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps)
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 bg-white">
-                      {filteredMessages.map(message => (
-                        <tr
-                          key={message.id}
-                          onClick={() => setSelectedMessage(message)}
-                          className="cursor-pointer hover:bg-indigo-50/60"
-                        >
+                      {pagedMessages.map(message => (
+                        <tr key={message.id} onClick={() => setSelectedMessage(message)} className="cursor-pointer hover:bg-indigo-50/60">
                           <td className="px-4 py-3 font-mono text-slate-700">{message.frame_number}</td>
                           <td className="px-4 py-3"><CategoryBadge category={message.category} /></td>
                           <td className="px-4 py-3"><DirectionBadge direction={message.direction} /></td>
@@ -457,25 +483,17 @@ export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps)
                     </tbody>
                   </table>
                 </div>
-
                 {filteredMessages.length === 0 && (
-                  <div className="py-8 text-center text-sm text-slate-500">
-                    没有匹配的 NAS 消息
-                  </div>
+                  <div className="py-8 text-center text-sm text-slate-500">没有匹配的 NAS 消息</div>
+                )}
+                {filteredMessages.length > 0 && (
+                  <PaginationControls total={filteredMessages.length} page={messagePage} onPageChange={setMessagePage} />
                 )}
               </div>
+
             </>
           )}
         </div>
-      )}
-
-      {selectedMessage && (
-        <NASDetailModal
-          message={selectedMessage}
-          copied={copiedId === selectedMessage.id}
-          onCopy={() => handleCopyFilter(selectedMessage)}
-          onClose={() => setSelectedMessage(null)}
-        />
       )}
 
       {selectedFlow && (
@@ -484,6 +502,15 @@ export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps)
           copied={copiedId === selectedFlow.id}
           onCopy={() => handleCopyFlowFilter(selectedFlow)}
           onClose={() => setSelectedFlow(null)}
+        />
+      )}
+
+      {selectedMessage && (
+        <NASDetailModal
+          message={selectedMessage}
+          copied={copiedId === selectedMessage.id}
+          onCopy={() => handleCopyMessageFilter(selectedMessage)}
+          onClose={() => setSelectedMessage(null)}
         />
       )}
     </div>
@@ -557,6 +584,35 @@ function FlowStatusBadge({ status }: { status: NASFlowStatus }) {
 
 function FilterPill({ label }: { label: string }) {
   return <span className="rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-700">{label}</span>
+}
+
+function PaginationControls({ total, page, onPageChange }: { total: number; page: number; onPageChange: (page: number) => void }) {
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const safePage = Math.min(Math.max(page, 1), pageCount)
+  const start = total === 0 ? 0 : (safePage - 1) * PAGE_SIZE + 1
+  const end = Math.min(total, safePage * PAGE_SIZE)
+  return (
+    <div className="flex flex-col gap-3 border-t border-slate-200 bg-white px-4 py-3 text-sm text-slate-500 md:flex-row md:items-center md:justify-between">
+      <span>显示 {start}-{end} / {total}</span>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => onPageChange(Math.max(1, safePage - 1))}
+          disabled={safePage <= 1}
+          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          上一页
+        </button>
+        <span className="min-w-16 text-center text-xs font-bold text-slate-600">{safePage} / {pageCount}</span>
+        <button
+          onClick={() => onPageChange(Math.min(pageCount, safePage + 1))}
+          disabled={safePage >= pageCount}
+          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          下一页
+        </button>
+      </div>
+    </div>
+  )
 }
 
 function NASFlowDetailModal({ flow, copied, onCopy, onClose }: { flow: NASFlow; copied: boolean; onCopy: () => void; onClose: () => void }) {
@@ -655,9 +711,8 @@ function NASDetailModal({ message, copied, onCopy, onClose }: { message: NASMess
           </div>
 
           <DetailSection icon={<Layers3 className="h-4 w-4" />} title="网络信息">
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto_1fr] md:items-center">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <DetailValue label="源地址" value={message.source_ip} />
-              <ArrowRight />
               <DetailValue label="目的地址" value={message.destination_ip} alignRight />
             </div>
           </DetailSection>
@@ -706,17 +761,10 @@ function DetailValue({ label, value, alignRight = false }: { label: string; valu
   )
 }
 
-function ArrowRight() {
-  return <span className="hidden text-lg font-bold text-indigo-500 md:block">→</span>
-}
-
-function isProtected(message: NASMessage) {
-  const value = (message.security_header_type || '').trim().toLowerCase()
-  return value !== '' && value !== '0' && value !== '0x0'
-}
-
-function typeKey(message: NASMessage) {
-  return `${message.category}:${message.message_type_code}`
+function formatDuration(value?: number) {
+  if (value == null || Number.isNaN(value)) return '-'
+  if (value < 1000) return `${value.toFixed(2)} ms`
+  return `${(value / 1000).toFixed(3)} s`
 }
 
 function displayCode(code: string) {
@@ -724,10 +772,10 @@ function displayCode(code: string) {
   return normalized.startsWith('0X') ? `0x${normalized.slice(2)}` : normalized
 }
 
-function formatDuration(value?: number) {
-  if (value == null || Number.isNaN(value)) return '-'
-  if (value < 1000) return `${value.toFixed(2)} ms`
-  return `${(value / 1000).toFixed(3)} s`
+function paginate<T>(items: T[], page: number) {
+  const safePage = Math.max(1, page)
+  const start = (safePage - 1) * PAGE_SIZE
+  return items.slice(start, start + PAGE_SIZE)
 }
 
 function formatTimestamp(value?: string) {

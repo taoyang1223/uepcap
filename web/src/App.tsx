@@ -1,4 +1,5 @@
 import { lazy, Suspense, useState, useCallback, useEffect, useRef } from 'react'
+import type { ComponentType } from 'react'
 import { FileUpload } from './components/FileUpload'
 import { IMSIList } from './components/IMSIList'
 import { ProtocolSelect } from './components/ProtocolSelect'
@@ -7,14 +8,27 @@ import { JobInfo } from './components/JobInfo'
 import { MessageStatsPanel } from './components/MessageStatsPanel'
 import { Network, BookOpen } from 'lucide-react'
 
-const NGAPMessageAnalyzerPanel = lazy(() => import('./components/NGAPMessageAnalyzerPanel').then(module => ({ default: module.NGAPMessageAnalyzerPanel })))
-const NASMessageAnalyzerPanel = lazy(() => import('./components/NASMessageAnalyzerPanel').then(module => ({ default: module.NASMessageAnalyzerPanel })))
-const SMNASMessageAnalyzerPanel = lazy(() => import('./components/SMNASMessageAnalyzerPanel').then(module => ({ default: module.SMNASMessageAnalyzerPanel })))
-const S11MessageAnalyzerPanel = lazy(() => import('./components/S11MessageAnalyzerPanel').then(module => ({ default: module.S11MessageAnalyzerPanel })))
-const PFCPSessionPanel = lazy(() => import('./components/PFCPSessionPanel').then(module => ({ default: module.PFCPSessionPanel })))
-const TimelineViewer = lazy(() => import('./components/TimelineViewer').then(module => ({ default: module.TimelineViewer })))
-const InstallGuide = lazy(() => import('./components/InstallGuide').then(module => ({ default: module.InstallGuide })))
-const FlowViewer = lazy(() => import('./components/FlowViewer').then(module => ({ default: module.FlowViewer })))
+function lazyWithReload(factory: () => Promise<{ default: ComponentType<any> }>) {
+  return lazy(() => factory().catch(error => {
+    const message = String(error?.message || error)
+    const chunkFailed = /Failed to fetch dynamically imported module|Importing a module script failed|Loading chunk/i.test(message)
+    if (chunkFailed && sessionStorage.getItem('uepcap:chunk-reloaded') !== '1') {
+      sessionStorage.setItem('uepcap:chunk-reloaded', '1')
+      window.location.reload()
+      return new Promise<{ default: ComponentType<any> }>(() => {})
+    }
+    throw error
+  }))
+}
+
+const NGAPMessageAnalyzerPanel = lazyWithReload(() => import('./components/NGAPMessageAnalyzerPanel').then(module => ({ default: module.NGAPMessageAnalyzerPanel })))
+const NASMessageAnalyzerPanel = lazyWithReload(() => import('./components/NASMessageAnalyzerPanel').then(module => ({ default: module.NASMessageAnalyzerPanel })))
+const SMNASMessageAnalyzerPanel = lazyWithReload(() => import('./components/SMNASMessageAnalyzerPanel').then(module => ({ default: module.SMNASMessageAnalyzerPanel })))
+const S11MessageAnalyzerPanel = lazyWithReload(() => import('./components/S11MessageAnalyzerPanel').then(module => ({ default: module.S11MessageAnalyzerPanel })))
+const PFCPSessionPanel = lazyWithReload(() => import('./components/PFCPSessionPanel').then(module => ({ default: module.PFCPSessionPanel })))
+const TimelineViewer = lazyWithReload(() => import('./components/TimelineViewer').then(module => ({ default: module.TimelineViewer })))
+const InstallGuide = lazyWithReload(() => import('./components/InstallGuide').then(module => ({ default: module.InstallGuide })))
+const FlowViewer = lazyWithReload(() => import('./components/FlowViewer').then(module => ({ default: module.FlowViewer })))
 
 interface Job {
   id: string

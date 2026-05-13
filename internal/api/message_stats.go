@@ -56,7 +56,7 @@ func (h *Handler) GetMessageStats(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 	defer cancel()
 
-	result, err := h.messageStatsResult(ctx, id, job.MergedPcap, req.IMSIs)
+	result, err := h.messageStatsResult(ctx, id, job.MergedPcap, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -66,7 +66,7 @@ func (h *Handler) GetMessageStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) messageStatsResult(ctx context.Context, jobID, pcapFile string, imsis []string) (*statistics.Result, error) {
-	key := messageStatsCacheKey(jobID, imsis)
+	key := messageStatsCacheKey(jobID, nil)
 
 	h.messageStats.mu.Lock()
 	if result, ok := h.messageStats.results[key]; ok {

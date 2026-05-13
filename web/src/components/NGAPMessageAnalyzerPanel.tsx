@@ -181,16 +181,23 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
 
   const filteredTransactions = useMemo(() => {
     if (!result) return []
-    return result.transactions.filter(tx => {
+    const transactions = result.transactions || []
+    return transactions.filter(tx => {
       if (statusFilter !== 'all' && tx.status !== statusFilter) return false
       return true
+    }).sort((left, right) => {
+      const rightDuration = right.duration_ms ?? -1
+      const leftDuration = left.duration_ms ?? -1
+      if (rightDuration !== leftDuration) return rightDuration - leftDuration
+      return left.start_frame - right.start_frame
     })
   }, [result, statusFilter])
 
   const filteredMessages = useMemo(() => {
     if (!result) return []
+    const messages = result.messages || []
     const normalizedQuery = query.trim().toLowerCase()
-    return result.messages.filter(message => {
+    return messages.filter(message => {
       if (procedureFilter !== 'all' && message.procedure_code !== procedureFilter) return false
       if (pduFilter !== 'all' && message.pdu_type !== pduFilter) return false
       if (!normalizedQuery) return true
@@ -214,7 +221,34 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
   }, [])
 
   const stats = result?.statistics
-  const topProcedures = result?.procedure_stats.slice(0, 6) || []
+  const topProcedures = (result?.procedure_stats || []).slice(0, 6)
+  const unifiedRows = useMemo(() => {
+    const transactionRows = filteredTransactions.map(tx => ({
+      id: `tx:${tx.id}`,
+      kind: 'transaction' as const,
+      procedureName: tx.procedure_name,
+      frameLabel: tx.end_frame ? `${tx.start_frame} → ${tx.end_frame}` : String(tx.start_frame),
+      sortDuration: tx.duration_ms ?? -1,
+      sortFrame: tx.start_frame,
+      tx,
+      message: null,
+    }))
+    const messageRows = filteredMessages.map(message => ({
+      id: `msg:${message.id}`,
+      kind: 'message' as const,
+      procedureName: message.procedure_name,
+      frameLabel: String(message.frame_number),
+      sortDuration: -1,
+      sortFrame: message.frame_number,
+      tx: null,
+      message,
+    }))
+    return [...transactionRows, ...messageRows].sort((left, right) => {
+      if (left.kind !== right.kind) return left.kind === 'transaction' ? -1 : 1
+      if (left.sortDuration !== right.sortDuration) return right.sortDuration - left.sortDuration
+      return left.sortFrame - right.sortFrame
+    })
+  }, [filteredTransactions, filteredMessages])
 
   return (
     <div className="bg-white rounded-2xl shadow-lg shadow-slate-900/5 overflow-hidden">
@@ -278,64 +312,6 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
               </div>
 
               <div className="mb-6">
-                <p className="mb-3 text-sm font-bold text-slate-600">按 NGAP 事务状态统计</p>
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                  <FeatureCard active={statusFilter === 'success'} label="成功事务" value={stats?.successful_transactions || 0} tone="emerald" icon={<CheckCircle2 className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'success' ? 'all' : 'success')} />
-                  <FeatureCard active={statusFilter === 'failed'} label="失败事务" value={stats?.failed_transactions || 0} tone="rose" icon={<XCircle className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'failed' ? 'all' : 'failed')} />
-                  <FeatureCard active={statusFilter === 'in_progress'} label="未完成事务" value={stats?.in_progress_transactions || 0} tone="amber" icon={<Clock3 className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'in_progress' ? 'all' : 'in_progress')} />
-                </div>
-              </div>
-
-              <div className="mb-6 rounded-xl border border-slate-200 overflow-hidden">
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-4">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <p className="text-base font-bold text-slate-900">可配对 Procedure 事务列表</p>
-                    <span className="text-sm text-slate-500">共 {filteredTransactions.length} 条事务</span>
-                    {statusFilter !== 'all' && <FilterPill label={`状态：${statusLabels[statusFilter]}`} />}
-                  </div>
-                  {statusFilter !== 'all' && (
-                    <button
-                      onClick={() => setStatusFilter('all')}
-                      className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700"
-                    >
-                      清除筛选
-                    </button>
-                  )}
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-slate-200 text-sm">
-                    <thead className="bg-slate-50">
-                      <tr>
-                        <th className="px-4 py-3 text-left font-semibold text-sky-700">Procedure</th>
-                        <th className="px-4 py-3 text-left font-semibold text-sky-700">状态</th>
-                        <th className="px-4 py-3 text-left font-semibold text-sky-700">起始帧</th>
-                        <th className="px-4 py-3 text-left font-semibold text-sky-700">结束帧</th>
-                        <th className="px-4 py-3 text-right font-semibold text-sky-700">耗时</th>
-                        <th className="px-4 py-3 text-left font-semibold text-sky-700">RAN ID</th>
-                        <th className="px-4 py-3 text-left font-semibold text-sky-700">AMF ID</th>
-                        <th className="px-4 py-3 text-right font-semibold text-sky-700">步骤</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 bg-white">
-                      {filteredTransactions.map(tx => (
-                        <tr key={tx.id} onClick={() => setSelectedTransaction(tx)} className="cursor-pointer hover:bg-sky-50/60">
-                          <td className="px-4 py-3 font-semibold text-slate-800 whitespace-nowrap">{tx.procedure_name}</td>
-                          <td className="px-4 py-3"><StatusBadge status={tx.status} /></td>
-                          <td className="px-4 py-3 font-mono text-slate-700">{tx.start_frame}</td>
-                          <td className="px-4 py-3 font-mono text-slate-700">{tx.end_frame || '-'}</td>
-                          <td className="px-4 py-3 text-right font-semibold tabular-nums text-slate-900">{formatDuration(tx.duration_ms)}</td>
-                          <td className="px-4 py-3 font-mono text-xs text-slate-600">{tx.ran_ue_ngap_id || '-'}</td>
-                          <td className="px-4 py-3 font-mono text-xs text-slate-600">{tx.amf_ue_ngap_id || '-'}</td>
-                          <td className="px-4 py-3 text-right font-semibold text-slate-700">{tx.step_count}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {filteredTransactions.length === 0 && <div className="py-8 text-center text-sm text-slate-500">没有匹配的 NGAP 事务</div>}
-              </div>
-
-              <div className="mb-6">
                 <p className="mb-3 text-sm font-bold text-slate-600">按 Procedure 统计（筛选消息列表）</p>
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {topProcedures.map(item => (
@@ -352,18 +328,31 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
                 </div>
               </div>
 
+              <div className="mb-6">
+                <p className="mb-3 text-sm font-bold text-slate-600">按 NGAP 事务状态统计</p>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                  <FeatureCard active={statusFilter === 'success'} label="成功事务" value={stats?.successful_transactions || 0} tone="emerald" icon={<CheckCircle2 className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'success' ? 'all' : 'success')} />
+                  <FeatureCard active={statusFilter === 'failed'} label="失败事务" value={stats?.failed_transactions || 0} tone="rose" icon={<XCircle className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'failed' ? 'all' : 'failed')} />
+                  <FeatureCard active={statusFilter === 'in_progress'} label="未完成事务" value={stats?.in_progress_transactions || 0} tone="amber" icon={<Clock3 className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'in_progress' ? 'all' : 'in_progress')} />
+                </div>
+              </div>
+
               <div className="animate-fade-in rounded-xl border border-slate-200 overflow-hidden">
                 <div className="flex flex-col gap-3 border-b border-slate-200 bg-white px-4 py-4 md:flex-row md:items-center md:justify-between">
                   <div className="flex flex-wrap items-center gap-3">
-                    <p className="text-base font-bold text-slate-900">NGAP 消息列表</p>
-                    <span className="text-sm text-slate-500">共 {filteredMessages.length} 条记录</span>
+                    <p className="text-base font-bold text-slate-900">NGAP Procedure 事务 / 消息列表</p>
+                    <span className="text-sm text-slate-500">共 {unifiedRows.length} 条</span>
+                    <FilterPill label={`事务：${filteredTransactions.length}`} />
+                    <FilterPill label={`消息：${filteredMessages.length}`} />
+                    {statusFilter !== 'all' && <FilterPill label={`状态：${statusLabels[statusFilter]}`} />}
                     {procedureFilter !== 'all' && <FilterPill label={`Procedure：${procedureFilter}`} />}
                     {pduFilter !== 'all' && <FilterPill label={`PDU：${pduLabels[pduFilter]}`} />}
                   </div>
                   <div className="flex flex-col gap-2 md:flex-row md:items-center">
-                    {(procedureFilter !== 'all' || pduFilter !== 'all' || query.trim() !== '') && (
+                    {(statusFilter !== 'all' || procedureFilter !== 'all' || pduFilter !== 'all' || query.trim() !== '') && (
                       <button
                         onClick={() => {
+                          setStatusFilter('all')
                           setProcedureFilter('all')
                           setPduFilter('all')
                           setQuery('')
@@ -398,37 +387,43 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
                   <table className="min-w-full divide-y divide-slate-200 text-sm">
                     <thead className="bg-slate-50">
                       <tr>
-                        <th className="px-4 py-3 text-left font-semibold text-sky-700">Frame</th>
-                        <th className="px-4 py-3 text-left font-semibold text-sky-700">方向</th>
-                        <th className="px-4 py-3 text-left font-semibold text-sky-700">PDU</th>
-                        <th className="px-4 py-3 text-left font-semibold text-sky-700">类别</th>
+                        <th className="px-4 py-3 text-left font-semibold text-sky-700">类型</th>
                         <th className="px-4 py-3 text-left font-semibold text-sky-700">Procedure</th>
-                        <th className="px-4 py-3 text-left font-semibold text-sky-700">源 IP</th>
-                        <th className="px-4 py-3 text-left font-semibold text-sky-700">目的 IP</th>
+                        <th className="px-4 py-3 text-left font-semibold text-sky-700">状态 / PDU</th>
+                        <th className="px-4 py-3 text-left font-semibold text-sky-700">帧</th>
+                        <th className="px-4 py-3 text-left font-semibold text-sky-700">方向</th>
+                        <th className="px-4 py-3 text-right font-semibold text-sky-700">耗时</th>
                         <th className="px-4 py-3 text-left font-semibold text-sky-700">RAN ID</th>
                         <th className="px-4 py-3 text-left font-semibold text-sky-700">AMF ID</th>
-                        <th className="px-4 py-3 text-left font-semibold text-sky-700">NAS</th>
+                        <th className="px-4 py-3 text-right font-semibold text-sky-700">步骤 / NAS</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 bg-white">
-                      {filteredMessages.map(message => (
-                        <tr key={message.id} onClick={() => setSelectedMessage(message)} className="cursor-pointer hover:bg-sky-50/60">
-                          <td className="px-4 py-3 font-mono text-slate-700">{message.frame_number}</td>
-                          <td className="px-4 py-3"><DirectionBadge direction={message.direction} /></td>
-                          <td className="px-4 py-3"><PDUBadge pdu={message.pdu_type} /></td>
-                          <td className="px-4 py-3"><MessageKindBadge transactionCapable={message.transaction_capable} /></td>
-                          <td className="px-4 py-3 font-semibold text-slate-800 whitespace-nowrap">{message.procedure_name}</td>
-                          <td className="px-4 py-3 font-mono text-xs text-slate-600 whitespace-nowrap">{message.source_ip}</td>
-                          <td className="px-4 py-3 font-mono text-xs text-slate-600 whitespace-nowrap">{message.destination_ip}</td>
-                          <td className="px-4 py-3 font-mono text-xs text-slate-600">{message.ran_ue_ngap_id || '-'}</td>
-                          <td className="px-4 py-3 font-mono text-xs text-slate-600">{message.amf_ue_ngap_id || '-'}</td>
-                          <td className="px-4 py-3 text-slate-600">{message.has_nas ? '是' : '-'}</td>
+                      {unifiedRows.map(row => (
+                        <tr
+                          key={row.id}
+                          onClick={() => row.tx ? setSelectedTransaction(row.tx) : row.message && setSelectedMessage(row.message)}
+                          className="cursor-pointer hover:bg-sky-50/60"
+                        >
+                          <td className="px-4 py-3"><RowKindBadge kind={row.kind} /></td>
+                          <td className="px-4 py-3 font-semibold text-slate-800 whitespace-nowrap">{row.procedureName}</td>
+                          <td className="px-4 py-3">
+                            {row.tx ? <StatusBadge status={row.tx.status} /> : row.message ? <PDUBadge pdu={row.message.pdu_type} /> : '-'}
+                          </td>
+                          <td className="px-4 py-3 font-mono text-slate-700 whitespace-nowrap">{row.frameLabel}</td>
+                          <td className="px-4 py-3">{row.message ? <DirectionBadge direction={row.message.direction} /> : <span className="text-slate-300">-</span>}</td>
+                          <td className="px-4 py-3 text-right font-semibold tabular-nums text-slate-900">{row.tx ? formatDuration(row.tx.duration_ms) : '-'}</td>
+                          <td className="px-4 py-3 font-mono text-xs text-slate-600">{row.tx?.ran_ue_ngap_id || row.message?.ran_ue_ngap_id || '-'}</td>
+                          <td className="px-4 py-3 font-mono text-xs text-slate-600">{row.tx?.amf_ue_ngap_id || row.message?.amf_ue_ngap_id || '-'}</td>
+                          <td className="px-4 py-3 text-right font-semibold text-slate-700">
+                            {row.tx ? row.tx.step_count : row.message?.has_nas ? '是' : '-'}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
-                {filteredMessages.length === 0 && <div className="py-8 text-center text-sm text-slate-500">没有匹配的 NGAP 消息</div>}
+                {unifiedRows.length === 0 && <div className="py-8 text-center text-sm text-slate-500">没有匹配的 NGAP 事务或消息</div>}
               </div>
             </>
           )}
@@ -516,9 +511,9 @@ function StatusBadge({ status }: { status: TransactionStatus }) {
   return <span className={`inline-flex items-center rounded-md border px-2 py-1 text-xs font-bold ${statusClasses[status]}`}>{statusLabels[status]}</span>
 }
 
-function MessageKindBadge({ transactionCapable }: { transactionCapable: boolean }) {
-  const classes = transactionCapable ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-50 text-slate-600'
-  return <span className={`inline-flex items-center rounded-md border px-2 py-1 text-xs font-bold ${classes}`}>{transactionCapable ? '事务类' : '消息类'}</span>
+function RowKindBadge({ kind }: { kind: 'transaction' | 'message' }) {
+  const classes = kind === 'transaction' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-50 text-slate-600'
+  return <span className={`inline-flex items-center rounded-md border px-2 py-1 text-xs font-bold ${classes}`}>{kind === 'transaction' ? '事务' : '消息'}</span>
 }
 
 function FilterPill({ label }: { label: string }) {

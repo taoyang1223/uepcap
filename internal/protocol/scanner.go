@@ -92,7 +92,7 @@ func (s *IMSIScanner) scanByFieldsFast(ctx context.Context, pcapFile string) map
 	}
 
 	// Single tshark call with combined filter for signaling protocols
-	filter := "gtpv2 or s1ap or ngap or nas_5gs or nas_eps or diameter or pfcp"
+	filter := imsiFieldScanFilter()
 	log.Printf("[IMSIScanner] scanByFieldsFast tshark filter: %s", filter)
 	log.Printf("[IMSIScanner] scanByFieldsFast tshark fields: %v", fields)
 
@@ -225,7 +225,7 @@ func (s *IMSIScanner) scanByFieldsStream(ctx context.Context, pcapFile string, s
 		return
 	}
 
-	filter := "gtpv2 or s1ap or ngap or nas_5gs or nas_eps or diameter or pfcp"
+	filter := imsiFieldScanFilter()
 	log.Printf("[IMSIScanner] scanByFieldsStream tshark filter: %s", filter)
 
 	result, err := tshark.TsharkFields(ctx, pcapFile, filter, fields)
@@ -349,4 +349,8 @@ func detectSupportedIMSIFields(parent context.Context) []string {
 	}
 	log.Printf("[IMSIScanner] supported IMSI fields: %v", fields)
 	return fields
+}
+
+func imsiFieldScanFilter() string {
+	return "gtpv2 or s1ap or ngap or diameter or pfcp"
 }

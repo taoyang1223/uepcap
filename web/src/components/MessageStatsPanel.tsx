@@ -36,7 +36,7 @@ interface APIResponse<T> {
   error?: string
 }
 
-export function MessageStatsPanel({ jobId, selectedIMSIs }: MessageStatsPanelProps) {
+export function MessageStatsPanel({ jobId, selectedIMSIs: _selectedIMSIs }: MessageStatsPanelProps) {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<MessageStatsResult | null>(null)
   const [activeModuleKey, setActiveModuleKey] = useState<string>('')
@@ -47,7 +47,7 @@ export function MessageStatsPanel({ jobId, selectedIMSIs }: MessageStatsPanelPro
     setResult(null)
     setActiveModuleKey('')
     setError(null)
-  }, [jobId, selectedIMSIs])
+  }, [jobId])
 
   const handleLoadStats = useCallback(async () => {
     if (loading) return
@@ -58,7 +58,7 @@ export function MessageStatsPanel({ jobId, selectedIMSIs }: MessageStatsPanelPro
       const response = await fetch(`/api/jobs/${jobId}/message-stats`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ imsis: selectedIMSIs }),
+        body: JSON.stringify({}),
       })
       const data = (await response.json()) as APIResponse<MessageStatsResult>
 
@@ -67,26 +67,30 @@ export function MessageStatsPanel({ jobId, selectedIMSIs }: MessageStatsPanelPro
       }
 
       startTransition(() => {
-        setResult(data.data!)
-        setActiveModuleKey(data.data!.modules[0]?.key || '')
+        const nextResult = normalizeStatsResult(data.data!)
+        setResult(nextResult)
+        setActiveModuleKey(nextResult.modules[0]?.key || '')
       })
     } catch (err) {
       setError('消息统计失败: ' + (err as Error).message)
     } finally {
       setLoading(false)
     }
-  }, [jobId, selectedIMSIs, loading])
+  }, [jobId, loading])
 
   const activeModule = useMemo(() => {
     if (!result) return null
-    return result.modules.find(module => module.key === activeModuleKey) || result.modules[0] || null
+    const modules = result.modules || []
+    return modules.find(module => module.key === activeModuleKey) || modules[0] || null
   }, [result, activeModuleKey])
 
   const finalTotal = useMemo(() => {
-    return result?.modules.reduce((sum, module) => sum + module.final_total, 0) || 0
+    return (result?.modules || []).reduce((sum, module) => sum + module.final_total, 0)
   }, [result])
 
-  const scopeLabel = selectedIMSIs.length > 0 ? `${selectedIMSIs.length} 个 UE` : '全量抓包'
+  const modules = result?.modules || []
+
+  const scopeLabel = '全量抓包'
 
   const handleDownloadExcel = useCallback(() => {
     if (!result) return
@@ -164,7 +168,7 @@ export function MessageStatsPanel({ jobId, selectedIMSIs }: MessageStatsPanelPro
         </div>
         <div className="bg-cyan-50 rounded-lg px-4 py-3">
           <p className="text-xs font-semibold text-cyan-700 uppercase tracking-wider mb-1">模块</p>
-          <p className="text-lg font-bold text-cyan-900">{result?.modules.length || 5}</p>
+          <p className="text-lg font-bold text-cyan-900">{modules.length || 5}</p>
         </div>
         <div className="bg-emerald-50 rounded-lg px-4 py-3">
           <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wider mb-1">统计结果</p>
@@ -173,7 +177,7 @@ export function MessageStatsPanel({ jobId, selectedIMSIs }: MessageStatsPanelPro
         <div className="bg-amber-50 rounded-lg px-4 py-3">
           <p className="text-xs font-semibold text-amber-700 uppercase tracking-wider mb-1">NAS修正</p>
           <p className="text-lg font-bold text-amber-900">
-            {result?.modules.flatMap(module => module.items).filter(item => item.correction !== 0).length || 0}
+            {modules.flatMap(module => module.items || []).filter(item => item.correction !== 0).length || 0}
           </p>
         </div>
       </div>
@@ -187,7 +191,7 @@ export function MessageStatsPanel({ jobId, selectedIMSIs }: MessageStatsPanelPro
       {result && activeModule && (
         <div className="animate-fade-in">
           <div className="flex gap-2 overflow-x-auto pb-2 mb-4">
-            {result.modules.map(module => {
+            {modules.map(module => {
               const active = module.key === activeModule.key
               return (
                 <button
@@ -231,7 +235,7 @@ export function MessageStatsPanel({ jobId, selectedIMSIs }: MessageStatsPanelPro
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 bg-white">
-                {activeModule.items.map(item => (
+                {(activeModule.items || []).map(item => (
                   <tr key={item.key} className="hover:bg-slate-50/80">
                     <td className="px-4 py-3 font-semibold text-slate-800 whitespace-nowrap">{item.name}</td>
                     <td className="px-4 py-3">
@@ -272,8 +276,19 @@ interface WorksheetSpec {
   widths: number[]
 }
 
+function normalizeStatsResult(result: MessageStatsResult): MessageStatsResult {
+  return {
+    ...result,
+    modules: (result.modules || []).map(module => ({
+      ...module,
+      items: module.items || [],
+    })),
+  }
+}
+
 function buildStatsWorkbookXLSX(result: MessageStatsResult, scopeLabel: string): Uint8Array {
-  const total = result.modules.reduce((sum, module) => sum + module.final_total, 0)
+  const modules = result.modules || []
+  const total = modules.reduce((sum, module) => sum + module.final_total, 0)
   const generatedAt = new Date().toLocaleString()
 
   const worksheets: WorksheetSpec[] = [
@@ -283,20 +298,20 @@ function buildStatsWorkbookXLSX(result: MessageStatsResult, scopeLabel: string):
       rows: [
         ['消息统计结果'],
         ['统计范围', scopeLabel, '统计时间', generatedAt],
-        ['模块数', result.modules.length, '统计总数', total],
+        ['模块数', modules.length, '统计总数', total],
         ['过滤范围', result.scope_filter || '全量抓包'],
         [],
         ['模块', '标准', '原始合计', '统计合计', '修正项数'],
-        ...result.modules.map(module => [
+        ...modules.map(module => [
           module.name,
           module.standard || '',
           module.raw_total,
           module.final_total,
-          module.items.filter(item => item.correction !== 0).length,
+          (module.items || []).filter(item => item.correction !== 0).length,
         ]),
       ],
     },
-    ...result.modules.map(module => ({
+    ...modules.map(module => ({
       name: module.name,
       widths: [42, 62, 12, 12, 12, 36],
       rows: [
@@ -304,7 +319,7 @@ function buildStatsWorkbookXLSX(result: MessageStatsResult, scopeLabel: string):
         ['标准', module.standard || '', '原始合计', module.raw_total, '统计合计', module.final_total],
         [],
         ['消息名称', '过滤条件', '原始', '修正', '统计', '修正原因'],
-        ...module.items.map(item => [
+        ...(module.items || []).map(item => [
           item.name,
           item.filter,
           item.raw_count,

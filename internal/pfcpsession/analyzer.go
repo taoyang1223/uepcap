@@ -76,7 +76,8 @@ func (a *Analyzer) analyze(filename string, messages []*Message) *AnalysisResult
 
 		key := makeKey(msg)
 		if isRequest(msg.MessageTypeCode) {
-			requestCounts[key] = append(requestCounts[key], msg.FrameNumber)
+			retransmitKey := makeRetransmitKey(msg)
+			requestCounts[retransmitKey] = append(requestCounts[retransmitKey], msg.FrameNumber)
 			if _, exists := requests[key]; !exists {
 				requests[key] = msg
 			}
@@ -108,7 +109,7 @@ func (a *Analyzer) analyze(filename string, messages []*Message) *AnalysisResult
 			WiresharkFilter: transactionFilter(req),
 		}
 
-		if frames := requestCounts[key]; len(frames) > 1 {
+		if frames := requestCounts[makeRetransmitKey(req)]; len(frames) > 1 {
 			tx.RetransmitCount = len(frames) - 1
 			tx.RetransmitFrames = append([]int(nil), frames[1:]...)
 		}
@@ -139,10 +140,6 @@ func (a *Analyzer) analyze(filename string, messages []*Message) *AnalysisResult
 			}
 		} else {
 			tx.Status = StatusNoResponse
-		}
-
-		if tx.RetransmitCount > 0 && tx.Status == StatusNoResponse {
-			tx.Status = StatusRetransmit
 		}
 
 		transactions = append(transactions, tx)
@@ -212,6 +209,20 @@ func makeReverseKey(msg *Message) string {
 	return fmt.Sprintf("%s:%s:%d:%s", msg.DestinationIP, msg.SourceIP, msg.SequenceNumber, messageTypeCategory(msg.MessageTypeCode))
 }
 
+func makeRetransmitKey(msg *Message) string {
+	return fmt.Sprintf(
+		"%s:%s:%d:%d:%d:%d:%s:%s",
+		msg.SourceIP,
+		msg.DestinationIP,
+		msg.MessageTypeCode,
+		msg.SequenceNumber,
+		msg.HeaderSEID,
+		msg.FSEID,
+		msg.FSEIDIPv4,
+		msg.FSEIDIPv6,
+	)
+}
+
 func transactionFilter(msg *Message) string {
 	parts := []string{
 		fmt.Sprintf("pfcp.seqno == %d", msg.SequenceNumber),
@@ -248,7 +259,9 @@ func calculateStatistics(transactions []*Transaction) Statistics {
 			stats.Timeout++
 		}
 
-		stats.Retransmit += tx.RetransmitCount
+		if tx.RetransmitCount > 0 {
+			stats.Retransmit++
+		}
 
 		switch tx.MessageType {
 		case "Session Establishment":

@@ -37,6 +37,9 @@ func windowPFCPAnalysis(result *pfcpsession.AnalysisResult, limit int, responseT
 		out.Transactions = out.Transactions[:limit]
 	}
 	out.Transactions = appendMissingPFCPResponseExtremes(out.Transactions, result.Transactions, result.Statistics.MinResponseTimeMs, result.Statistics.MaxResponseTimeMs)
+	if out.Transactions == nil {
+		out.Transactions = []*pfcpsession.Transaction{}
+	}
 	return out
 }
 
@@ -94,7 +97,16 @@ func windowS11Analysis(result *s11analyzer.AnalysisResult, limit int, responseTi
 		out.Transactions = out.Transactions[:limit]
 	}
 	out.Transactions = appendMissingS11ResponseExtremes(out.Transactions, result.Transactions, result.Statistics.MinResponseTimeMs, result.Statistics.MaxResponseTimeMs)
-	out.Messages = nil
+	if out.Transactions == nil {
+		out.Transactions = []*s11analyzer.Transaction{}
+	}
+	if out.ProcedureStats == nil {
+		out.ProcedureStats = []s11analyzer.ProcedureCount{}
+	}
+	if out.TypeStats == nil {
+		out.TypeStats = []s11analyzer.TypeCount{}
+	}
+	out.Messages = []*s11analyzer.Message{}
 	return out
 }
 
@@ -150,30 +162,80 @@ func sameFloat(left, right float64) bool {
 
 func windowNASAnalysis(result *nasanalyzer.AnalysisResult, limit int) nasanalyzer.AnalysisResult {
 	out := *result
+	flows := append([]*nasanalyzer.Flow(nil), result.Flows...)
+	sort.SliceStable(flows, func(i, j int) bool {
+		left := nasFlowDurationForSort(flows[i])
+		right := nasFlowDurationForSort(flows[j])
+		if left != right {
+			return left > right
+		}
+		return flows[i].StartFrame < flows[j].StartFrame
+	})
 	if len(result.Flows) > limit {
-		out.Flows = append([]*nasanalyzer.Flow(nil), result.Flows[:limit]...)
+		out.Flows = append([]*nasanalyzer.Flow(nil), flows[:limit]...)
 	} else {
-		out.Flows = append([]*nasanalyzer.Flow(nil), result.Flows...)
+		out.Flows = flows
 	}
 	if len(result.Messages) > limit {
 		out.Messages = append([]*nasanalyzer.Message(nil), result.Messages[:limit]...)
 	} else {
 		out.Messages = append([]*nasanalyzer.Message(nil), result.Messages...)
 	}
+	if out.Flows == nil {
+		out.Flows = []*nasanalyzer.Flow{}
+	}
+	if out.Messages == nil {
+		out.Messages = []*nasanalyzer.Message{}
+	}
+	if out.TypeStats == nil {
+		out.TypeStats = []nasanalyzer.TypeCount{}
+	}
 	return out
+}
+
+func nasFlowDurationForSort(flow *nasanalyzer.Flow) float64 {
+	if flow == nil {
+		return math.Inf(-1)
+	}
+	return flow.DurationMs
 }
 
 func windowNGAPAnalysis(result *ngapanalyzer.AnalysisResult, limit int) ngapanalyzer.AnalysisResult {
 	out := *result
-	if len(result.Transactions) > limit {
-		out.Transactions = append([]*ngapanalyzer.Transaction(nil), result.Transactions[:limit]...)
+	transactions := append([]*ngapanalyzer.Transaction(nil), result.Transactions...)
+	sort.SliceStable(transactions, func(i, j int) bool {
+		left := ngapTransactionDurationForSort(transactions[i])
+		right := ngapTransactionDurationForSort(transactions[j])
+		if left != right {
+			return left > right
+		}
+		return transactions[i].StartFrame < transactions[j].StartFrame
+	})
+	if len(transactions) > limit {
+		out.Transactions = append([]*ngapanalyzer.Transaction(nil), transactions[:limit]...)
 	} else {
-		out.Transactions = append([]*ngapanalyzer.Transaction(nil), result.Transactions...)
+		out.Transactions = transactions
 	}
 	if len(result.Messages) > limit {
 		out.Messages = append([]*ngapanalyzer.Message(nil), result.Messages[:limit]...)
 	} else {
 		out.Messages = append([]*ngapanalyzer.Message(nil), result.Messages...)
 	}
+	if out.Transactions == nil {
+		out.Transactions = []*ngapanalyzer.Transaction{}
+	}
+	if out.Messages == nil {
+		out.Messages = []*ngapanalyzer.Message{}
+	}
+	if out.ProcedureStats == nil {
+		out.ProcedureStats = []ngapanalyzer.ProcedureCount{}
+	}
 	return out
+}
+
+func ngapTransactionDurationForSort(tx *ngapanalyzer.Transaction) float64 {
+	if tx == nil {
+		return math.Inf(-1)
+	}
+	return tx.DurationMs
 }

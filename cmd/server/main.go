@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"strings"
 	"syscall"
 	"time"
@@ -120,6 +121,12 @@ func spaHandler(fileServer http.Handler, fsys fs.FS) http.Handler {
 			return
 		}
 
+		if fallback, ok := findAssetFallback(fsys, path); ok {
+			setStaticCacheHeaders(w, fallback)
+			http.ServeFileFS(w, r, fsys, fallback)
+			return
+		}
+
 		// For SPA: serve index.html for non-existent paths (except /api)
 		if len(r.URL.Path) < 4 || r.URL.Path[:4] != "/api" {
 			r.URL.Path = "/"
@@ -138,8 +145,35 @@ func setStaticCacheHeaders(w http.ResponseWriter, path string) {
 		return
 	}
 	if strings.HasPrefix(path, "assets/") {
-		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		w.Header().Set("Cache-Control", "no-cache")
 		return
 	}
 	w.Header().Set("Cache-Control", "public, max-age=3600")
+}
+
+func findAssetFallback(fsys fs.FS, requested string) (string, bool) {
+	if !strings.HasPrefix(requested, "assets/") || (!strings.HasSuffix(requested, ".js") && !strings.HasSuffix(requested, ".css")) {
+		return "", false
+	}
+
+	name := path.Base(requested)
+	dash := strings.IndexByte(name, '-')
+	dot := strings.LastIndexByte(name, '.')
+	if dash <= 0 || dot <= dash {
+		return "", false
+	}
+	prefix := name[:dash+1]
+	suffix := name[dot:]
+
+	entries, err := fs.ReadDir(fsys, "assets")
+	if err != nil {
+		return "", false
+	}
+	for _, entry := range entries {
+		candidate := entry.Name()
+		if !entry.IsDir() && strings.HasPrefix(candidate, prefix) && strings.HasSuffix(candidate, suffix) {
+			return "assets/" + candidate, true
+		}
+	}
+	return "", false
 }

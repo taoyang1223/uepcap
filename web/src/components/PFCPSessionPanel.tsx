@@ -127,6 +127,7 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
 
   const filteredTransactions = useMemo(() => {
     if (!result) return []
+    const transactions = result.transactions || []
     const normalizedQuery = query.trim().toLowerCase()
     const targetResponseTime = responseTimeFilter === 'min'
       ? result.statistics.min_response_time_ms
@@ -134,8 +135,9 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
         ? result.statistics.max_response_time_ms
         : null
 
-    return result.transactions.filter(tx => {
-      if (statusFilter !== 'all' && tx.status !== statusFilter) return false
+    return transactions.filter(tx => {
+      if (statusFilter === 'retransmit' && (tx.retransmit_count || 0) <= 0) return false
+      if (statusFilter !== 'all' && statusFilter !== 'retransmit' && tx.status !== statusFilter) return false
       if (messageTypeFilter !== 'all' && tx.message_type !== messageTypeFilter) return false
       if (targetResponseTime != null && !sameResponseTime(tx.response_time_ms, targetResponseTime)) return false
       if (!normalizedQuery) return true
@@ -150,6 +152,11 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
         String(tx.request_frame),
         tx.cause_name || '',
       ].some(value => value.toLowerCase().includes(normalizedQuery))
+    }).sort((left, right) => {
+      const rightDuration = right.response_time_ms ?? -1
+      const leftDuration = left.response_time_ms ?? -1
+      if (rightDuration !== leftDuration) return rightDuration - leftDuration
+      return left.request_frame - right.request_frame
     })
   }, [result, statusFilter, messageTypeFilter, responseTimeFilter, query])
 

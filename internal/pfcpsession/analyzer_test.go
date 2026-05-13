@@ -59,11 +59,45 @@ func TestAnalyzeMatchesSessionTransactions(t *testing.T) {
 	if result.Statistics.Retransmit != 1 {
 		t.Fatalf("retransmit = %d, want 1", result.Statistics.Retransmit)
 	}
-	if result.Transactions[1].Status != StatusRetransmit {
-		t.Fatalf("second transaction status = %s, want %s", result.Transactions[1].Status, StatusRetransmit)
+	if result.Transactions[1].Status != StatusNoResponse {
+		t.Fatalf("second transaction status = %s, want %s", result.Transactions[1].Status, StatusNoResponse)
+	}
+	if result.Transactions[1].RetransmitCount != 1 {
+		t.Fatalf("second transaction retransmit count = %d, want 1", result.Transactions[1].RetransmitCount)
 	}
 	if got := *result.Transactions[0].ResponseTimeMs; got != 25 {
 		t.Fatalf("response time = %v, want 25", got)
+	}
+}
+
+func TestAnalyzeDoesNotTreatSameSequenceDifferentSEIDAsRetransmit(t *testing.T) {
+	base := time.Unix(200, 0)
+	messages := []*Message{
+		{
+			FrameNumber:     1,
+			Timestamp:       base,
+			SourceIP:        "10.0.0.1",
+			DestinationIP:   "10.0.0.2",
+			MessageTypeCode: 52,
+			HeaderSEID:      11,
+			SequenceNumber:  9,
+		},
+		{
+			FrameNumber:     2,
+			Timestamp:       base.Add(time.Millisecond),
+			SourceIP:        "10.0.0.1",
+			DestinationIP:   "10.0.0.2",
+			MessageTypeCode: 52,
+			HeaderSEID:      22,
+			SequenceNumber:  9,
+		},
+	}
+
+	analyzer := NewAnalyzer()
+	result := analyzer.analyze("sample.pcap", messages)
+
+	if result.Statistics.Retransmit != 0 {
+		t.Fatalf("retransmit = %d, want 0", result.Statistics.Retransmit)
 	}
 }
 
