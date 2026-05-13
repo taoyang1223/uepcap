@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Activity, AlertTriangle, CheckCircle2, ChevronDown, Clock3, Copy, Loader2, RefreshCw, Search, Upload, X, XCircle, Zap } from 'lucide-react'
+import { Activity, AlertTriangle, CheckCircle2, ChevronDown, Clock3, Copy, FileText, Loader2, RefreshCw, Search, Upload, X, XCircle, Zap } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
 
 interface PFCPSessionPanelProps {
@@ -8,7 +8,16 @@ interface PFCPSessionPanelProps {
 }
 
 type SessionStatus = 'success' | 'failed' | 'no_response' | 'timeout' | 'retransmit'
-type SessionMessageType = 'Session Establishment' | 'Session Modification' | 'Session Deletion'
+type SessionMessageType =
+  | 'Heartbeat'
+  | 'Association Setup'
+  | 'Association Update'
+  | 'Association Release'
+  | 'Node Report'
+  | 'Session Establishment'
+  | 'Session Modification'
+  | 'Session Deletion'
+  | 'Session Report'
 type ResponseTimeFilter = 'all' | 'min' | 'max'
 
 interface PFCPSessionStatistics {
@@ -18,9 +27,15 @@ interface PFCPSessionStatistics {
   no_response: number
   timeout: number
   retransmit: number
+  heartbeat: number
+  association_setup: number
+  association_update: number
+  association_release: number
+  node_report: number
   session_establishment: number
   session_modification: number
   session_deletion: number
+  session_report: number
   avg_response_time_ms: number
   max_response_time_ms: number
   min_response_time_ms: number
@@ -81,10 +96,18 @@ const statusClasses: Record<SessionStatus, string> = {
 }
 
 const messageTypeLabels: Record<SessionMessageType, string> = {
+  'Heartbeat': 'Heartbeat',
+  'Association Setup': 'Association Setup',
+  'Association Update': 'Association Update',
+  'Association Release': 'Association Release',
+  'Node Report': 'Node Report',
   'Session Establishment': 'Session Establishment',
   'Session Modification': 'Session Modification',
   'Session Deletion': 'Session Deletion',
+  'Session Report': 'Session Report',
 }
+
+const PAGE_SIZE = 15
 
 export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
   const [loading, setLoading] = useState(false)
@@ -94,6 +117,7 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
   const [messageTypeFilter, setMessageTypeFilter] = useState<'all' | SessionMessageType>('all')
   const [responseTimeFilter, setResponseTimeFilter] = useState<ResponseTimeFilter>('all')
   const [query, setQuery] = useState('')
+  const [transactionPage, setTransactionPage] = useState(1)
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [selectedTransaction, setSelectedTransaction] = useState<PFCPSessionTransaction | null>(null)
   const [collapsed, setCollapsed] = useState(false)
@@ -106,11 +130,11 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
       const response = await fetch(`/api/jobs/${jobId}/pfcp-sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ timeout_seconds: 3, limit: 500 }),
+        body: JSON.stringify({ timeout_seconds: 3, limit: 2000 }),
       })
       const data = (await response.json()) as APIResponse<PFCPSessionResult>
       if (!data.success || !data.data) {
-        throw new Error(data.error || 'PFCP会话分析失败')
+        throw new Error(data.error || 'PFCP事务分析失败')
       }
       setResult(data.data)
       setStatusFilter('all')
@@ -118,8 +142,9 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
       setResponseTimeFilter('all')
       setSelectedTransaction(null)
       setQuery('')
+      setTransactionPage(1)
     } catch (err) {
-      setError('PFCP会话分析失败: ' + (err as Error).message)
+      setError('PFCP事务分析失败: ' + (err as Error).message)
     } finally {
       setLoading(false)
     }
@@ -159,6 +184,7 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
       return left.request_frame - right.request_frame
     })
   }, [result, statusFilter, messageTypeFilter, responseTimeFilter, query])
+  const pagedTransactions = useMemo(() => paginate(filteredTransactions, transactionPage), [filteredTransactions, transactionPage])
 
   const handleCopyFilter = useCallback(async (tx: PFCPSessionTransaction) => {
     const copied = await copyText(tx.wireshark_filter)
@@ -181,7 +207,7 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
             <div>
               <h3 className="text-lg font-bold tracking-tight text-slate-900">PFCP Session Analyzer</h3>
               <p className="text-xs text-slate-500">
-                {collapsed && result ? `事务 ${stats?.total_transactions || 0} · 成功率 ${successRate.toFixed(1)}%` : 'PFCP 会话事务状态分析'}
+                {collapsed && result ? `事务 ${stats?.total_transactions || 0} · 成功率 ${successRate.toFixed(1)}%` : 'PFCP 会话/节点事务状态分析'}
               </p>
             </div>
           </div>
@@ -211,7 +237,7 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
         <div className="p-6">
         {loading && !result && (
           <div className="rounded-xl border border-cyan-100 bg-cyan-50 px-5 py-4 text-sm font-semibold text-cyan-700">
-            正在分析 PFCP 会话事务...
+            正在分析 PFCP 会话/节点事务...
           </div>
         )}
 
@@ -243,32 +269,72 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
             <div className="mb-6">
               <p className="mb-3 text-sm font-bold text-slate-600">按状态统计</p>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-5">
-                <StatusCard active={statusFilter === 'success'} label="成功" value={stats?.success || 0} tone="emerald" icon={<CheckCircle2 className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'success' ? 'all' : 'success')} />
-                <StatusCard active={statusFilter === 'failed'} label="失败" value={stats?.failed || 0} tone="rose" icon={<XCircle className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'failed' ? 'all' : 'failed')} />
-                <StatusCard active={statusFilter === 'no_response'} label="无响应" value={stats?.no_response || 0} tone="slate" icon={<AlertTriangle className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'no_response' ? 'all' : 'no_response')} />
-                <StatusCard active={statusFilter === 'timeout'} label="超时" value={stats?.timeout || 0} tone="amber" icon={<Clock3 className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'timeout' ? 'all' : 'timeout')} />
-                <StatusCard active={statusFilter === 'retransmit'} label="重传" value={stats?.retransmit || 0} tone="violet" icon={<RefreshCw className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'retransmit' ? 'all' : 'retransmit')} />
+                <StatusCard active={statusFilter === 'success'} label="成功" value={stats?.success || 0} tone="emerald" icon={<CheckCircle2 className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'success' ? 'all' : 'success'); setTransactionPage(1) }} />
+                <StatusCard active={statusFilter === 'failed'} label="失败" value={stats?.failed || 0} tone="rose" icon={<XCircle className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'failed' ? 'all' : 'failed'); setTransactionPage(1) }} />
+                <StatusCard active={statusFilter === 'no_response'} label="无响应" value={stats?.no_response || 0} tone="slate" icon={<AlertTriangle className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'no_response' ? 'all' : 'no_response'); setTransactionPage(1) }} />
+                <StatusCard active={statusFilter === 'timeout'} label="超时" value={stats?.timeout || 0} tone="amber" icon={<Clock3 className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'timeout' ? 'all' : 'timeout'); setTransactionPage(1) }} />
+                <StatusCard active={statusFilter === 'retransmit'} label="重传" value={stats?.retransmit || 0} tone="violet" icon={<RefreshCw className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'retransmit' ? 'all' : 'retransmit'); setTransactionPage(1) }} />
               </div>
             </div>
 
             <div className="mb-6">
               <p className="mb-3 text-sm font-bold text-slate-600">按消息类型统计</p>
-              <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                <TypeCard
+                  active={messageTypeFilter === 'Heartbeat'}
+                  label="Heartbeat"
+                  value={stats?.heartbeat || 0}
+                  icon={<Activity className="w-5 h-5" />}
+                  tone="cyan"
+                  onClick={() => { setMessageTypeFilter(messageTypeFilter === 'Heartbeat' ? 'all' : 'Heartbeat'); setTransactionPage(1) }}
+                />
+                <TypeCard
+                  active={messageTypeFilter === 'Association Setup'}
+                  label="Association Setup"
+                  value={stats?.association_setup || 0}
+                  icon={<Zap className="w-5 h-5" />}
+                  tone="emerald"
+                  onClick={() => { setMessageTypeFilter(messageTypeFilter === 'Association Setup' ? 'all' : 'Association Setup'); setTransactionPage(1) }}
+                />
+                <TypeCard
+                  active={messageTypeFilter === 'Association Update'}
+                  label="Association Update"
+                  value={stats?.association_update || 0}
+                  icon={<RefreshCw className="w-5 h-5" />}
+                  tone="indigo"
+                  onClick={() => { setMessageTypeFilter(messageTypeFilter === 'Association Update' ? 'all' : 'Association Update'); setTransactionPage(1) }}
+                />
+                <TypeCard
+                  active={messageTypeFilter === 'Association Release'}
+                  label="Association Release"
+                  value={stats?.association_release || 0}
+                  icon={<XCircle className="w-5 h-5" />}
+                  tone="rose"
+                  onClick={() => { setMessageTypeFilter(messageTypeFilter === 'Association Release' ? 'all' : 'Association Release'); setTransactionPage(1) }}
+                />
+                <TypeCard
+                  active={messageTypeFilter === 'Node Report'}
+                  label="Node Report"
+                  value={stats?.node_report || 0}
+                  icon={<FileText className="w-5 h-5" />}
+                  tone="slate"
+                  onClick={() => { setMessageTypeFilter(messageTypeFilter === 'Node Report' ? 'all' : 'Node Report'); setTransactionPage(1) }}
+                />
                 <TypeCard
                   active={messageTypeFilter === 'Session Establishment'}
                   label="Session Establishment"
                   value={stats?.session_establishment || 0}
                   icon={<Zap className="w-5 h-5" />}
-                  tone="cyan"
-                  onClick={() => setMessageTypeFilter(messageTypeFilter === 'Session Establishment' ? 'all' : 'Session Establishment')}
+                  tone="teal"
+                  onClick={() => { setMessageTypeFilter(messageTypeFilter === 'Session Establishment' ? 'all' : 'Session Establishment'); setTransactionPage(1) }}
                 />
                 <TypeCard
                   active={messageTypeFilter === 'Session Modification'}
                   label="Session Modification"
                   value={stats?.session_modification || 0}
                   icon={<Activity className="w-5 h-5" />}
-                  tone="indigo"
-                  onClick={() => setMessageTypeFilter(messageTypeFilter === 'Session Modification' ? 'all' : 'Session Modification')}
+                  tone="violet"
+                  onClick={() => { setMessageTypeFilter(messageTypeFilter === 'Session Modification' ? 'all' : 'Session Modification'); setTransactionPage(1) }}
                 />
                 <TypeCard
                   active={messageTypeFilter === 'Session Deletion'}
@@ -276,7 +342,15 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
                   value={stats?.session_deletion || 0}
                   icon={<XCircle className="w-5 h-5" />}
                   tone="rose"
-                  onClick={() => setMessageTypeFilter(messageTypeFilter === 'Session Deletion' ? 'all' : 'Session Deletion')}
+                  onClick={() => { setMessageTypeFilter(messageTypeFilter === 'Session Deletion' ? 'all' : 'Session Deletion'); setTransactionPage(1) }}
+                />
+                <TypeCard
+                  active={messageTypeFilter === 'Session Report'}
+                  label="Session Report"
+                  value={stats?.session_report || 0}
+                  icon={<FileText className="w-5 h-5" />}
+                  tone="amber"
+                  onClick={() => { setMessageTypeFilter(messageTypeFilter === 'Session Report' ? 'all' : 'Session Report'); setTransactionPage(1) }}
                 />
               </div>
             </div>
@@ -293,14 +367,14 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
                   label="最小响应时间"
                   value={formatMs(stats?.min_response_time_ms)}
                   tone="emerald"
-                  onClick={() => setResponseTimeFilter(responseTimeFilter === 'min' ? 'all' : 'min')}
+                  onClick={() => { setResponseTimeFilter(responseTimeFilter === 'min' ? 'all' : 'min'); setTransactionPage(1) }}
                 />
                 <ResponseMetric
                   active={responseTimeFilter === 'max'}
                   label="最大响应时间"
                   value={formatMs(stats?.max_response_time_ms)}
                   tone="amber"
-                  onClick={() => setResponseTimeFilter(responseTimeFilter === 'max' ? 'all' : 'max')}
+                  onClick={() => { setResponseTimeFilter(responseTimeFilter === 'max' ? 'all' : 'max'); setTransactionPage(1) }}
                 />
               </div>
             </div>
@@ -308,7 +382,7 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
           <div className="animate-fade-in rounded-xl border border-slate-200 overflow-hidden">
             <div className="flex flex-col gap-3 border-b border-slate-200 bg-white px-4 py-4 md:flex-row md:items-center md:justify-between">
               <div className="flex flex-wrap items-center gap-3">
-                <p className="text-base font-bold text-slate-900">会话列表</p>
+                <p className="text-base font-bold text-slate-900">事务列表</p>
                 <span className="text-sm text-slate-500">共 {filteredTransactions.length} 条记录</span>
                 {statusFilter !== 'all' && (
                   <span className="rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1 text-xs font-bold text-cyan-700">
@@ -331,6 +405,7 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
                       setStatusFilter('all')
                       setMessageTypeFilter('all')
                       setResponseTimeFilter('all')
+                      setTransactionPage(1)
                     }}
                     className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700"
                   >
@@ -343,7 +418,7 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                 <input
                   value={query}
-                  onChange={event => setQuery(event.target.value)}
+                  onChange={event => { setQuery(event.target.value); setTransactionPage(1) }}
                   className="w-full rounded-lg border border-slate-200 bg-slate-50 pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400"
                   placeholder="搜索 IP / SEID / 序列号"
                 />
@@ -366,7 +441,7 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 bg-white">
-                  {filteredTransactions.map(tx => (
+                  {pagedTransactions.map(tx => (
                     <tr
                       key={tx.id}
                       onClick={() => setSelectedTransaction(tx)}
@@ -395,8 +470,11 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
 
             {filteredTransactions.length === 0 && (
               <div className="py-8 text-center text-sm text-slate-500">
-                没有匹配的PFCP会话事务
+                没有匹配的PFCP事务
               </div>
+            )}
+            {filteredTransactions.length > 0 && (
+              <PaginationControls total={filteredTransactions.length} page={transactionPage} onPageChange={setTransactionPage} />
             )}
           </div>
           </>
@@ -451,11 +529,16 @@ function StatusCard({ active, label, value, tone, icon, onClick }: { active: boo
   )
 }
 
-function TypeCard({ active, label, value, tone, icon, onClick }: { active: boolean; label: string; value: number; tone: 'cyan' | 'indigo' | 'rose'; icon: ReactNode; onClick: () => void }) {
+function TypeCard({ active, label, value, tone, icon, onClick }: { active: boolean; label: string; value: number; tone: 'cyan' | 'emerald' | 'indigo' | 'rose' | 'slate' | 'teal' | 'violet' | 'amber'; icon: ReactNode; onClick: () => void }) {
   const classes = {
     cyan: 'text-cyan-600 bg-cyan-50 border-cyan-200',
+    emerald: 'text-emerald-600 bg-emerald-50 border-emerald-200',
     indigo: 'text-indigo-600 bg-indigo-50 border-indigo-200',
     rose: 'text-rose-600 bg-rose-50 border-rose-200',
+    slate: 'text-slate-600 bg-slate-50 border-slate-200',
+    teal: 'text-teal-600 bg-teal-50 border-teal-200',
+    violet: 'text-violet-600 bg-violet-50 border-violet-200',
+    amber: 'text-amber-600 bg-amber-50 border-amber-200',
   }
   return (
     <button
@@ -496,6 +579,36 @@ function ResponseMetric({ active = false, label, value, tone, onClick }: { activ
   )
 }
 
+function PaginationControls({ total, page, onPageChange }: { total: number; page: number; onPageChange: (page: number) => void }) {
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const safePage = Math.min(Math.max(page, 1), pageCount)
+  const start = total === 0 ? 0 : (safePage - 1) * PAGE_SIZE + 1
+  const end = Math.min(total, safePage * PAGE_SIZE)
+
+  return (
+    <div className="flex flex-col gap-3 border-t border-slate-200 bg-white px-4 py-3 text-sm text-slate-500 md:flex-row md:items-center md:justify-between">
+      <span>显示 {start}-{end} / {total}</span>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => onPageChange(Math.max(1, safePage - 1))}
+          disabled={safePage <= 1}
+          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          上一页
+        </button>
+        <span className="min-w-16 text-center text-xs font-bold text-slate-600">{safePage} / {pageCount}</span>
+        <button
+          onClick={() => onPageChange(Math.min(pageCount, safePage + 1))}
+          disabled={safePage >= pageCount}
+          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          下一页
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function TransactionDetailModal({ transaction, copied, onCopy, onClose }: { transaction: PFCPSessionTransaction; copied: boolean; onCopy: () => void; onClose: () => void }) {
   const responseTime = transaction.response_time_ms == null ? '-' : formatMs(transaction.response_time_ms)
 
@@ -508,7 +621,7 @@ function TransactionDetailModal({ transaction, copied, onCopy, onClose }: { tran
               {transaction.status === 'success' ? <CheckCircle2 className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
             </div>
             <div>
-              <h4 className="text-xl font-bold text-slate-900">会话详情</h4>
+              <h4 className="text-xl font-bold text-slate-900">事务详情</h4>
               <p className="mt-1 text-sm text-slate-500">
                 {transaction.message_type} · Seq {transaction.sequence_number}
               </p>
@@ -619,4 +732,10 @@ function formatMs(value?: number): string {
 function sameResponseTime(value: number | undefined, target: number): boolean {
   if (value == null) return false
   return Math.abs(value - target) < 0.000001
+}
+
+function paginate<T>(items: T[], page: number) {
+  const safePage = Math.max(1, page)
+  const start = (safePage - 1) * PAGE_SIZE
+  return items.slice(start, start + PAGE_SIZE)
 }

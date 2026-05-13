@@ -36,6 +36,7 @@ func windowPFCPAnalysis(result *pfcpsession.AnalysisResult, limit int, responseT
 	if len(out.Transactions) > limit {
 		out.Transactions = out.Transactions[:limit]
 	}
+	out.Transactions = appendMissingPFCPAttentionTransactions(out.Transactions, result.Transactions)
 	out.Transactions = appendMissingPFCPResponseExtremes(out.Transactions, result.Transactions, result.Statistics.MinResponseTimeMs, result.Statistics.MaxResponseTimeMs)
 	if out.Transactions == nil {
 		out.Transactions = []*pfcpsession.Transaction{}
@@ -63,6 +64,32 @@ func pfcpResponseTimeForSort(tx *pfcpsession.Transaction) float64 {
 		return math.Inf(-1)
 	}
 	return *tx.ResponseTimeMs
+}
+
+func appendMissingPFCPAttentionTransactions(window, all []*pfcpsession.Transaction) []*pfcpsession.Transaction {
+	present := make(map[*pfcpsession.Transaction]bool, len(window))
+	for _, tx := range window {
+		if tx != nil {
+			present[tx] = true
+		}
+	}
+	for _, tx := range all {
+		if tx == nil || present[tx] || !isPFCPAttentionTransaction(tx) {
+			continue
+		}
+		window = append(window, tx)
+		present[tx] = true
+	}
+	return window
+}
+
+func isPFCPAttentionTransaction(tx *pfcpsession.Transaction) bool {
+	switch tx.Status {
+	case pfcpsession.StatusFailed, pfcpsession.StatusNoResponse, pfcpsession.StatusTimeout:
+		return true
+	default:
+		return tx.RetransmitCount > 0
+	}
 }
 
 func appendMissingPFCPResponseExtremes(window, all []*pfcpsession.Transaction, minResponseTime, maxResponseTime float64) []*pfcpsession.Transaction {

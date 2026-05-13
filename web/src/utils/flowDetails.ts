@@ -175,12 +175,20 @@ const PFCP_MESSAGES: Record<string, string> = {
   '2': 'Heartbeat Response',
   '5': 'Association Setup Request',
   '6': 'Association Setup Response',
+  '7': 'Association Update Request',
+  '8': 'Association Update Response',
+  '9': 'Association Release Request',
+  '10': 'Association Release Response',
+  '12': 'Node Report Request',
+  '13': 'Node Report Response',
   '50': 'Session Establishment Request',
   '51': 'Session Establishment Response',
   '52': 'Session Modification Request',
   '53': 'Session Modification Response',
   '54': 'Session Deletion Request',
   '55': 'Session Deletion Response',
+  '56': 'Session Report Request',
+  '57': 'Session Report Response',
 }
 
 const GTPV2_MESSAGES: Record<string, string> = {
@@ -707,4 +715,3 @@ export function deriveFlowDetailsFromTsharkColumns(
     }
   })
 }
-

@@ -141,11 +141,15 @@ func spaHandler(fileServer http.Handler, fsys fs.FS) http.Handler {
 
 func setStaticCacheHeaders(w http.ResponseWriter, path string) {
 	if path == "index.html" || path == "/" {
-		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
 		return
 	}
 	if strings.HasPrefix(path, "assets/") {
-		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
 		return
 	}
 	w.Header().Set("Cache-Control", "public, max-age=3600")

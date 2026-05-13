@@ -75,9 +75,16 @@ type Statistics struct {
 	Timeout           int `json:"timeout"`
 	Retransmit        int `json:"retransmit"`
 
+	Heartbeat          int `json:"heartbeat"`
+	AssociationSetup   int `json:"association_setup"`
+	AssociationUpdate  int `json:"association_update"`
+	AssociationRelease int `json:"association_release"`
+	NodeReport         int `json:"node_report"`
+
 	SessionEstablishment int `json:"session_establishment"`
 	SessionModification  int `json:"session_modification"`
 	SessionDeletion      int `json:"session_deletion"`
+	SessionReport        int `json:"session_report"`
 
 	AvgResponseTimeMs float64 `json:"avg_response_time_ms"`
 	MaxResponseTimeMs float64 `json:"max_response_time_ms"`
@@ -86,6 +93,26 @@ type Statistics struct {
 
 func MessageTypeName(msgType uint8) string {
 	switch msgType {
+	case 1:
+		return "Heartbeat Request"
+	case 2:
+		return "Heartbeat Response"
+	case 5:
+		return "Association Setup Request"
+	case 6:
+		return "Association Setup Response"
+	case 7:
+		return "Association Update Request"
+	case 8:
+		return "Association Update Response"
+	case 9:
+		return "Association Release Request"
+	case 10:
+		return "Association Release Response"
+	case 12:
+		return "Node Report Request"
+	case 13:
+		return "Node Report Response"
 	case 50:
 		return "Session Establishment Request"
 	case 51:
@@ -98,6 +125,10 @@ func MessageTypeName(msgType uint8) string {
 		return "Session Deletion Request"
 	case 55:
 		return "Session Deletion Response"
+	case 56:
+		return "Session Report Request"
+	case 57:
+		return "Session Report Response"
 	default:
 		return "Unknown"
 	}
@@ -141,25 +172,47 @@ func CauseName(cause uint8) string {
 }
 
 func isRequest(msgType uint8) bool {
-	return msgType == 50 || msgType == 52 || msgType == 54
+	switch msgType {
+	case 1, 5, 7, 9, 12, 50, 52, 54, 56:
+		return true
+	default:
+		return false
+	}
 }
 
 func isResponse(msgType uint8) bool {
-	return msgType == 51 || msgType == 53 || msgType == 55
+	switch msgType {
+	case 2, 6, 8, 10, 13, 51, 53, 55, 57:
+		return true
+	default:
+		return false
+	}
 }
 
 func isSessionMessage(msgType uint8) bool {
-	return msgType >= 50 && msgType <= 55
+	return isRequest(msgType) || isResponse(msgType)
 }
 
 func messageTypeCategory(msgType uint8) string {
 	switch msgType {
+	case 1, 2:
+		return "Heartbeat"
+	case 5, 6:
+		return "Association Setup"
+	case 7, 8:
+		return "Association Update"
+	case 9, 10:
+		return "Association Release"
+	case 12, 13:
+		return "Node Report"
 	case 50, 51:
 		return "Session Establishment"
 	case 52, 53:
 		return "Session Modification"
 	case 54, 55:
 		return "Session Deletion"
+	case 56, 57:
+		return "Session Report"
 	default:
 		return "Other"
 	}

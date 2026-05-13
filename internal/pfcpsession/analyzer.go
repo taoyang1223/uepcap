@@ -12,7 +12,11 @@ import (
 	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
 
-const DefaultTimeout = 3 * time.Second
+const (
+	DefaultTimeout = 3 * time.Second
+
+	pfcpTransactionDisplayFilter = "(pfcp.msg_type == 1 || pfcp.msg_type == 2 || pfcp.msg_type == 5 || pfcp.msg_type == 6 || pfcp.msg_type == 7 || pfcp.msg_type == 8 || pfcp.msg_type == 9 || pfcp.msg_type == 10 || pfcp.msg_type == 12 || pfcp.msg_type == 13 || (pfcp.msg_type >= 50 && pfcp.msg_type <= 57))"
+)
 
 var tsharkSessionFields = []string{
 	"frame.number",
@@ -46,12 +50,12 @@ func (a *Analyzer) SetTimeout(timeout time.Duration) {
 }
 
 func (a *Analyzer) AnalyzeFile(ctx context.Context, pcapFile string) (*AnalysisResult, error) {
-	result, err := tshark.TsharkFields(ctx, pcapFile, "pfcp.msg_type >= 50 && pfcp.msg_type <= 55", tsharkSessionFields)
+	result, err := tshark.TsharkFields(ctx, pcapFile, pfcpTransactionDisplayFilter, tsharkSessionFields)
 	if err != nil {
 		return nil, err
 	}
 	if result.ExitCode != 0 {
-		return nil, fmt.Errorf("tshark PFCP session analysis failed: %s", strings.TrimSpace(result.Stderr))
+		return nil, fmt.Errorf("tshark PFCP transaction analysis failed: %s", strings.TrimSpace(result.Stderr))
 	}
 
 	messages := parseFieldRows(result.Stdout)
@@ -65,7 +69,7 @@ func (a *Analyzer) analyze(filename string, messages []*Message) *AnalysisResult
 		TotalPackets: len(messages),
 	}
 
-	requests := make(map[string]*Message)
+	requests := make(map[string][]*Message)
 	responses := make(map[string]*Message)
 	requestCounts := make(map[string][]int)
 
@@ -78,9 +82,7 @@ func (a *Analyzer) analyze(filename string, messages []*Message) *AnalysisResult
 		if isRequest(msg.MessageTypeCode) {
 			retransmitKey := makeRetransmitKey(msg)
 			requestCounts[retransmitKey] = append(requestCounts[retransmitKey], msg.FrameNumber)
-			if _, exists := requests[key]; !exists {
-				requests[key] = msg
-			}
+			requests[key] = append(requests[key], msg)
 			continue
 		}
 		if isResponse(msg.MessageTypeCode) {
@@ -93,28 +95,18 @@ func (a *Analyzer) analyze(filename string, messages []*Message) *AnalysisResult
 
 	transactions := make([]*Transaction, 0, len(requests))
 	txID := 0
-	for key, req := range requests {
-		txID++
-		tx := &Transaction{
-			ID:              fmt.Sprintf("tx-%d", txID),
-			RequestSEID:     req.HeaderSEID,
-			RequestFSEID:    req.FSEID,
-			SequenceNumber:  req.SequenceNumber,
-			MessageType:     messageTypeCategory(req.MessageTypeCode),
-			MessageTypeCode: req.MessageTypeCode,
-			SourceIP:        req.SourceIP,
-			DestinationIP:   req.DestinationIP,
-			RequestTime:     req.Timestamp,
-			RequestFrame:    req.FrameNumber,
-			WiresharkFilter: transactionFilter(req),
+	for key, reqs := range requests {
+		if len(reqs) == 0 {
+			continue
 		}
-
-		if frames := requestCounts[makeRetransmitKey(req)]; len(frames) > 1 {
-			tx.RetransmitCount = len(frames) - 1
-			tx.RetransmitFrames = append([]int(nil), frames[1:]...)
-		}
-
 		if resp, ok := responses[key]; ok {
+			req := reqs[0]
+			txID++
+			tx := newTransaction(txID, req)
+			if frames := requestCounts[makeRetransmitKey(req)]; len(frames) > 1 {
+				tx.RetransmitCount = len(frames) - 1
+				tx.RetransmitFrames = append([]int(nil), frames[1:]...)
+			}
 			tx.ResponseSEID = resp.HeaderSEID
 			tx.ResponseFSEID = resp.FSEID
 			tx.ResponseTime = &resp.Timestamp
@@ -138,11 +130,22 @@ func (a *Analyzer) analyze(filename string, messages []*Message) *AnalysisResult
 			} else {
 				tx.Status = StatusSuccess
 			}
-		} else {
-			tx.Status = StatusNoResponse
+			transactions = append(transactions, tx)
+			continue
 		}
 
-		transactions = append(transactions, tx)
+		seenRetries := make(map[string]int)
+		for _, req := range reqs {
+			txID++
+			tx := newTransaction(txID, req)
+			tx.Status = StatusNoResponse
+			retransmitKey := makeRetransmitKey(req)
+			if seenRetries[retransmitKey] > 0 {
+				tx.RetransmitCount = 1
+			}
+			seenRetries[retransmitKey]++
+			transactions = append(transactions, tx)
+		}
 	}
 
 	sort.Slice(transactions, func(i, j int) bool {
@@ -155,6 +158,22 @@ func (a *Analyzer) analyze(filename string, messages []*Message) *AnalysisResult
 	result.Transactions = transactions
 	result.Statistics = calculateStatistics(transactions)
 	return result
+}
+
+func newTransaction(id int, req *Message) *Transaction {
+	return &Transaction{
+		ID:              fmt.Sprintf("tx-%d", id),
+		RequestSEID:     req.HeaderSEID,
+		RequestFSEID:    req.FSEID,
+		SequenceNumber:  req.SequenceNumber,
+		MessageType:     messageTypeCategory(req.MessageTypeCode),
+		MessageTypeCode: req.MessageTypeCode,
+		SourceIP:        req.SourceIP,
+		DestinationIP:   req.DestinationIP,
+		RequestTime:     req.Timestamp,
+		RequestFrame:    req.FrameNumber,
+		WiresharkFilter: transactionFilter(req),
+	}
 }
 
 func parseFieldRows(output string) []*Message {
@@ -225,6 +244,7 @@ func makeRetransmitKey(msg *Message) string {
 
 func transactionFilter(msg *Message) string {
 	parts := []string{
+		transactionMessageTypeFilter(msg.MessageTypeCode),
 		fmt.Sprintf("pfcp.seqno == %d", msg.SequenceNumber),
 		addressFilter(msg.SourceIP),
 		addressFilter(msg.DestinationIP),
@@ -233,6 +253,31 @@ func transactionFilter(msg *Message) string {
 		parts = append(parts, fmt.Sprintf("pfcp.seid == %d", msg.HeaderSEID))
 	}
 	return strings.Join(parts, " && ")
+}
+
+func transactionMessageTypeFilter(msgType uint8) string {
+	switch msgType {
+	case 1, 2:
+		return "(pfcp.msg_type == 1 || pfcp.msg_type == 2)"
+	case 5, 6:
+		return "(pfcp.msg_type == 5 || pfcp.msg_type == 6)"
+	case 7, 8:
+		return "(pfcp.msg_type == 7 || pfcp.msg_type == 8)"
+	case 9, 10:
+		return "(pfcp.msg_type == 9 || pfcp.msg_type == 10)"
+	case 12, 13:
+		return "(pfcp.msg_type == 12 || pfcp.msg_type == 13)"
+	case 50, 51:
+		return "(pfcp.msg_type == 50 || pfcp.msg_type == 51)"
+	case 52, 53:
+		return "(pfcp.msg_type == 52 || pfcp.msg_type == 53)"
+	case 54, 55:
+		return "(pfcp.msg_type == 54 || pfcp.msg_type == 55)"
+	case 56, 57:
+		return "(pfcp.msg_type == 56 || pfcp.msg_type == 57)"
+	default:
+		return fmt.Sprintf("pfcp.msg_type == %d", msgType)
+	}
 }
 
 func addressFilter(ip string) string {
@@ -264,12 +309,24 @@ func calculateStatistics(transactions []*Transaction) Statistics {
 		}
 
 		switch tx.MessageType {
+		case "Heartbeat":
+			stats.Heartbeat++
+		case "Association Setup":
+			stats.AssociationSetup++
+		case "Association Update":
+			stats.AssociationUpdate++
+		case "Association Release":
+			stats.AssociationRelease++
+		case "Node Report":
+			stats.NodeReport++
 		case "Session Establishment":
 			stats.SessionEstablishment++
 		case "Session Modification":
 			stats.SessionModification++
 		case "Session Deletion":
 			stats.SessionDeletion++
+		case "Session Report":
+			stats.SessionReport++
 		}
 
 		if tx.ResponseTimeMs != nil {

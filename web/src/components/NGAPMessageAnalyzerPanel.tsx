@@ -139,6 +139,8 @@ const statusClasses: Record<TransactionStatus, string> = {
   in_progress: 'bg-amber-50 text-amber-700 border-amber-200',
 }
 
+const PAGE_SIZE = 15
+
 export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProps) {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<NGAPAnalysisResult | null>(null)
@@ -148,6 +150,7 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
   const [procedureFilter, setProcedureFilter] = useState<string>('all')
   const [pduFilter, setPduFilter] = useState<'all' | PDUType>('all')
   const [query, setQuery] = useState('')
+  const [listPage, setListPage] = useState(1)
   const [selectedTransaction, setSelectedTransaction] = useState<NGAPTransaction | null>(null)
   const [selectedMessage, setSelectedMessage] = useState<NGAPMessage | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
@@ -170,6 +173,7 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
       setProcedureFilter('all')
       setPduFilter('all')
       setQuery('')
+      setListPage(1)
       setSelectedTransaction(null)
       setSelectedMessage(null)
     } catch (err) {
@@ -249,6 +253,7 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
       return left.sortFrame - right.sortFrame
     })
   }, [filteredTransactions, filteredMessages])
+  const pagedRows = useMemo(() => paginate(unifiedRows, listPage), [unifiedRows, listPage])
 
   return (
     <div className="bg-white rounded-2xl shadow-lg shadow-slate-900/5 overflow-hidden">
@@ -322,7 +327,7 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
                       code={`Procedure ${item.code}`}
                       value={item.count}
                       transactionCapable={item.transaction_capable}
-                      onClick={() => setProcedureFilter(procedureFilter === item.code ? 'all' : item.code)}
+                      onClick={() => { setProcedureFilter(procedureFilter === item.code ? 'all' : item.code); setListPage(1) }}
                     />
                   ))}
                 </div>
@@ -331,9 +336,9 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
               <div className="mb-6">
                 <p className="mb-3 text-sm font-bold text-slate-600">按 NGAP 事务状态统计</p>
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                  <FeatureCard active={statusFilter === 'success'} label="成功事务" value={stats?.successful_transactions || 0} tone="emerald" icon={<CheckCircle2 className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'success' ? 'all' : 'success')} />
-                  <FeatureCard active={statusFilter === 'failed'} label="失败事务" value={stats?.failed_transactions || 0} tone="rose" icon={<XCircle className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'failed' ? 'all' : 'failed')} />
-                  <FeatureCard active={statusFilter === 'in_progress'} label="未完成事务" value={stats?.in_progress_transactions || 0} tone="amber" icon={<Clock3 className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'in_progress' ? 'all' : 'in_progress')} />
+                  <FeatureCard active={statusFilter === 'success'} label="成功事务" value={stats?.successful_transactions || 0} tone="emerald" icon={<CheckCircle2 className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'success' ? 'all' : 'success'); setListPage(1) }} />
+                  <FeatureCard active={statusFilter === 'failed'} label="失败事务" value={stats?.failed_transactions || 0} tone="rose" icon={<XCircle className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'failed' ? 'all' : 'failed'); setListPage(1) }} />
+                  <FeatureCard active={statusFilter === 'in_progress'} label="未完成事务" value={stats?.in_progress_transactions || 0} tone="amber" icon={<Clock3 className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'in_progress' ? 'all' : 'in_progress'); setListPage(1) }} />
                 </div>
               </div>
 
@@ -356,6 +361,7 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
                           setProcedureFilter('all')
                           setPduFilter('all')
                           setQuery('')
+                          setListPage(1)
                         }}
                         className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700"
                       >
@@ -364,7 +370,7 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
                     )}
                     <select
                       value={pduFilter}
-                      onChange={event => setPduFilter(event.target.value as 'all' | PDUType)}
+                      onChange={event => { setPduFilter(event.target.value as 'all' | PDUType); setListPage(1) }}
                       className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500/30"
                     >
                       <option value="all">全部 PDU</option>
@@ -376,7 +382,7 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
                       <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                       <input
                         value={query}
-                        onChange={event => setQuery(event.target.value)}
+                        onChange={event => { setQuery(event.target.value); setListPage(1) }}
                         className="w-full rounded-lg border border-slate-200 bg-slate-50 pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500/30 focus:border-sky-400"
                         placeholder="搜索 IP / UE ID / Procedure"
                       />
@@ -399,7 +405,7 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 bg-white">
-                      {unifiedRows.map(row => (
+                      {pagedRows.map(row => (
                         <tr
                           key={row.id}
                           onClick={() => row.tx ? setSelectedTransaction(row.tx) : row.message && setSelectedMessage(row.message)}
@@ -424,6 +430,7 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
                   </table>
                 </div>
                 {unifiedRows.length === 0 && <div className="py-8 text-center text-sm text-slate-500">没有匹配的 NGAP 事务或消息</div>}
+                {unifiedRows.length > 0 && <PaginationControls total={unifiedRows.length} page={listPage} onPageChange={setListPage} />}
               </div>
             </>
           )}
@@ -518,6 +525,36 @@ function RowKindBadge({ kind }: { kind: 'transaction' | 'message' }) {
 
 function FilterPill({ label }: { label: string }) {
   return <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-bold text-sky-700">{label}</span>
+}
+
+function PaginationControls({ total, page, onPageChange }: { total: number; page: number; onPageChange: (page: number) => void }) {
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const safePage = Math.min(Math.max(page, 1), pageCount)
+  const start = total === 0 ? 0 : (safePage - 1) * PAGE_SIZE + 1
+  const end = Math.min(total, safePage * PAGE_SIZE)
+
+  return (
+    <div className="flex flex-col gap-3 border-t border-slate-200 bg-white px-4 py-3 text-sm text-slate-500 md:flex-row md:items-center md:justify-between">
+      <span>显示 {start}-{end} / {total}</span>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => onPageChange(Math.max(1, safePage - 1))}
+          disabled={safePage <= 1}
+          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          上一页
+        </button>
+        <span className="min-w-16 text-center text-xs font-bold text-slate-600">{safePage} / {pageCount}</span>
+        <button
+          onClick={() => onPageChange(Math.min(pageCount, safePage + 1))}
+          disabled={safePage >= pageCount}
+          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          下一页
+        </button>
+      </div>
+    </div>
+  )
 }
 
 function TransactionDetailModal({ transaction, copied, onCopy, onClose }: { transaction: NGAPTransaction; copied: boolean; onCopy: () => void; onClose: () => void }) {
@@ -662,4 +699,10 @@ function shortFilename(filename?: string) {
   if (!filename) return '当前上传抓包'
   const parts = filename.split(/[\\/]/)
   return parts[parts.length - 1] || filename
+}
+
+function paginate<T>(items: T[], page: number) {
+  const safePage = Math.max(1, page)
+  const start = (safePage - 1) * PAGE_SIZE
+  return items.slice(start, start + PAGE_SIZE)
 }

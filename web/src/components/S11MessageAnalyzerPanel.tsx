@@ -91,6 +91,8 @@ const statusClasses: Record<TransactionStatus, string> = {
   retransmit: 'bg-purple-50 text-purple-700 border-purple-200',
 }
 
+const PAGE_SIZE = 15
+
 export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps) {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<S11AnalysisResult | null>(null)
@@ -99,6 +101,7 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
   const [statusFilter, setStatusFilter] = useState<'all' | TransactionStatus>('all')
   const [procedureFilter, setProcedureFilter] = useState<string>('all')
   const [responseTimeFilter, setResponseTimeFilter] = useState<ResponseTimeFilter>('all')
+  const [transactionPage, setTransactionPage] = useState(1)
   const [selectedTransaction, setSelectedTransaction] = useState<S11Transaction | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
 
@@ -117,6 +120,7 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
       setStatusFilter('all')
       setProcedureFilter('all')
       setResponseTimeFilter('all')
+      setTransactionPage(1)
       setSelectedTransaction(null)
     } catch (err) {
       setError('S11消息分析失败: ' + (err as Error).message)
@@ -159,6 +163,7 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
     if (!result) return []
     return result.procedure_stats || []
   }, [result])
+  const pagedTransactions = useMemo(() => paginate(filteredTransactions, transactionPage), [filteredTransactions, transactionPage])
 
   return (
     <div className="bg-white rounded-2xl shadow-lg shadow-slate-900/5 overflow-hidden">
@@ -213,11 +218,11 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
               <div className="mb-6">
                 <p className="mb-3 text-sm font-bold text-slate-600">按 S11 请求响应状态统计</p>
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-5">
-                  <FeatureCard active={statusFilter === 'success'} label="成功事务" value={stats?.successful || 0} tone="emerald" icon={<CheckCircle2 className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'success' ? 'all' : 'success')} />
-                  <FeatureCard active={statusFilter === 'failed'} label="失败事务" value={stats?.failed || 0} tone="rose" icon={<XCircle className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'failed' ? 'all' : 'failed')} />
-                  <FeatureCard active={statusFilter === 'no_response'} label="无响应" value={stats?.no_response || 0} tone="amber" icon={<Clock3 className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'no_response' ? 'all' : 'no_response')} />
-                  <FeatureCard active={statusFilter === 'timeout'} label="超时" value={stats?.timeout || 0} tone="orange" icon={<Timer className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'timeout' ? 'all' : 'timeout')} />
-                  <FeatureCard active={statusFilter === 'retransmit'} label="重传" value={stats?.retransmit || 0} tone="purple" icon={<RotateCw className="w-5 h-5" />} onClick={() => setStatusFilter(statusFilter === 'retransmit' ? 'all' : 'retransmit')} />
+                  <FeatureCard active={statusFilter === 'success'} label="成功事务" value={stats?.successful || 0} tone="emerald" icon={<CheckCircle2 className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'success' ? 'all' : 'success'); setTransactionPage(1) }} />
+                  <FeatureCard active={statusFilter === 'failed'} label="失败事务" value={stats?.failed || 0} tone="rose" icon={<XCircle className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'failed' ? 'all' : 'failed'); setTransactionPage(1) }} />
+                  <FeatureCard active={statusFilter === 'no_response'} label="无响应" value={stats?.no_response || 0} tone="amber" icon={<Clock3 className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'no_response' ? 'all' : 'no_response'); setTransactionPage(1) }} />
+                  <FeatureCard active={statusFilter === 'timeout'} label="超时" value={stats?.timeout || 0} tone="orange" icon={<Timer className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'timeout' ? 'all' : 'timeout'); setTransactionPage(1) }} />
+                  <FeatureCard active={statusFilter === 'retransmit'} label="重传" value={stats?.retransmit || 0} tone="purple" icon={<RotateCw className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'retransmit' ? 'all' : 'retransmit'); setTransactionPage(1) }} />
                 </div>
               </div>
 
@@ -225,7 +230,7 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
                 <p className="mb-3 text-sm font-bold text-slate-600">按 S11 事务类型统计</p>
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {transactionTypes.map(item => (
-                    <TypeCard key={item.name} active={procedureFilter === item.name} label={item.name} value={item.count} onClick={() => setProcedureFilter(procedureFilter === item.name ? 'all' : item.name)} />
+                    <TypeCard key={item.name} active={procedureFilter === item.name} label={item.name} value={item.count} onClick={() => { setProcedureFilter(procedureFilter === item.name ? 'all' : item.name); setTransactionPage(1) }} />
                   ))}
                 </div>
               </div>
@@ -234,8 +239,8 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
                 <p className="mb-4 flex items-center gap-2 text-sm font-bold text-slate-600"><Clock3 className="h-4 w-4" />响应时间统计</p>
                 <div className="grid grid-cols-1 gap-5 md:grid-cols-3">
                   <ResponseMetric label="平均响应时间" value={stats?.avg_response_time_ms || 0} />
-                  <ResponseMetric active={responseTimeFilter === 'min'} label="最小响应时间" value={stats?.min_response_time_ms || 0} tone="emerald" onClick={() => setResponseTimeFilter(responseTimeFilter === 'min' ? 'all' : 'min')} />
-                  <ResponseMetric active={responseTimeFilter === 'max'} label="最大响应时间" value={stats?.max_response_time_ms || 0} tone="orange" onClick={() => setResponseTimeFilter(responseTimeFilter === 'max' ? 'all' : 'max')} />
+                  <ResponseMetric active={responseTimeFilter === 'min'} label="最小响应时间" value={stats?.min_response_time_ms || 0} tone="emerald" onClick={() => { setResponseTimeFilter(responseTimeFilter === 'min' ? 'all' : 'min'); setTransactionPage(1) }} />
+                  <ResponseMetric active={responseTimeFilter === 'max'} label="最大响应时间" value={stats?.max_response_time_ms || 0} tone="orange" onClick={() => { setResponseTimeFilter(responseTimeFilter === 'max' ? 'all' : 'max'); setTransactionPage(1) }} />
                 </div>
               </div>
 
@@ -249,7 +254,7 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
                     {responseTimeFilter !== 'all' && <FilterPill label={`响应时间：${responseTimeFilter === 'min' ? '最小' : '最大'}`} />}
                   </div>
                   {(statusFilter !== 'all' || procedureFilter !== 'all' || responseTimeFilter !== 'all') && (
-                    <button onClick={() => { setStatusFilter('all'); setProcedureFilter('all'); setResponseTimeFilter('all') }} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700">清除筛选</button>
+                    <button onClick={() => { setStatusFilter('all'); setProcedureFilter('all'); setResponseTimeFilter('all'); setTransactionPage(1) }} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700">清除筛选</button>
                   )}
                 </div>
                 <div className="overflow-x-auto">
@@ -268,7 +273,7 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 bg-white">
-                      {filteredTransactions.map(tx => (
+                      {pagedTransactions.map(tx => (
                         <tr key={tx.id} onClick={() => setSelectedTransaction(tx)} className="cursor-pointer hover:bg-orange-50/60">
                           <td className="px-4 py-3 font-semibold text-slate-800 whitespace-nowrap">{tx.procedure}</td>
                           <td className="px-4 py-3"><StatusBadge status={tx.status} /></td>
@@ -285,6 +290,7 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
                   </table>
                 </div>
                 {filteredTransactions.length === 0 && <div className="py-8 text-center text-sm text-slate-500">没有匹配的 S11 事务</div>}
+                {filteredTransactions.length > 0 && <PaginationControls total={filteredTransactions.length} page={transactionPage} onPageChange={setTransactionPage} />}
               </div>
 
             </>
@@ -330,6 +336,35 @@ function StatusBadge({ status }: { status: TransactionStatus }) {
 
 function FilterPill({ label }: { label: string }) {
   return <span className="rounded-full border border-orange-200 bg-orange-50 px-3 py-1 text-xs font-bold text-orange-700">{label}</span>
+}
+
+function PaginationControls({ total, page, onPageChange }: { total: number; page: number; onPageChange: (page: number) => void }) {
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const safePage = Math.min(Math.max(page, 1), pageCount)
+  const start = total === 0 ? 0 : (safePage - 1) * PAGE_SIZE + 1
+  const end = Math.min(total, safePage * PAGE_SIZE)
+  return (
+    <div className="flex flex-col gap-3 border-t border-slate-200 bg-white px-4 py-3 text-sm text-slate-500 md:flex-row md:items-center md:justify-between">
+      <span>显示 {start}-{end} / {total}</span>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => onPageChange(Math.max(1, safePage - 1))}
+          disabled={safePage <= 1}
+          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          上一页
+        </button>
+        <span className="min-w-16 text-center text-xs font-bold text-slate-600">{safePage} / {pageCount}</span>
+        <button
+          onClick={() => onPageChange(Math.min(pageCount, safePage + 1))}
+          disabled={safePage >= pageCount}
+          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          下一页
+        </button>
+      </div>
+    </div>
+  )
 }
 
 function TransactionDetailModal({ transaction, copied, onCopy, onClose }: { transaction: S11Transaction; copied: boolean; onCopy: () => void; onClose: () => void }) {
@@ -381,6 +416,12 @@ function formatTimestamp(value?: string) {
 function sameResponseTime(value: number | undefined, target: number): boolean {
   if (value == null) return false
   return Math.abs(value - target) < 0.000001
+}
+
+function paginate<T>(items: T[], page: number) {
+  const safePage = Math.max(1, page)
+  const start = (safePage - 1) * PAGE_SIZE
+  return items.slice(start, start + PAGE_SIZE)
 }
 
 function shortFilename(filename?: string) {
