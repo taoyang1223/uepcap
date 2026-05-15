@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Activity, CheckCircle2, ChevronDown, Clock3, Copy, DatabaseZap, Loader2, RefreshCw, RotateCw, Timer, Upload, X, XCircle } from 'lucide-react'
+import { Activity, CheckCircle2, ChevronDown, Clock3, Copy, DatabaseZap, Loader2, RefreshCw, RotateCw, Search, Timer, Upload, X, XCircle } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
 
 interface S11MessageAnalyzerPanelProps {
@@ -101,6 +101,7 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
   const [statusFilter, setStatusFilter] = useState<'all' | TransactionStatus>('all')
   const [procedureFilter, setProcedureFilter] = useState<string>('all')
   const [responseTimeFilter, setResponseTimeFilter] = useState<ResponseTimeFilter>('all')
+  const [query, setQuery] = useState('')
   const [transactionPage, setTransactionPage] = useState(1)
   const [selectedTransaction, setSelectedTransaction] = useState<S11Transaction | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
@@ -120,6 +121,7 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
       setStatusFilter('all')
       setProcedureFilter('all')
       setResponseTimeFilter('all')
+      setQuery('')
       setTransactionPage(1)
       setSelectedTransaction(null)
     } catch (err) {
@@ -137,19 +139,39 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
       : responseTimeFilter === 'max'
         ? result.statistics.max_response_time_ms
         : null
+    const normalizedQuery = query.trim().toLowerCase()
     return transactions.filter(tx => {
       if (statusFilter === 'retransmit' && (tx.retransmit_count || 0) === 0) return false
       if (statusFilter !== 'all' && statusFilter !== 'retransmit' && tx.status !== statusFilter) return false
       if (procedureFilter !== 'all' && tx.procedure !== procedureFilter) return false
       if (targetResponseTime != null && !sameResponseTime(tx.response_time_ms, targetResponseTime)) return false
-      return true
+      if (!normalizedQuery) return true
+      return [
+        tx.procedure,
+        statusLabels[tx.status],
+        tx.status,
+        String(tx.sequence_number),
+        String(tx.request_frame),
+        tx.response_frame ? String(tx.response_frame) : '',
+        tx.request_type,
+        tx.response_type || '',
+        tx.cause || '',
+        tx.cause_name || '',
+        tx.source_ip,
+        tx.destination_ip,
+        tx.request_teid || '',
+        tx.response_teid || '',
+        tx.apn || '',
+        tx.f_teid_ipv4 || '',
+        ...(tx.retransmit_frames || []).map(String),
+      ].some(value => value.toLowerCase().includes(normalizedQuery))
     }).sort((left, right) => {
       const rightDuration = right.response_frame ? right.response_time_ms || 0 : -1
       const leftDuration = left.response_frame ? left.response_time_ms || 0 : -1
       if (rightDuration !== leftDuration) return rightDuration - leftDuration
       return left.request_frame - right.request_frame
     })
-  }, [result, statusFilter, procedureFilter, responseTimeFilter])
+  }, [result, statusFilter, procedureFilter, responseTimeFilter, query])
 
   const handleCopy = useCallback(async (id: string, filter: string) => {
     const copied = await copyText(filter)
@@ -245,17 +267,29 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
               </div>
 
               <div className="rounded-xl border border-slate-200 overflow-hidden">
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-4">
+                <div className="flex flex-col justify-between gap-3 border-b border-slate-200 bg-white px-4 py-4 lg:flex-row lg:items-center">
                   <div className="flex flex-wrap items-center gap-3">
                     <p className="text-base font-bold text-slate-900">S11 事务列表</p>
                     <span className="text-sm text-slate-500">共 {filteredTransactions.length} 条事务</span>
                     {statusFilter !== 'all' && <FilterPill label={`状态：${statusLabels[statusFilter]}`} />}
                     {procedureFilter !== 'all' && <FilterPill label={`流程：${procedureFilter}`} />}
                     {responseTimeFilter !== 'all' && <FilterPill label={`响应时间：${responseTimeFilter === 'min' ? '最小' : '最大'}`} />}
+                    {query.trim() !== '' && <FilterPill label={`搜索：${query.trim()}`} />}
                   </div>
-                  {(statusFilter !== 'all' || procedureFilter !== 'all' || responseTimeFilter !== 'all') && (
-                    <button onClick={() => { setStatusFilter('all'); setProcedureFilter('all'); setResponseTimeFilter('all'); setTransactionPage(1) }} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700">清除筛选</button>
-                  )}
+                  <div className="flex flex-col gap-2 md:flex-row md:items-center">
+                    {(statusFilter !== 'all' || procedureFilter !== 'all' || responseTimeFilter !== 'all' || query.trim() !== '') && (
+                      <button onClick={() => { setStatusFilter('all'); setProcedureFilter('all'); setResponseTimeFilter('all'); setQuery(''); setTransactionPage(1) }} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700">清除筛选</button>
+                    )}
+                    <label className="relative block md:w-80">
+                      <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                      <input
+                        value={query}
+                        onChange={event => { setQuery(event.target.value); setTransactionPage(1) }}
+                        className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-sm focus:border-orange-400 focus:outline-none focus:ring-2 focus:ring-orange-500/30"
+                        placeholder="搜索 SEQ / 帧 / Cause / APN / IP"
+                      />
+                    </label>
+                  </div>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="min-w-full divide-y divide-slate-200 text-sm">

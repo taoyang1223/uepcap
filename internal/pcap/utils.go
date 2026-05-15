@@ -3,12 +3,13 @@ package pcap
 import (
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // IsPcapFile checks if a file has a pcap extension
 func IsPcapFile(filename string) bool {
-	ext := filepath.Ext(filename)
-	return ext == ".pcap" || ext == ".pcapng" || ext == ".cap"
+	ext := strings.ToLower(filepath.Ext(filename))
+	return ext == ".pcap" || ext == ".pcap0" || ext == ".pcapng" || ext == ".cap"
 }
 
 // FileSize returns the size of a file in bytes

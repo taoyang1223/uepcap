@@ -284,7 +284,7 @@ function App() {
                     上传抓包文件
                   </h2>
                   <p className="text-lg text-slate-500 max-w-lg mx-auto leading-relaxed">
-                    支持 .pcap, .pcapng 格式，自动合并并提取 UE 关键信息
+                    支持 .pcap, .pcap0, .pcapng 格式，自动合并并提取 UE 关键信息
                   </p>
                 </div>
                 <FileUpload onUploadComplete={handleUploadComplete} />

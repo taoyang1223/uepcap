@@ -140,6 +140,7 @@ const statusClasses: Record<TransactionStatus, string> = {
 }
 
 const PAGE_SIZE = 15
+const ANALYSIS_TIMEOUT_MS = 120000
 
 export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProps) {
   const [loading, setLoading] = useState(false)
@@ -158,11 +159,14 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
   const handleAnalyze = useCallback(async () => {
     setLoading(true)
     setError(null)
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => controller.abort(), ANALYSIS_TIMEOUT_MS)
     try {
       const response = await fetch(`/api/jobs/${jobId}/ngap-messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ limit: 500 }),
+        signal: controller.signal,
       })
       const data = (await response.json()) as APIResponse<NGAPAnalysisResult>
       if (!data.success || !data.data) {
@@ -177,8 +181,12 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
       setSelectedTransaction(null)
       setSelectedMessage(null)
     } catch (err) {
-      setError('NGAP消息分析失败: ' + (err as Error).message)
+      const message = err instanceof DOMException && err.name === 'AbortError'
+        ? 'NGAP消息分析超时，请稍后重试或先缩小抓包范围'
+        : 'NGAP消息分析失败: ' + (err as Error).message
+      setError(message)
     } finally {
+      window.clearTimeout(timeoutId)
       setLoading(false)
     }
   }, [jobId])
@@ -226,6 +234,7 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
 
   const stats = result?.statistics
   const topProcedures = (result?.procedure_stats || []).slice(0, 6)
+  const hasNGAPMessages = (stats?.total_messages || 0) > 0
   const unifiedRows = useMemo(() => {
     const transactionRows = filteredTransactions.map(tx => ({
       id: `tx:${tx.id}`,
@@ -316,122 +325,128 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
                 </div>
               </div>
 
-              <div className="mb-6">
-                <p className="mb-3 text-sm font-bold text-slate-600">按 Procedure 统计（筛选消息列表）</p>
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-                  {topProcedures.map(item => (
-                    <ProcedureCard
-                      key={item.code}
-                      active={procedureFilter === item.code}
-                      label={item.name}
-                      code={`Procedure ${item.code}`}
-                      value={item.count}
-                      transactionCapable={item.transaction_capable}
-                      onClick={() => { setProcedureFilter(procedureFilter === item.code ? 'all' : item.code); setListPage(1) }}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              <div className="mb-6">
-                <p className="mb-3 text-sm font-bold text-slate-600">按 NGAP 事务状态统计</p>
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                  <FeatureCard active={statusFilter === 'success'} label="成功事务" value={stats?.successful_transactions || 0} tone="emerald" icon={<CheckCircle2 className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'success' ? 'all' : 'success'); setListPage(1) }} />
-                  <FeatureCard active={statusFilter === 'failed'} label="失败事务" value={stats?.failed_transactions || 0} tone="rose" icon={<XCircle className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'failed' ? 'all' : 'failed'); setListPage(1) }} />
-                  <FeatureCard active={statusFilter === 'in_progress'} label="未完成事务" value={stats?.in_progress_transactions || 0} tone="amber" icon={<Clock3 className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'in_progress' ? 'all' : 'in_progress'); setListPage(1) }} />
-                </div>
-              </div>
-
-              <div className="animate-fade-in rounded-xl border border-slate-200 overflow-hidden">
-                <div className="flex flex-col gap-3 border-b border-slate-200 bg-white px-4 py-4 md:flex-row md:items-center md:justify-between">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <p className="text-base font-bold text-slate-900">NGAP Procedure 事务 / 消息列表</p>
-                    <span className="text-sm text-slate-500">共 {unifiedRows.length} 条</span>
-                    <FilterPill label={`事务：${filteredTransactions.length}`} />
-                    <FilterPill label={`消息：${filteredMessages.length}`} />
-                    {statusFilter !== 'all' && <FilterPill label={`状态：${statusLabels[statusFilter]}`} />}
-                    {procedureFilter !== 'all' && <FilterPill label={`Procedure：${procedureFilter}`} />}
-                    {pduFilter !== 'all' && <FilterPill label={`PDU：${pduLabels[pduFilter]}`} />}
-                  </div>
-                  <div className="flex flex-col gap-2 md:flex-row md:items-center">
-                    {(statusFilter !== 'all' || procedureFilter !== 'all' || pduFilter !== 'all' || query.trim() !== '') && (
-                      <button
-                        onClick={() => {
-                          setStatusFilter('all')
-                          setProcedureFilter('all')
-                          setPduFilter('all')
-                          setQuery('')
-                          setListPage(1)
-                        }}
-                        className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700"
-                      >
-                        清除消息筛选
-                      </button>
-                    )}
-                    <select
-                      value={pduFilter}
-                      onChange={event => { setPduFilter(event.target.value as 'all' | PDUType); setListPage(1) }}
-                      className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500/30"
-                    >
-                      <option value="all">全部 PDU</option>
-                      <option value="initiating">发起</option>
-                      <option value="successful_outcome">成功结果</option>
-                      <option value="unsuccessful_outcome">失败结果</option>
-                    </select>
-                    <label className="relative block md:w-72">
-                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                      <input
-                        value={query}
-                        onChange={event => { setQuery(event.target.value); setListPage(1) }}
-                        className="w-full rounded-lg border border-slate-200 bg-slate-50 pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500/30 focus:border-sky-400"
-                        placeholder="搜索 IP / UE ID / Procedure"
-                      />
-                    </label>
-                  </div>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-slate-200 text-sm">
-                    <thead className="bg-slate-50">
-                      <tr>
-                        <th className="px-4 py-3 text-left font-semibold text-sky-700">类型</th>
-                        <th className="px-4 py-3 text-left font-semibold text-sky-700">Procedure</th>
-                        <th className="px-4 py-3 text-left font-semibold text-sky-700">状态 / PDU</th>
-                        <th className="px-4 py-3 text-left font-semibold text-sky-700">帧</th>
-                        <th className="px-4 py-3 text-left font-semibold text-sky-700">方向</th>
-                        <th className="px-4 py-3 text-right font-semibold text-sky-700">耗时</th>
-                        <th className="px-4 py-3 text-left font-semibold text-sky-700">RAN ID</th>
-                        <th className="px-4 py-3 text-left font-semibold text-sky-700">AMF ID</th>
-                        <th className="px-4 py-3 text-right font-semibold text-sky-700">步骤 / NAS</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 bg-white">
-                      {pagedRows.map(row => (
-                        <tr
-                          key={row.id}
-                          onClick={() => row.tx ? setSelectedTransaction(row.tx) : row.message && setSelectedMessage(row.message)}
-                          className="cursor-pointer hover:bg-sky-50/60"
-                        >
-                          <td className="px-4 py-3"><RowKindBadge kind={row.kind} /></td>
-                          <td className="px-4 py-3 font-semibold text-slate-800 whitespace-nowrap">{row.procedureName}</td>
-                          <td className="px-4 py-3">
-                            {row.tx ? <StatusBadge status={row.tx.status} /> : row.message ? <PDUBadge pdu={row.message.pdu_type} /> : '-'}
-                          </td>
-                          <td className="px-4 py-3 font-mono text-slate-700 whitespace-nowrap">{row.frameLabel}</td>
-                          <td className="px-4 py-3">{row.message ? <DirectionBadge direction={row.message.direction} /> : <span className="text-slate-300">-</span>}</td>
-                          <td className="px-4 py-3 text-right font-semibold tabular-nums text-slate-900">{row.tx ? formatDuration(row.tx.duration_ms) : '-'}</td>
-                          <td className="px-4 py-3 font-mono text-xs text-slate-600">{row.tx?.ran_ue_ngap_id || row.message?.ran_ue_ngap_id || '-'}</td>
-                          <td className="px-4 py-3 font-mono text-xs text-slate-600">{row.tx?.amf_ue_ngap_id || row.message?.amf_ue_ngap_id || '-'}</td>
-                          <td className="px-4 py-3 text-right font-semibold text-slate-700">
-                            {row.tx ? row.tx.step_count : row.message?.has_nas ? '是' : '-'}
-                          </td>
-                        </tr>
+              {!hasNGAPMessages ? (
+                <EmptyNGAPState />
+              ) : (
+                <>
+                  <div className="mb-6">
+                    <p className="mb-3 text-sm font-bold text-slate-600">按 Procedure 统计（筛选消息列表）</p>
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                      {topProcedures.map(item => (
+                        <ProcedureCard
+                          key={item.code}
+                          active={procedureFilter === item.code}
+                          label={item.name}
+                          code={`Procedure ${item.code}`}
+                          value={item.count}
+                          transactionCapable={item.transaction_capable}
+                          onClick={() => { setProcedureFilter(procedureFilter === item.code ? 'all' : item.code); setListPage(1) }}
+                        />
                       ))}
-                    </tbody>
-                  </table>
-                </div>
-                {unifiedRows.length === 0 && <div className="py-8 text-center text-sm text-slate-500">没有匹配的 NGAP 事务或消息</div>}
-                {unifiedRows.length > 0 && <PaginationControls total={unifiedRows.length} page={listPage} onPageChange={setListPage} />}
-              </div>
+                    </div>
+                  </div>
+
+                  <div className="mb-6">
+                    <p className="mb-3 text-sm font-bold text-slate-600">按 NGAP 事务状态统计</p>
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                      <FeatureCard active={statusFilter === 'success'} label="成功事务" value={stats?.successful_transactions || 0} tone="emerald" icon={<CheckCircle2 className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'success' ? 'all' : 'success'); setListPage(1) }} />
+                      <FeatureCard active={statusFilter === 'failed'} label="失败事务" value={stats?.failed_transactions || 0} tone="rose" icon={<XCircle className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'failed' ? 'all' : 'failed'); setListPage(1) }} />
+                      <FeatureCard active={statusFilter === 'in_progress'} label="未完成事务" value={stats?.in_progress_transactions || 0} tone="amber" icon={<Clock3 className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'in_progress' ? 'all' : 'in_progress'); setListPage(1) }} />
+                    </div>
+                  </div>
+
+                  <div className="animate-fade-in rounded-xl border border-slate-200 overflow-hidden">
+                    <div className="flex flex-col gap-3 border-b border-slate-200 bg-white px-4 py-4 md:flex-row md:items-center md:justify-between">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <p className="text-base font-bold text-slate-900">NGAP Procedure 事务 / 消息列表</p>
+                        <span className="text-sm text-slate-500">共 {unifiedRows.length} 条</span>
+                        <FilterPill label={`事务：${filteredTransactions.length}`} />
+                        <FilterPill label={`消息：${filteredMessages.length}`} />
+                        {statusFilter !== 'all' && <FilterPill label={`状态：${statusLabels[statusFilter]}`} />}
+                        {procedureFilter !== 'all' && <FilterPill label={`Procedure：${procedureFilter}`} />}
+                        {pduFilter !== 'all' && <FilterPill label={`PDU：${pduLabels[pduFilter]}`} />}
+                      </div>
+                      <div className="flex flex-col gap-2 md:flex-row md:items-center">
+                        {(statusFilter !== 'all' || procedureFilter !== 'all' || pduFilter !== 'all' || query.trim() !== '') && (
+                          <button
+                            onClick={() => {
+                              setStatusFilter('all')
+                              setProcedureFilter('all')
+                              setPduFilter('all')
+                              setQuery('')
+                              setListPage(1)
+                            }}
+                            className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700"
+                          >
+                            清除消息筛选
+                          </button>
+                        )}
+                        <select
+                          value={pduFilter}
+                          onChange={event => { setPduFilter(event.target.value as 'all' | PDUType); setListPage(1) }}
+                          className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500/30"
+                        >
+                          <option value="all">全部 PDU</option>
+                          <option value="initiating">发起</option>
+                          <option value="successful_outcome">成功结果</option>
+                          <option value="unsuccessful_outcome">失败结果</option>
+                        </select>
+                        <label className="relative block md:w-72">
+                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                          <input
+                            value={query}
+                            onChange={event => { setQuery(event.target.value); setListPage(1) }}
+                            className="w-full rounded-lg border border-slate-200 bg-slate-50 pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500/30 focus:border-sky-400"
+                            placeholder="搜索 IP / UE ID / Procedure"
+                          />
+                        </label>
+                      </div>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full divide-y divide-slate-200 text-sm">
+                        <thead className="bg-slate-50">
+                          <tr>
+                            <th className="px-4 py-3 text-left font-semibold text-sky-700">类型</th>
+                            <th className="px-4 py-3 text-left font-semibold text-sky-700">Procedure</th>
+                            <th className="px-4 py-3 text-left font-semibold text-sky-700">状态 / PDU</th>
+                            <th className="px-4 py-3 text-left font-semibold text-sky-700">帧</th>
+                            <th className="px-4 py-3 text-left font-semibold text-sky-700">方向</th>
+                            <th className="px-4 py-3 text-right font-semibold text-sky-700">耗时</th>
+                            <th className="px-4 py-3 text-left font-semibold text-sky-700">RAN ID</th>
+                            <th className="px-4 py-3 text-left font-semibold text-sky-700">AMF ID</th>
+                            <th className="px-4 py-3 text-right font-semibold text-sky-700">步骤 / NAS</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 bg-white">
+                          {pagedRows.map(row => (
+                            <tr
+                              key={row.id}
+                              onClick={() => row.tx ? setSelectedTransaction(row.tx) : row.message && setSelectedMessage(row.message)}
+                              className="cursor-pointer hover:bg-sky-50/60"
+                            >
+                              <td className="px-4 py-3"><RowKindBadge kind={row.kind} /></td>
+                              <td className="px-4 py-3 font-semibold text-slate-800 whitespace-nowrap">{row.procedureName}</td>
+                              <td className="px-4 py-3">
+                                {row.tx ? <StatusBadge status={row.tx.status} /> : row.message ? <PDUBadge pdu={row.message.pdu_type} /> : '-'}
+                              </td>
+                              <td className="px-4 py-3 font-mono text-slate-700 whitespace-nowrap">{row.frameLabel}</td>
+                              <td className="px-4 py-3">{row.message ? <DirectionBadge direction={row.message.direction} /> : <span className="text-slate-300">-</span>}</td>
+                              <td className="px-4 py-3 text-right font-semibold tabular-nums text-slate-900">{row.tx ? formatDuration(row.tx.duration_ms) : '-'}</td>
+                              <td className="px-4 py-3 font-mono text-xs text-slate-600">{row.tx?.ran_ue_ngap_id || row.message?.ran_ue_ngap_id || '-'}</td>
+                              <td className="px-4 py-3 font-mono text-xs text-slate-600">{row.tx?.amf_ue_ngap_id || row.message?.amf_ue_ngap_id || '-'}</td>
+                              <td className="px-4 py-3 text-right font-semibold text-slate-700">
+                                {row.tx ? row.tx.step_count : row.message?.has_nas ? '是' : '-'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {unifiedRows.length === 0 && <div className="py-8 text-center text-sm text-slate-500">没有匹配的 NGAP 事务或消息</div>}
+                    {unifiedRows.length > 0 && <PaginationControls total={unifiedRows.length} page={listPage} onPageChange={setListPage} />}
+                  </div>
+                </>
+              )}
             </>
           )}
         </div>
@@ -525,6 +540,20 @@ function RowKindBadge({ kind }: { kind: 'transaction' | 'message' }) {
 
 function FilterPill({ label }: { label: string }) {
   return <span className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-bold text-sky-700">{label}</span>
+}
+
+function EmptyNGAPState() {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 px-5 py-8 text-center">
+      <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-500">
+        <Network className="h-5 w-5" />
+      </div>
+      <p className="mt-4 text-base font-bold text-slate-900">未发现 NGAP 消息</p>
+      <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-500">
+        当前抓包没有被 tshark 识别出的 NGAP 协议帧，可能是该文件只包含 S1AP、PFCP、GTPv2、Diameter、SIP 等其他协议。
+      </p>
+    </div>
+  )
 }
 
 function PaginationControls({ total, page, onPageChange }: { total: number; page: number; onPageChange: (page: number) => void }) {

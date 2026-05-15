@@ -123,6 +123,7 @@ func windowS11Analysis(result *s11analyzer.AnalysisResult, limit int, responseTi
 	if len(out.Transactions) > limit {
 		out.Transactions = out.Transactions[:limit]
 	}
+	out.Transactions = appendMissingS11AttentionTransactions(out.Transactions, result.Transactions)
 	out.Transactions = appendMissingS11ResponseExtremes(out.Transactions, result.Transactions, result.Statistics.MinResponseTimeMs, result.Statistics.MaxResponseTimeMs)
 	if out.Transactions == nil {
 		out.Transactions = []*s11analyzer.Transaction{}
@@ -135,6 +136,32 @@ func windowS11Analysis(result *s11analyzer.AnalysisResult, limit int, responseTi
 	}
 	out.Messages = []*s11analyzer.Message{}
 	return out
+}
+
+func appendMissingS11AttentionTransactions(window, all []*s11analyzer.Transaction) []*s11analyzer.Transaction {
+	present := make(map[*s11analyzer.Transaction]bool, len(window))
+	for _, tx := range window {
+		if tx != nil {
+			present[tx] = true
+		}
+	}
+	for _, tx := range all {
+		if tx == nil || present[tx] || !isS11AttentionTransaction(tx) {
+			continue
+		}
+		window = append(window, tx)
+		present[tx] = true
+	}
+	return window
+}
+
+func isS11AttentionTransaction(tx *s11analyzer.Transaction) bool {
+	switch tx.Status {
+	case s11analyzer.StatusFailed, s11analyzer.StatusNoResponse, s11analyzer.StatusTimeout:
+		return true
+	default:
+		return tx.RetransmitCount > 0
+	}
 }
 
 func sortS11Transactions(transactions []*s11analyzer.Transaction, responseTimeFilter string) {
