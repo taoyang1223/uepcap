@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Activity, CheckCircle2, ChevronDown, Clock3, Copy, KeyRound, Layers3, Loader2, Radio, RefreshCw, Search, Shield, Upload, X, XCircle } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
+import { PaginationControls } from './PaginationControls'
 
 interface NASMessageAnalyzerPanelProps {
   jobId: string
@@ -398,7 +399,7 @@ export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps)
                   <div className="py-8 text-center text-sm text-slate-500">没有匹配的 NAS 流程</div>
                 )}
                 {filteredFlows.length > 0 && (
-                  <PaginationControls total={filteredFlows.length} page={flowPage} onPageChange={setFlowPage} />
+                  <PaginationControls total={filteredFlows.length} page={flowPage} pageSize={PAGE_SIZE} onPageChange={setFlowPage} />
                 )}
               </div>
 
@@ -487,7 +488,7 @@ export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps)
                   <div className="py-8 text-center text-sm text-slate-500">没有匹配的 NAS 消息</div>
                 )}
                 {filteredMessages.length > 0 && (
-                  <PaginationControls total={filteredMessages.length} page={messagePage} onPageChange={setMessagePage} />
+                  <PaginationControls total={filteredMessages.length} page={messagePage} pageSize={PAGE_SIZE} onPageChange={setMessagePage} />
                 )}
               </div>
 
@@ -584,35 +585,6 @@ function FlowStatusBadge({ status }: { status: NASFlowStatus }) {
 
 function FilterPill({ label }: { label: string }) {
   return <span className="rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-700">{label}</span>
-}
-
-function PaginationControls({ total, page, onPageChange }: { total: number; page: number; onPageChange: (page: number) => void }) {
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
-  const safePage = Math.min(Math.max(page, 1), pageCount)
-  const start = total === 0 ? 0 : (safePage - 1) * PAGE_SIZE + 1
-  const end = Math.min(total, safePage * PAGE_SIZE)
-  return (
-    <div className="flex flex-col gap-3 border-t border-slate-200 bg-white px-4 py-3 text-sm text-slate-500 md:flex-row md:items-center md:justify-between">
-      <span>显示 {start}-{end} / {total}</span>
-      <div className="flex items-center gap-2">
-        <button
-          onClick={() => onPageChange(Math.max(1, safePage - 1))}
-          disabled={safePage <= 1}
-          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          上一页
-        </button>
-        <span className="min-w-16 text-center text-xs font-bold text-slate-600">{safePage} / {pageCount}</span>
-        <button
-          onClick={() => onPageChange(Math.min(pageCount, safePage + 1))}
-          disabled={safePage >= pageCount}
-          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          下一页
-        </button>
-      </div>
-    </div>
-  )
 }
 
 function NASFlowDetailModal({ flow, copied, onCopy, onClose }: { flow: NASFlow; copied: boolean; onCopy: () => void; onClose: () => void }) {
@@ -773,7 +745,8 @@ function displayCode(code: string) {
 }
 
 function paginate<T>(items: T[], page: number) {
-  const safePage = Math.max(1, page)
+  const pageCount = Math.max(1, Math.ceil(items.length / PAGE_SIZE))
+  const safePage = Math.min(Math.max(page, 1), pageCount)
   const start = (safePage - 1) * PAGE_SIZE
   return items.slice(start, start + PAGE_SIZE)
 }

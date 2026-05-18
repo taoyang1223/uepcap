@@ -12,7 +12,7 @@ import (
 
 const (
 	defaultAnalysisListLimit = 500
-	maxAnalysisListLimit     = 2000
+	maxAnalysisListLimit     = 20000
 )
 
 type AnalysisWindow struct {

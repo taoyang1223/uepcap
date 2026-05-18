@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Activity, AlertTriangle, CheckCircle2, ChevronDown, Clock3, Copy, FileText, Loader2, RefreshCw, Search, Upload, X, XCircle, Zap } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
+import { PaginationControls } from './PaginationControls'
 
 interface PFCPSessionPanelProps {
   jobId: string
@@ -130,7 +131,7 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
       const response = await fetch(`/api/jobs/${jobId}/pfcp-sessions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ timeout_seconds: 3, limit: 2000 }),
+        body: JSON.stringify({ timeout_seconds: 3, limit: 20000 }),
       })
       const data = (await response.json()) as APIResponse<PFCPSessionResult>
       if (!data.success || !data.data) {
@@ -474,7 +475,7 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
               </div>
             )}
             {filteredTransactions.length > 0 && (
-              <PaginationControls total={filteredTransactions.length} page={transactionPage} onPageChange={setTransactionPage} />
+              <PaginationControls total={filteredTransactions.length} page={transactionPage} pageSize={PAGE_SIZE} onPageChange={setTransactionPage} />
             )}
           </div>
           </>
@@ -576,36 +577,6 @@ function ResponseMetric({ active = false, label, value, tone, onClick }: { activ
     >
       {content}
     </button>
-  )
-}
-
-function PaginationControls({ total, page, onPageChange }: { total: number; page: number; onPageChange: (page: number) => void }) {
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
-  const safePage = Math.min(Math.max(page, 1), pageCount)
-  const start = total === 0 ? 0 : (safePage - 1) * PAGE_SIZE + 1
-  const end = Math.min(total, safePage * PAGE_SIZE)
-
-  return (
-    <div className="flex flex-col gap-3 border-t border-slate-200 bg-white px-4 py-3 text-sm text-slate-500 md:flex-row md:items-center md:justify-between">
-      <span>显示 {start}-{end} / {total}</span>
-      <div className="flex items-center gap-2">
-        <button
-          onClick={() => onPageChange(Math.max(1, safePage - 1))}
-          disabled={safePage <= 1}
-          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          上一页
-        </button>
-        <span className="min-w-16 text-center text-xs font-bold text-slate-600">{safePage} / {pageCount}</span>
-        <button
-          onClick={() => onPageChange(Math.min(pageCount, safePage + 1))}
-          disabled={safePage >= pageCount}
-          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          下一页
-        </button>
-      </div>
-    </div>
   )
 }
 
@@ -735,7 +706,8 @@ function sameResponseTime(value: number | undefined, target: number): boolean {
 }
 
 function paginate<T>(items: T[], page: number) {
-  const safePage = Math.max(1, page)
+  const pageCount = Math.max(1, Math.ceil(items.length / PAGE_SIZE))
+  const safePage = Math.min(Math.max(page, 1), pageCount)
   const start = (safePage - 1) * PAGE_SIZE
   return items.slice(start, start + PAGE_SIZE)
 }
