@@ -231,7 +231,7 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
                     </p>
                   </div>
                   <div className="grid grid-cols-3 gap-6 text-center">
-                    <TopMetric label="S11消息" value={stats?.total_messages || 0} />
+                    <TopMetric label="事务消息" value={stats?.total_messages || 0} />
                     <TopMetric label="事务数" value={stats?.total_transactions || 0} accent="orange" />
                     <TopMetric label="成功率" value={`${(stats?.success_rate || 0).toFixed(1)}%`} accent="emerald" />
                   </div>

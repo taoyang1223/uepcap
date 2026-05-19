@@ -241,7 +241,7 @@ func isAcceptedCause(cause string) bool {
 }
 
 func calculateStatistics(messages []*Message, transactions []*Transaction) Statistics {
-	stats := Statistics{TotalMessages: len(messages), TotalTransactions: len(transactions), MinResponseTimeMs: -1}
+	stats := Statistics{TotalTransactions: len(transactions), MinResponseTimeMs: -1}
 	var totalResponse float64
 	var responseCount int
 	for _, msg := range messages {
@@ -251,6 +251,7 @@ func calculateStatistics(messages []*Message, transactions []*Transaction) Stati
 			stats.Responses++
 		}
 	}
+	stats.TotalMessages = stats.Requests + stats.Responses
 	for _, tx := range transactions {
 		switch tx.Status {
 		case StatusSuccess:
@@ -290,8 +291,10 @@ func calculateStatistics(messages []*Message, transactions []*Transaction) Stati
 			}
 		}
 	}
-	if stats.TotalTransactions > 0 {
-		stats.SuccessRate = float64(stats.Successful) / float64(stats.TotalTransactions) * 100
+	stats.TotalTransactions = stats.Requests
+	rateTotal := stats.Successful + stats.Failed + stats.NoResponse + stats.Timeout
+	if rateTotal > 0 {
+		stats.SuccessRate = float64(stats.Successful) / float64(rateTotal) * 100
 	}
 	if responseCount > 0 {
 		stats.AvgResponseTimeMs = totalResponse / float64(responseCount)
