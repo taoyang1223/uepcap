@@ -168,7 +168,7 @@ export function MessageStatsPanel({ jobId, selectedIMSIs: _selectedIMSIs }: Mess
         </div>
         <div className="bg-cyan-50 rounded-lg px-4 py-3">
           <p className="text-xs font-semibold text-cyan-700 uppercase tracking-wider mb-1">模块</p>
-          <p className="text-lg font-bold text-cyan-900">{modules.length || 5}</p>
+          <p className="text-lg font-bold text-cyan-900">{modules.length || 6}</p>
         </div>
         <div className="bg-emerald-50 rounded-lg px-4 py-3">
           <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wider mb-1">统计结果</p>

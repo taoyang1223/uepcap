@@ -8,6 +8,7 @@ import (
 	"gitee.com/yangdadayyds/uepcap/internal/ngapanalyzer"
 	"gitee.com/yangdadayyds/uepcap/internal/pfcpsession"
 	"gitee.com/yangdadayyds/uepcap/internal/s11analyzer"
+	"gitee.com/yangdadayyds/uepcap/internal/s1apanalyzer"
 )
 
 const (
@@ -288,6 +289,46 @@ func windowNGAPAnalysis(result *ngapanalyzer.AnalysisResult, limit int) ngapanal
 }
 
 func ngapTransactionDurationForSort(tx *ngapanalyzer.Transaction) float64 {
+	if tx == nil {
+		return math.Inf(-1)
+	}
+	return tx.DurationMs
+}
+
+func windowS1APAnalysis(result *s1apanalyzer.AnalysisResult, limit int) s1apanalyzer.AnalysisResult {
+	out := *result
+	transactions := append([]*s1apanalyzer.Transaction(nil), result.Transactions...)
+	sort.SliceStable(transactions, func(i, j int) bool {
+		left := s1apTransactionDurationForSort(transactions[i])
+		right := s1apTransactionDurationForSort(transactions[j])
+		if left != right {
+			return left > right
+		}
+		return transactions[i].StartFrame < transactions[j].StartFrame
+	})
+	if len(transactions) > limit {
+		out.Transactions = append([]*s1apanalyzer.Transaction(nil), transactions[:limit]...)
+	} else {
+		out.Transactions = transactions
+	}
+	if len(result.Messages) > limit {
+		out.Messages = append([]*s1apanalyzer.Message(nil), result.Messages[:limit]...)
+	} else {
+		out.Messages = append([]*s1apanalyzer.Message(nil), result.Messages...)
+	}
+	if out.Transactions == nil {
+		out.Transactions = []*s1apanalyzer.Transaction{}
+	}
+	if out.Messages == nil {
+		out.Messages = []*s1apanalyzer.Message{}
+	}
+	if out.ProcedureStats == nil {
+		out.ProcedureStats = []s1apanalyzer.ProcedureCount{}
+	}
+	return out
+}
+
+func s1apTransactionDurationForSort(tx *s1apanalyzer.Transaction) float64 {
 	if tx == nil {
 		return math.Inf(-1)
 	}

@@ -22,6 +22,7 @@ function lazyWithReload(factory: () => Promise<{ default: ComponentType<any> }>)
 }
 
 const NGAPMessageAnalyzerPanel = lazyWithReload(() => import('./components/NGAPMessageAnalyzerPanel').then(module => ({ default: module.NGAPMessageAnalyzerPanel })))
+const S1APMessageAnalyzerPanel = lazyWithReload(() => import('./components/S1APMessageAnalyzerPanel').then(module => ({ default: module.S1APMessageAnalyzerPanel })))
 const NASMessageAnalyzerPanel = lazyWithReload(() => import('./components/NASMessageAnalyzerPanel').then(module => ({ default: module.NASMessageAnalyzerPanel })))
 const SMNASMessageAnalyzerPanel = lazyWithReload(() => import('./components/SMNASMessageAnalyzerPanel').then(module => ({ default: module.SMNASMessageAnalyzerPanel })))
 const S11MessageAnalyzerPanel = lazyWithReload(() => import('./components/S11MessageAnalyzerPanel').then(module => ({ default: module.S11MessageAnalyzerPanel })))
@@ -331,16 +332,19 @@ function App() {
                   {/* Row 5: NGAP message analysis */}
                   <NGAPMessageAnalyzerPanel jobId={currentJob.id} />
 
-                  {/* Row 6: NAS message analysis */}
+                  {/* Row 6: S1AP message analysis */}
+                  <S1APMessageAnalyzerPanel jobId={currentJob.id} />
+
+                  {/* Row 7: NAS message analysis */}
                   <NASMessageAnalyzerPanel jobId={currentJob.id} />
 
-                  {/* Row 7: SM NAS message analysis */}
+                  {/* Row 8: SM NAS message analysis */}
                   <SMNASMessageAnalyzerPanel jobId={currentJob.id} />
 
-                  {/* Row 8: S11 message analysis */}
+                  {/* Row 9: S11 message analysis */}
                   <S11MessageAnalyzerPanel jobId={currentJob.id} />
 
-                  {/* Row 9: PFCP session transaction analysis */}
+                  {/* Row 10: PFCP session transaction analysis */}
                   <PFCPSessionPanel jobId={currentJob.id} />
                 </Suspense>
               </div>

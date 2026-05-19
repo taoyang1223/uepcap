@@ -16,11 +16,13 @@ const (
 	fieldNASMMElemID      = "nas_5gs.mm.elem_id"
 	fieldNGAPProcedure    = "ngap.procedureCode"
 	fieldNGAPPDU          = "ngap.NGAP_PDU"
+	fieldS1APProcedure    = "s1ap.procedureCode"
+	fieldS1APPDU          = "s1ap.S1AP_PDU"
 	fieldGTPv2MessageType = "gtpv2.message_type"
 	fieldPFCPMessageType  = "pfcp.msg_type"
 )
 
-const statsProtocolFilter = "nas-5gs or ngap or gtpv2 or pfcp"
+const statsProtocolFilter = "nas-5gs or ngap or s1ap or gtpv2 or pfcp"
 
 var tsharkFields = []string{
 	fieldNASMMMessageType,
@@ -30,6 +32,8 @@ var tsharkFields = []string{
 	fieldNGAPPDU,
 	fieldGTPv2MessageType,
 	fieldPFCPMessageType,
+	fieldS1APProcedure,
+	fieldS1APPDU,
 }
 
 type matchKind string
@@ -38,6 +42,7 @@ const (
 	matchNASMM matchKind = "nas_mm"
 	matchNASSM matchKind = "nas_sm"
 	matchNGAP  matchKind = "ngap"
+	matchS1AP  matchKind = "s1ap"
 	matchGTPv2 matchKind = "gtpv2"
 	matchPFCP  matchKind = "pfcp"
 )
@@ -70,6 +75,7 @@ type Item struct {
 }
 
 type messageDefinition struct {
+	Module string
 	Key    string
 	Name   string
 	Kind   matchKind
@@ -89,6 +95,7 @@ type definitionIndex struct {
 	nasMM map[string][]messageDefinition
 	nasSM map[string][]messageDefinition
 	ngap  map[string][]messageDefinition
+	s1ap  map[string][]messageDefinition
 	gtpv2 map[string][]messageDefinition
 	pfcp  map[string][]messageDefinition
 }
@@ -145,6 +152,69 @@ var moduleDefinitions = []moduleDefinition{
 			ngap("pdu-session-resource-modify-response", "PDU Session Resource Modify Response", "26", "1"),
 			ngap("pdu-session-resource-notify", "PDU Session Resource Notify", "30", "0"),
 			ngap("error-indication", "Error Indication", "9", "0"),
+		},
+	},
+	{
+		Key:      "s1ap",
+		Name:     "S1AP消息",
+		Standard: "TS 36.413",
+		Items: []messageDefinition{
+			s1ap("handover-required", "Handover Required", "0", "0"),
+			s1ap("handover-command", "Handover Command", "0", "1"),
+			s1ap("handover-preparation-failure", "Handover Preparation Failure", "0", "2"),
+			s1ap("handover-request", "Handover Request", "1", "0"),
+			s1ap("handover-request-acknowledge", "Handover Request Acknowledge", "1", "1"),
+			s1ap("handover-failure", "Handover Failure", "1", "2"),
+			s1ap("handover-notify", "Handover Notify", "2", "0"),
+			s1ap("path-switch-request", "Path Switch Request", "3", "0"),
+			s1ap("path-switch-request-acknowledge", "Path Switch Request Acknowledge", "3", "1"),
+			s1ap("path-switch-request-failure", "Path Switch Request Failure", "3", "2"),
+			s1ap("e-rab-setup-request", "E-RAB Setup Request", "5", "0"),
+			s1ap("e-rab-setup-response", "E-RAB Setup Response", "5", "1"),
+			s1ap("e-rab-setup-failure", "E-RAB Setup Failure", "5", "2"),
+			s1ap("e-rab-modify-request", "E-RAB Modify Request", "6", "0"),
+			s1ap("e-rab-modify-response", "E-RAB Modify Response", "6", "1"),
+			s1ap("e-rab-modify-failure", "E-RAB Modify Failure", "6", "2"),
+			s1ap("e-rab-release-command", "E-RAB Release Command", "7", "0"),
+			s1ap("e-rab-release-response", "E-RAB Release Response", "7", "1"),
+			s1ap("e-rab-release-indication", "E-RAB Release Indication", "8", "0"),
+			s1ap("initial-context-setup-request", "Initial Context Setup Request", "9", "0"),
+			s1ap("initial-context-setup-response", "Initial Context Setup Response", "9", "1"),
+			s1ap("initial-context-setup-failure", "Initial Context Setup Failure", "9", "2"),
+			s1ap("paging", "Paging", "10", "0"),
+			s1ap("downlink-nas-transport", "Downlink NAS Transport", "11", "0"),
+			s1ap("initial-ue-message", "Initial UE Message", "12", "0"),
+			s1ap("uplink-nas-transport", "Uplink NAS Transport", "13", "0"),
+			s1ap("reset", "Reset", "14", "0"),
+			s1ap("reset-acknowledge", "Reset Acknowledge", "14", "1"),
+			s1ap("error-indication", "Error Indication", "15", "0"),
+			s1ap("nas-non-delivery-indication", "NAS Non Delivery Indication", "16", "0"),
+			s1ap("s1-setup-request", "S1 Setup Request", "17", "0"),
+			s1ap("s1-setup-response", "S1 Setup Response", "17", "1"),
+			s1ap("s1-setup-failure", "S1 Setup Failure", "17", "2"),
+			s1ap("ue-context-release-request", "UE Context Release Request", "18", "0"),
+			s1ap("ue-context-modification-request", "UE Context Modification Request", "21", "0"),
+			s1ap("ue-context-modification-response", "UE Context Modification Response", "21", "1"),
+			s1ap("ue-context-modification-failure", "UE Context Modification Failure", "21", "2"),
+			s1ap("ue-capability-info-indication", "UE Capability Info Indication", "22", "0"),
+			s1ap("ue-context-release-command", "UE Context Release Command", "23", "0"),
+			s1ap("ue-context-release-complete", "UE Context Release Complete", "23", "1"),
+			s1ap("enb-configuration-update", "eNB Configuration Update", "29", "0"),
+			s1ap("enb-configuration-update-acknowledge", "eNB Configuration Update Acknowledge", "29", "1"),
+			s1ap("enb-configuration-update-failure", "eNB Configuration Update Failure", "29", "2"),
+			s1ap("mme-configuration-update", "MME Configuration Update", "30", "0"),
+			s1ap("mme-configuration-update-acknowledge", "MME Configuration Update Acknowledge", "30", "1"),
+			s1ap("mme-configuration-update-failure", "MME Configuration Update Failure", "30", "2"),
+			s1ap("write-replace-warning-request", "Write Replace Warning Request", "36", "0"),
+			s1ap("write-replace-warning-response", "Write Replace Warning Response", "36", "1"),
+			s1ap("kill-request", "Kill Request", "43", "0"),
+			s1ap("kill-response", "Kill Response", "43", "1"),
+			s1ap("e-rab-modification-indication", "E-RAB Modification Indication", "50", "0"),
+			s1ap("e-rab-modification-confirm", "E-RAB Modification Confirm", "50", "1"),
+			s1ap("reroute-nas-request", "Reroute NAS Request", "52", "0"),
+			s1ap("ue-context-modification-indication", "UE Context Modification Indication", "53", "0"),
+			s1ap("ue-context-modification-confirm", "UE Context Modification Confirm", "53", "1"),
+			s1ap("ue-context-modification-indication-failure", "UE Context Modification Indication Failure", "53", "2"),
 		},
 	},
 	{
@@ -264,6 +334,17 @@ func ngap(key, name, procedure, pdu string) messageDefinition {
 	}
 }
 
+func s1ap(key, name, procedure, pdu string) messageDefinition {
+	return messageDefinition{
+		Key:    key,
+		Name:   name,
+		Kind:   matchS1AP,
+		Value:  procedure,
+		PDU:    pdu,
+		Filter: fmt.Sprintf("(%s == %s) && (%s == %s)", fieldS1APProcedure, procedure, fieldS1APPDU, pdu),
+	}
+}
+
 func gtpv2(key, name, value string) messageDefinition {
 	return messageDefinition{
 		Key:    key,
@@ -320,12 +401,13 @@ func countFieldRows(output string) *Result {
 			Items:    make([]Item, len(moduleDef.Items)),
 		}
 		for i, def := range moduleDef.Items {
+			def.Module = moduleDef.Key
 			module.Items[i] = Item{
 				Key:    def.Key,
 				Name:   def.Name,
 				Filter: def.Filter,
 			}
-			itemsByKey[def.Key] = &module.Items[i]
+			itemsByKey[definitionItemKey(def)] = &module.Items[i]
 			index.add(def)
 		}
 		result.Modules = append(result.Modules, module)
@@ -338,50 +420,55 @@ func countFieldRows(output string) *Result {
 		}
 		row := parseFieldRow(line)
 		matched := make(map[string]bool)
-		inc := func(def messageDefinition) {
-			if matched[def.Key] {
+		inc := func(def messageDefinition, dedupe bool) {
+			key := definitionItemKey(def)
+			if dedupe && matched[key] {
 				return
 			}
-			matched[def.Key] = true
-			itemsByKey[def.Key].RawCount++
+			matched[key] = true
+			itemsByKey[key].RawCount++
 			if def.Kind == matchNASMM && containsValue(row.nasMMElemIDs, "0x71") {
 				nasMMCorrections[def.Key] = true
 			}
 		}
 		for _, value := range row.nasMMMessageTypes {
 			for _, def := range index.nasMM[value] {
-				inc(def)
+				inc(def, true)
 			}
 		}
 		for _, value := range row.nasSMMessageTypes {
 			for _, def := range index.nasSM[value] {
-				inc(def)
+				inc(def, true)
 			}
 		}
-		for _, procedure := range row.ngapProcedures {
-			for _, pdu := range row.ngapPDUs {
-				for _, def := range index.ngap[compoundKey(procedure, pdu)] {
-					inc(def)
-				}
+		for _, pair := range procedurePDUPairs(row.ngapProcedures, row.ngapPDUs) {
+			for _, def := range index.ngap[compoundKey(pair.procedure, pair.pdu)] {
+				inc(def, false)
+			}
+		}
+		for _, pair := range procedurePDUPairs(row.s1apProcedures, row.s1apPDUs) {
+			for _, def := range index.s1ap[compoundKey(pair.procedure, pair.pdu)] {
+				inc(def, false)
 			}
 		}
 		for _, value := range row.gtpv2MessageTypes {
 			for _, def := range index.gtpv2[value] {
-				inc(def)
+				inc(def, true)
 			}
 		}
 		for _, value := range row.pfcpMessageTypes {
 			for _, def := range index.pfcp[value] {
-				inc(def)
+				inc(def, true)
 			}
 		}
 	}
 
 	for i := range result.Modules {
+		moduleKey := result.Modules[i].Key
 		sort.SliceStable(result.Modules[i].Items, func(a, b int) bool {
 			left := result.Modules[i].Items[a]
 			right := result.Modules[i].Items[b]
-			return sortValueByItemKey(left.Key) < sortValueByItemKey(right.Key)
+			return sortValueByModuleItemKey(moduleKey, left.Key) < sortValueByModuleItemKey(moduleKey, right.Key)
 		})
 		for j := range result.Modules[i].Items {
 			item := &result.Modules[i].Items[j]
@@ -401,11 +488,16 @@ func countFieldRows(output string) *Result {
 	return result
 }
 
+func definitionItemKey(def messageDefinition) string {
+	return compoundKey(def.Module, def.Key)
+}
+
 func newDefinitionIndex() *definitionIndex {
 	return &definitionIndex{
 		nasMM: make(map[string][]messageDefinition),
 		nasSM: make(map[string][]messageDefinition),
 		ngap:  make(map[string][]messageDefinition),
+		s1ap:  make(map[string][]messageDefinition),
 		gtpv2: make(map[string][]messageDefinition),
 		pfcp:  make(map[string][]messageDefinition),
 	}
@@ -420,6 +512,9 @@ func (idx *definitionIndex) add(def messageDefinition) {
 	case matchNGAP:
 		key := compoundKey(def.Value, def.PDU)
 		idx.ngap[key] = append(idx.ngap[key], def)
+	case matchS1AP:
+		key := compoundKey(def.Value, def.PDU)
+		idx.s1ap[key] = append(idx.s1ap[key], def)
 	case matchGTPv2:
 		idx.gtpv2[def.Value] = append(idx.gtpv2[def.Value], def)
 	case matchPFCP:
@@ -431,10 +526,13 @@ func compoundKey(parts ...string) string {
 	return strings.Join(parts, "\x00")
 }
 
-func sortValueByItemKey(key string) int {
+func sortValueByModuleItemKey(moduleKey, itemKey string) int {
 	for _, moduleDef := range moduleDefinitions {
+		if moduleDef.Key != moduleKey {
+			continue
+		}
 		for _, def := range moduleDef.Items {
-			if def.Key == key {
+			if def.Key == itemKey {
 				value, ok := parseSortValue(def.Value)
 				if !ok {
 					return 0
@@ -454,6 +552,39 @@ type fieldRow struct {
 	ngapPDUs          []string
 	gtpv2MessageTypes []string
 	pfcpMessageTypes  []string
+	s1apProcedures    []string
+	s1apPDUs          []string
+}
+
+type procedurePDUPair struct {
+	procedure string
+	pdu       string
+}
+
+func procedurePDUPairs(procedures, pdus []string) []procedurePDUPair {
+	count := max(len(procedures), len(pdus))
+	pairs := make([]procedurePDUPair, 0, count)
+	for i := 0; i < count; i++ {
+		procedure := indexedFieldValue(procedures, i)
+		if procedure == "" {
+			continue
+		}
+		pairs = append(pairs, procedurePDUPair{
+			procedure: procedure,
+			pdu:       indexedFieldValue(pdus, i),
+		})
+	}
+	return pairs
+}
+
+func indexedFieldValue(values []string, index int) string {
+	if index >= 0 && index < len(values) && values[index] != "" {
+		return values[index]
+	}
+	if len(values) > 0 {
+		return values[0]
+	}
+	return ""
 }
 
 func parseFieldRow(line string) fieldRow {
@@ -470,6 +601,8 @@ func parseFieldRow(line string) fieldRow {
 		ngapPDUs:          splitValues(cols[4], false),
 		gtpv2MessageTypes: splitValues(cols[5], false),
 		pfcpMessageTypes:  splitValues(cols[6], false),
+		s1apProcedures:    splitValues(cols[7], false),
+		s1apPDUs:          splitValues(cols[8], false),
 	}
 }
 
@@ -481,6 +614,8 @@ func matchesDefinition(def messageDefinition, row fieldRow) bool {
 		return containsValue(row.nasSMMessageTypes, def.Value)
 	case matchNGAP:
 		return containsValue(row.ngapProcedures, def.Value) && containsValue(row.ngapPDUs, def.PDU)
+	case matchS1AP:
+		return containsValue(row.s1apProcedures, def.Value) && containsValue(row.s1apPDUs, def.PDU)
 	case matchGTPv2:
 		return containsValue(row.gtpv2MessageTypes, def.Value)
 	case matchPFCP:
