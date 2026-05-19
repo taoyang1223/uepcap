@@ -115,8 +115,15 @@ var moduleDefinitions = []moduleDefinition{
 			nasMM("service-request", "SERVICE REQUEST", "0x4C"),
 			nasMM("service-accept", "SERVICE ACCEPT", "0x4E"),
 			nasMM("control-plane-service-request", "CONTROL PLANE SERVICE REQUEST", "0x4F"),
+			nasMM("configuration-update-command", "CONFIGURATION UPDATE COMMAND", "0x54"),
+			nasMM("configuration-update-complete", "CONFIGURATION UPDATE COMPLETE", "0x55"),
+			nasMM("authentication-request", "AUTHENTICATION REQUEST", "0x56"),
+			nasMM("authentication-response", "AUTHENTICATION RESPONSE", "0x57"),
 			nasMM("authentication-reject", "AUTHENTICATION REJECT", "0x58"),
 			nasMM("authentication-failure", "AUTHENTICATION FAILURE", "0x59"),
+			nasMM("authentication-result", "AUTHENTICATION RESULT", "0x5A"),
+			nasMM("identity-request", "IDENTITY REQUEST", "0x5B"),
+			nasMM("identity-response", "IDENTITY RESPONSE", "0x5C"),
 			nasMM("security-mode-command", "SECURITY MODE COMMAND", "0x5D"),
 			nasMM("security-mode-complete", "SECURITY MODE COMPLETE", "0x5E"),
 			nasMM("security-mode-reject", "SECURITY MODE REJECT", "0x5F"),
@@ -138,6 +145,10 @@ var moduleDefinitions = []moduleDefinition{
 			ngap("initial-context-setup-request", "Initial Context Setup Request", "14", "0"),
 			ngap("initial-context-setup-response", "Initial Context Setup Response", "14", "1"),
 			ngap("initial-context-setup-failure", "Initial Context Setup Failure", "14", "2"),
+			ngap("ng-setup-request", "NG Setup Request", "21", "0"),
+			ngap("ng-setup-response", "NG Setup Response", "21", "1"),
+			ngap("ng-setup-failure", "NG Setup Failure", "21", "2"),
+			ngap("paging", "Paging", "24", "0"),
 			ngap("ue-context-release-request", "UE Context Release Request", "42", "0"),
 			ngap("ue-context-release-command", "UE Context Release Command", "41", "0"),
 			ngap("ue-context-release-complete", "UE Context Release Complete", "41", "1"),
@@ -151,6 +162,7 @@ var moduleDefinitions = []moduleDefinition{
 			ngap("pdu-session-resource-modify-request", "PDU Session Resource Modify Request", "26", "0"),
 			ngap("pdu-session-resource-modify-response", "PDU Session Resource Modify Response", "26", "1"),
 			ngap("pdu-session-resource-notify", "PDU Session Resource Notify", "30", "0"),
+			ngap("ue-radio-capability-info-indication", "UE Radio Capability Info Indication", "44", "0"),
 			ngap("error-indication", "Error Indication", "9", "0"),
 		},
 	},
@@ -209,6 +221,8 @@ var moduleDefinitions = []moduleDefinition{
 			s1ap("write-replace-warning-response", "Write Replace Warning Response", "36", "1"),
 			s1ap("kill-request", "Kill Request", "43", "0"),
 			s1ap("kill-response", "Kill Response", "43", "1"),
+			s1ap("enb-configuration-transfer", "eNB Configuration Transfer", "40", "0"),
+			s1ap("mme-configuration-transfer", "MME Configuration Transfer", "41", "0"),
 			s1ap("e-rab-modification-indication", "E-RAB Modification Indication", "50", "0"),
 			s1ap("e-rab-modification-confirm", "E-RAB Modification Confirm", "50", "1"),
 			s1ap("reroute-nas-request", "Reroute NAS Request", "52", "0"),
@@ -231,6 +245,7 @@ var moduleDefinitions = []moduleDefinition{
 			gtpv2("change-notification-request", "Change Notification Request", "38"),
 			gtpv2("change-notification-response", "Change Notification Response", "39"),
 			gtpv2("create-bearer-request", "Create Bearer Request", "95"),
+			gtpv2("create-bearer-response", "Create Bearer Response", "96"),
 			gtpv2("update-bearer-request", "Update Bearer Request", "97"),
 			gtpv2("update-bearer-response", "Update Bearer Response", "98"),
 			gtpv2("delete-bearer-request", "Delete Bearer Request", "99"),
@@ -413,7 +428,6 @@ func countFieldRows(output string) *Result {
 		result.Modules = append(result.Modules, module)
 	}
 
-	nasMMCorrections := make(map[string]bool)
 	for _, line := range strings.Split(strings.TrimRight(output, "\r\n"), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -427,9 +441,6 @@ func countFieldRows(output string) *Result {
 			}
 			matched[key] = true
 			itemsByKey[key].RawCount++
-			if def.Kind == matchNASMM && containsValue(row.nasMMElemIDs, "0x71") {
-				nasMMCorrections[def.Key] = true
-			}
 		}
 		for _, value := range row.nasMMMessageTypes {
 			for _, def := range index.nasMM[value] {
@@ -472,10 +483,6 @@ func countFieldRows(output string) *Result {
 		})
 		for j := range result.Modules[i].Items {
 			item := &result.Modules[i].Items[j]
-			if nasMMCorrections[item.Key] && item.RawCount > 0 {
-				item.Correction = -1
-				item.CorrectionReason = fmt.Sprintf("%s == 0x71", fieldNASMMElemID)
-			}
 			item.Count = item.RawCount + item.Correction
 			if item.Count < 0 {
 				item.Count = 0
@@ -592,10 +599,11 @@ func parseFieldRow(line string) fieldRow {
 	for len(cols) < len(tsharkFields) {
 		cols = append(cols, "")
 	}
+	nasMMMessageTypes, nasSMMessageTypes := parseNASMessageTypes(cols[0], cols[1])
 
 	return fieldRow{
-		nasMMMessageTypes: splitValues(cols[0], true),
-		nasSMMessageTypes: splitValues(cols[1], true),
+		nasMMMessageTypes: nasMMMessageTypes,
+		nasSMMessageTypes: nasSMMessageTypes,
 		nasMMElemIDs:      splitValues(cols[2], true),
 		ngapProcedures:    splitValues(cols[3], false),
 		ngapPDUs:          splitValues(cols[4], false),
@@ -604,6 +612,18 @@ func parseFieldRow(line string) fieldRow {
 		s1apProcedures:    splitValues(cols[7], false),
 		s1apPDUs:          splitValues(cols[8], false),
 	}
+}
+
+func parseNASMessageTypes(mmField, smField string) ([]string, []string) {
+	return firstSplitValue(mmField, true), firstSplitValue(smField, true)
+}
+
+func firstSplitValue(value string, asHex bool) []string {
+	values := splitValues(value, asHex)
+	if len(values) == 0 {
+		return nil
+	}
+	return values[:1]
 }
 
 func matchesDefinition(def messageDefinition, row fieldRow) bool {

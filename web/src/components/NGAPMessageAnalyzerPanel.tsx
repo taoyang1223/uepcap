@@ -166,7 +166,7 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
       const response = await fetch(`/api/jobs/${jobId}/ngap-messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ limit: 500 }),
+        body: JSON.stringify({ limit: 20000 }),
         signal: controller.signal,
       })
       const data = (await response.json()) as APIResponse<NGAPAnalysisResult>
@@ -245,7 +245,9 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
   }, [])
 
   const stats = result?.statistics
-  const topProcedures = (result?.procedure_stats || []).slice(0, 6)
+  const procedures = (result?.procedure_stats || []).filter(item => item.count > 0)
+  const pairableProcedures = procedures.filter(item => item.transaction_capable)
+  const oneWayProcedures = procedures.filter(item => !item.transaction_capable)
   const hasNGAPMessages = (stats?.total_messages || 0) > 0
   const transactionMessageCounts = useMemo(() => {
     const counts: Record<TransactionStatus, number> = { success: 0, failed: 0, in_progress: 0 }
@@ -265,7 +267,7 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
       tx,
       message: null,
     }))
-    const messageRows = filteredMessages.map(message => ({
+    const messageRows = statusFilter === 'all' ? filteredMessages.map(message => ({
       id: `msg:${message.id}`,
       kind: 'message' as const,
       procedureName: message.procedure_name,
@@ -274,13 +276,13 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
       sortFrame: message.frame_number,
       tx: null,
       message,
-    }))
+    })) : []
     return [...transactionRows, ...messageRows].sort((left, right) => {
       if (left.kind !== right.kind) return left.kind === 'transaction' ? -1 : 1
       if (left.sortDuration !== right.sortDuration) return right.sortDuration - left.sortDuration
       return left.sortFrame - right.sortFrame
     })
-  }, [filteredTransactions, filteredMessages])
+  }, [filteredTransactions, filteredMessages, statusFilter])
   const pagedRows = useMemo(() => paginate(unifiedRows, listPage), [unifiedRows, listPage])
 
   return (
@@ -350,18 +352,21 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
                 <>
                   <div className="mb-6">
                     <p className="mb-3 text-sm font-bold text-slate-600">按 Procedure 统计（筛选消息列表）</p>
-                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-                      {topProcedures.map(item => (
-                        <ProcedureCard
-                          key={item.code}
-                          active={procedureFilter === item.code}
-                          label={item.name}
-                          code={`Procedure ${item.code}`}
-                          value={item.count}
-                          transactionCapable={item.transaction_capable}
-                          onClick={() => { setProcedureFilter(procedureFilter === item.code ? 'all' : item.code); setListPage(1) }}
-                        />
-                      ))}
+                    <div className="space-y-5">
+                      <ProcedureGroup
+                        title="可配对"
+                        items={pairableProcedures}
+                        procedureFilter={procedureFilter}
+                        columnsClass="xl:grid-cols-3"
+                        onSelect={code => { setProcedureFilter(procedureFilter === code ? 'all' : code); setListPage(1) }}
+                      />
+                      <ProcedureGroup
+                        title="单向 / 承载"
+                        items={oneWayProcedures}
+                        procedureFilter={procedureFilter}
+                        columnsClass="xl:grid-cols-4"
+                        onSelect={code => { setProcedureFilter(procedureFilter === code ? 'all' : code); setListPage(1) }}
+                      />
                     </div>
                   </div>
 
@@ -521,6 +526,35 @@ function FeatureCard({ active, label, detail, value, tone, icon, onClick }: { ac
         <span className="rounded-lg bg-white/80 p-2 shadow-sm">{icon}</span>
       </div>
     </button>
+  )
+}
+
+function ProcedureGroup({ title, items, procedureFilter, columnsClass, onSelect }: { title: string; items: ProcedureCount[]; procedureFilter: string; columnsClass: string; onSelect: (code: string) => void }) {
+  if (items.length === 0) return null
+
+  const total = items.reduce((sum, item) => sum + item.count, 0)
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center gap-2">
+        <span className="h-2 w-2 rounded-full bg-sky-500" />
+        <p className="text-xs font-black text-slate-600">{title}</p>
+        <span className="text-xs font-bold text-slate-400">共 {total} 条消息</span>
+      </div>
+      <div className={`grid grid-cols-1 gap-4 md:grid-cols-2 ${columnsClass}`}>
+        {items.map(item => (
+          <ProcedureCard
+            key={item.code}
+            active={procedureFilter === item.code}
+            label={item.name}
+            code={`Procedure ${item.code}`}
+            value={item.count}
+            transactionCapable={item.transaction_capable}
+            onClick={() => onSelect(item.code)}
+          />
+        ))}
+      </div>
+    </div>
   )
 }
 

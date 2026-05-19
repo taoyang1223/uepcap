@@ -257,7 +257,7 @@ export function S1APMessageAnalyzerPanel({ jobId }: S1APMessageAnalyzerPanelProp
       const response = await fetch(`/api/jobs/${jobId}/s1ap-messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ limit: 500 }),
+        body: JSON.stringify({ limit: 20000 }),
         signal: controller.signal,
       })
       const data = (await response.json()) as APIResponse<S1APAnalysisResult>
@@ -339,7 +339,7 @@ export function S1APMessageAnalyzerPanel({ jobId }: S1APMessageAnalyzerPanelProp
       tx,
       message: null,
     }))
-    const messageRows = filteredMessages.map(message => ({
+    const messageRows = statusFilter === 'all' ? filteredMessages.map(message => ({
       id: `msg:${message.id}`,
       kind: 'message' as const,
       procedureName: message.procedure_name,
@@ -348,13 +348,13 @@ export function S1APMessageAnalyzerPanel({ jobId }: S1APMessageAnalyzerPanelProp
       sortFrame: message.frame_number,
       tx: null,
       message,
-    }))
+    })) : []
     return [...transactionRows, ...messageRows].sort((left, right) => {
       if (left.kind !== right.kind) return left.kind === 'transaction' ? -1 : 1
       if (left.sortDuration !== right.sortDuration) return right.sortDuration - left.sortDuration
       return left.sortFrame - right.sortFrame
     })
-  }, [filteredTransactions, filteredMessages])
+  }, [filteredTransactions, filteredMessages, statusFilter])
 
   const pagedRows = useMemo(() => paginate(unifiedRows, listPage), [unifiedRows, listPage])
 
@@ -366,7 +366,7 @@ export function S1APMessageAnalyzerPanel({ jobId }: S1APMessageAnalyzerPanelProp
   }, [])
 
   const stats = result?.statistics
-  const procedureStats = result?.procedure_stats || []
+  const procedureStats = (result?.procedure_stats || []).filter(item => item.count > 0)
   const transactionProcedures = procedureStats.filter(item => item.transaction_capable)
   const messageOnlyProcedures = procedureStats.filter(item => !item.transaction_capable)
   const transactionCountsByProcedure = useMemo(() => {

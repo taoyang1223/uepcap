@@ -55,6 +55,45 @@ func (a *Analyzer) AnalyzeSMFile(ctx context.Context, pcapFile string) (*Analysi
 	return FilterSMResult(result), nil
 }
 
+func (a *Analyzer) AnalyzeMMFile(ctx context.Context, pcapFile string) (*AnalysisResult, error) {
+	result, err := a.AnalyzeFile(ctx, pcapFile)
+	if err != nil {
+		return nil, err
+	}
+	return FilterMMResult(result), nil
+}
+
+func FilterMMResult(result *AnalysisResult) *AnalysisResult {
+	if result == nil {
+		return nil
+	}
+
+	messages := make([]*Message, 0, result.Statistics.MMMessages)
+	for _, msg := range result.Messages {
+		if msg.Category == CategoryMM {
+			messages = append(messages, msg)
+		}
+	}
+
+	flows := make([]*Flow, 0, result.Statistics.TotalFlows-result.Statistics.PDUSession)
+	for _, flow := range result.Flows {
+		if flow.FlowType != FlowPDUSessionEst {
+			flows = append(flows, flow)
+		}
+	}
+
+	filtered := &AnalysisResult{
+		Filename:     result.Filename,
+		AnalyzedAt:   result.AnalyzedAt,
+		TotalPackets: len(messages),
+		Messages:     messages,
+		TypeStats:    calculateTypeStats(messages),
+		Flows:        flows,
+	}
+	filtered.Statistics = calculateStatistics(messages, flows)
+	return filtered
+}
+
 func FilterSMResult(result *AnalysisResult) *AnalysisResult {
 	if result == nil {
 		return nil
@@ -125,15 +164,6 @@ func parseFieldRows(output string) []*Message {
 			continue
 		}
 
-		category := CategoryMM
-		messageCode := mmType
-		messageName := MMMessageTypeName(mmType)
-		if smType != "" {
-			category = CategorySM
-			messageCode = smType
-			messageName = SMMessageTypeName(smType)
-		}
-
 		sourceIP := firstNonEmpty(cols[2], cols[4])
 		destinationIP := firstNonEmpty(cols[3], cols[5])
 		if net.ParseIP(sourceIP) == nil || net.ParseIP(destinationIP) == nil {
@@ -141,15 +171,12 @@ func parseFieldRows(output string) []*Message {
 		}
 
 		securityHeader := firstValue(cols[10])
-		msg := &Message{
+		base := Message{
 			FrameNumber:        parseInt(cols[0]),
 			Timestamp:          parseEpoch(cols[1]),
 			SourceIP:           sourceIP,
 			DestinationIP:      destinationIP,
 			Direction:          directionFromNGAP(firstValue(cols[6]), mmType),
-			Category:           category,
-			MessageTypeCode:    messageCode,
-			MessageType:        messageName,
 			SecurityHeaderType: securityHeader,
 			SecurityHeaderName: SecurityHeaderName(securityHeader),
 			SequenceNumber:     firstValue(cols[11]),
@@ -157,8 +184,22 @@ func parseFieldRows(output string) []*Message {
 			NGAPPDU:            firstValue(cols[7]),
 			ElementIDs:         splitValues(cols[12]),
 		}
-		msg.WiresharkFilter = messageFilter(msg)
-		messages = append(messages, msg)
+		if mmType != "" {
+			msg := base
+			msg.Category = CategoryMM
+			msg.MessageTypeCode = mmType
+			msg.MessageType = MMMessageTypeName(mmType)
+			msg.WiresharkFilter = messageFilter(&msg)
+			messages = append(messages, &msg)
+		}
+		if smType != "" {
+			msg := base
+			msg.Category = CategorySM
+			msg.MessageTypeCode = smType
+			msg.MessageType = SMMessageTypeName(smType)
+			msg.WiresharkFilter = messageFilter(&msg)
+			messages = append(messages, &msg)
+		}
 	}
 
 	return messages

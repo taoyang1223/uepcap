@@ -31,7 +31,7 @@ func (h *Handler) GetNASMessages(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	value, err := h.analysis.getOrCompute(ctx, id+"|nas", func(ctx context.Context) (any, error) {
-		result, err := nasanalyzer.NewAnalyzer().AnalyzeFile(ctx, job.MergedPcap)
+		result, err := nasanalyzer.NewAnalyzer().AnalyzeMMFile(ctx, job.MergedPcap)
 		if err != nil {
 			return nil, err
 		}

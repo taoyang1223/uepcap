@@ -124,8 +124,7 @@ export function SMNASMessageAnalyzerPanel({ jobId }: SMNASMessageAnalyzerPanelPr
   const [statusFilter, setStatusFilter] = useState<'all' | NASFlowStatus>('all')
   const [typeFilter, setTypeFilter] = useState<string>('all')
   const [query, setQuery] = useState('')
-  const [flowPage, setFlowPage] = useState(1)
-  const [messagePage, setMessagePage] = useState(1)
+  const [listPage, setListPage] = useState(1)
   const [selectedFlow, setSelectedFlow] = useState<SMNASFlow | null>(null)
   const [selectedMessage, setSelectedMessage] = useState<SMNASMessage | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
@@ -137,7 +136,7 @@ export function SMNASMessageAnalyzerPanel({ jobId }: SMNASMessageAnalyzerPanelPr
       const response = await fetch(`/api/jobs/${jobId}/sm-nas-messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ limit: 500 }),
+        body: JSON.stringify({ limit: 20000 }),
       })
       const data = (await response.json()) as APIResponse<SMNASAnalysisResult>
       if (!data.success || !data.data) throw new Error(data.error || 'SM NAS消息分析失败')
@@ -145,8 +144,7 @@ export function SMNASMessageAnalyzerPanel({ jobId }: SMNASMessageAnalyzerPanelPr
       setStatusFilter('all')
       setTypeFilter('all')
       setQuery('')
-      setFlowPage(1)
-      setMessagePage(1)
+      setListPage(1)
       setSelectedFlow(null)
       setSelectedMessage(null)
     } catch (err) {
@@ -194,9 +192,37 @@ export function SMNASMessageAnalyzerPanel({ jobId }: SMNASMessageAnalyzerPanelPr
   }, [])
 
   const stats = result?.statistics
-  const topTypes = (result?.type_stats || []).slice(0, 6)
-  const pagedFlows = useMemo(() => paginate(filteredFlows, flowPage), [filteredFlows, flowPage])
-  const pagedMessages = useMemo(() => paginate(filteredMessages, messagePage), [filteredMessages, messagePage])
+  const messageTypes = (result?.type_stats || []).filter(item => item.count > 0)
+  const hasFlowFilters = statusFilter !== 'all'
+  const hasMessageFilters = typeFilter !== 'all' || query.trim() !== ''
+  const unifiedRows = useMemo(() => {
+    const includeFlows = !hasMessageFilters || hasFlowFilters
+    const includeMessages = !hasFlowFilters
+    const flowRows = includeFlows ? filteredFlows.map(flow => ({
+      id: `flow:${flow.id}`,
+      kind: 'flow' as const,
+      sortFrame: flow.start_frame,
+      sortDuration: flow.duration_ms ?? -1,
+      flow,
+      message: null,
+    })) : []
+    const messageRows = includeMessages ? filteredMessages.map(message => ({
+      id: `msg:${message.id}`,
+      kind: 'message' as const,
+      sortFrame: message.frame_number,
+      sortDuration: -1,
+      flow: null,
+      message,
+    })) : []
+    return [...flowRows, ...messageRows].sort((left, right) => {
+      if (left.kind !== right.kind) return left.kind === 'flow' ? -1 : 1
+      if (left.sortDuration !== right.sortDuration) return right.sortDuration - left.sortDuration
+      return left.sortFrame - right.sortFrame
+    })
+  }, [filteredFlows, filteredMessages, hasFlowFilters, hasMessageFilters])
+  const pagedRows = useMemo(() => paginate(unifiedRows, listPage), [unifiedRows, listPage])
+  const listFlowCount = useMemo(() => unifiedRows.filter(row => row.kind === 'flow').length, [unifiedRows])
+  const listMessageCount = unifiedRows.length - listFlowCount
 
   return (
     <div className="bg-white rounded-2xl shadow-lg shadow-slate-900/5 overflow-hidden">
@@ -253,58 +279,17 @@ export function SMNASMessageAnalyzerPanel({ jobId }: SMNASMessageAnalyzerPanelPr
               <div className="mb-6">
                 <p className="mb-3 text-sm font-bold text-slate-600">按 PDU Session 流程状态统计</p>
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-                  <FeatureCard active={statusFilter === 'success'} label="成功流程" value={stats?.successful_flows || 0} tone="emerald" icon={<CheckCircle2 className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'success' ? 'all' : 'success'); setFlowPage(1) }} />
-                  <FeatureCard active={statusFilter === 'failed'} label="失败流程" value={stats?.failed_flows || 0} tone="rose" icon={<XCircle className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'failed' ? 'all' : 'failed'); setFlowPage(1) }} />
-                  <FeatureCard active={statusFilter === 'in_progress'} label="未完成流程" value={stats?.in_progress_flows || 0} tone="amber" icon={<Clock3 className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'in_progress' ? 'all' : 'in_progress'); setFlowPage(1) }} />
+                  <FeatureCard active={statusFilter === 'success'} label="成功流程" value={stats?.successful_flows || 0} tone="emerald" icon={<CheckCircle2 className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'success' ? 'all' : 'success'); setTypeFilter('all'); setQuery(''); setListPage(1) }} />
+                  <FeatureCard active={statusFilter === 'failed'} label="失败流程" value={stats?.failed_flows || 0} tone="rose" icon={<XCircle className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'failed' ? 'all' : 'failed'); setTypeFilter('all'); setQuery(''); setListPage(1) }} />
+                  <FeatureCard active={statusFilter === 'in_progress'} label="未完成流程" value={stats?.in_progress_flows || 0} tone="amber" icon={<Clock3 className="w-5 h-5" />} onClick={() => { setStatusFilter(statusFilter === 'in_progress' ? 'all' : 'in_progress'); setTypeFilter('all'); setQuery(''); setListPage(1) }} />
                 </div>
-              </div>
-
-              <div className="mb-6 rounded-xl border border-slate-200 overflow-hidden">
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-4">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <p className="text-base font-bold text-slate-900">PDU Session 流程列表</p>
-                    <span className="text-sm text-slate-500">共 {filteredFlows.length} 条流程</span>
-                    {statusFilter !== 'all' && <FilterPill label={`状态：${flowStatusLabels[statusFilter]}`} />}
-                  </div>
-                  {statusFilter !== 'all' && <button onClick={() => { setStatusFilter('all'); setFlowPage(1) }} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700">清除筛选</button>}
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-slate-200 text-sm">
-                    <thead className="bg-slate-50">
-                      <tr>
-                        <th className="px-4 py-3 text-left font-semibold text-cyan-700">状态</th>
-                        <th className="px-4 py-3 text-left font-semibold text-cyan-700">起始帧</th>
-                        <th className="px-4 py-3 text-left font-semibold text-cyan-700">结束帧</th>
-                        <th className="px-4 py-3 text-right font-semibold text-cyan-700">耗时</th>
-                        <th className="px-4 py-3 text-left font-semibold text-cyan-700">请求</th>
-                        <th className="px-4 py-3 text-left font-semibold text-cyan-700">结果</th>
-                        <th className="px-4 py-3 text-right font-semibold text-cyan-700">步骤</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 bg-white">
-                      {pagedFlows.map(flow => (
-                        <tr key={flow.id} onClick={() => setSelectedFlow(flow)} className="cursor-pointer hover:bg-cyan-50/60">
-                          <td className="px-4 py-3"><FlowStatusBadge status={flow.status} /></td>
-                          <td className="px-4 py-3 font-mono text-slate-700">{flow.start_frame}</td>
-                          <td className="px-4 py-3 font-mono text-slate-700">{flow.end_frame || '-'}</td>
-                          <td className="px-4 py-3 text-right font-semibold tabular-nums text-slate-900">{formatDuration(flow.duration_ms)}</td>
-                          <td className="px-4 py-3 text-slate-700 whitespace-nowrap">{flow.request_message}</td>
-                          <td className="px-4 py-3 text-slate-700 whitespace-nowrap">{flow.failure_reason || flow.result_message || '-'}</td>
-                          <td className="px-4 py-3 text-right font-semibold text-slate-700">{flow.step_count}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {filteredFlows.length === 0 && <div className="py-8 text-center text-sm text-slate-500">没有匹配的 PDU Session 流程</div>}
-                {filteredFlows.length > 0 && <PaginationControls total={filteredFlows.length} page={flowPage} pageSize={PAGE_SIZE} onPageChange={setFlowPage} />}
               </div>
 
               <div className="mb-6">
-                <p className="mb-3 text-sm font-bold text-slate-600">按 SM NAS 消息类型统计（筛选消息列表）</p>
+                <p className="mb-3 text-sm font-bold text-slate-600">按 SM NAS 消息类型统计</p>
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-                  {topTypes.map(item => (
-                    <TypeCard key={item.code} active={typeFilter === item.code} label={item.name} code={`5GSM ${displayCode(item.code)}`} value={item.count} onClick={() => { setTypeFilter(typeFilter === item.code ? 'all' : item.code); setMessagePage(1) }} />
+                  {messageTypes.map(item => (
+                    <TypeCard key={item.code} active={typeFilter === item.code} label={item.name} code={`5GSM ${displayCode(item.code)}`} value={item.count} onClick={() => { setStatusFilter('all'); setTypeFilter(typeFilter === item.code ? 'all' : item.code); setListPage(1) }} />
                   ))}
                 </div>
               </div>
@@ -312,15 +297,18 @@ export function SMNASMessageAnalyzerPanel({ jobId }: SMNASMessageAnalyzerPanelPr
               <div className="animate-fade-in rounded-xl border border-slate-200 overflow-hidden">
                 <div className="flex flex-col gap-3 border-b border-slate-200 bg-white px-4 py-4 md:flex-row md:items-center md:justify-between">
                   <div className="flex flex-wrap items-center gap-3">
-                    <p className="text-base font-bold text-slate-900">SM NAS 消息列表</p>
-                    <span className="text-sm text-slate-500">共 {filteredMessages.length} 条记录</span>
+                    <p className="text-base font-bold text-slate-900">SM NAS 流程 / 消息列表</p>
+                    <span className="text-sm text-slate-500">共 {unifiedRows.length} 条</span>
+                    <FilterPill label={`流程：${listFlowCount}`} />
+                    <FilterPill label={`消息：${listMessageCount}`} />
+                    {statusFilter !== 'all' && <FilterPill label={`状态：${flowStatusLabels[statusFilter]}`} />}
                     {typeFilter !== 'all' && <FilterPill label="消息类型" />}
                   </div>
                   <div className="flex flex-col gap-2 md:flex-row md:items-center">
-                    {(typeFilter !== 'all' || query.trim() !== '') && <button onClick={() => { setTypeFilter('all'); setQuery(''); setMessagePage(1) }} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700">清除消息筛选</button>}
+                    {(statusFilter !== 'all' || typeFilter !== 'all' || query.trim() !== '') && <button onClick={() => { setStatusFilter('all'); setTypeFilter('all'); setQuery(''); setListPage(1) }} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700">清除筛选</button>}
                     <label className="relative block md:w-72">
                       <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                      <input value={query} onChange={event => { setQuery(event.target.value); setMessagePage(1) }} className="w-full rounded-lg border border-slate-200 bg-slate-50 pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-400" placeholder="搜索 IP / 帧号 / 消息类型" />
+                      <input value={query} onChange={event => { setStatusFilter('all'); setQuery(event.target.value); setListPage(1) }} className="w-full rounded-lg border border-slate-200 bg-slate-50 pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500/30 focus:border-cyan-400" placeholder="搜索 IP / 帧号 / 消息类型" />
                     </label>
                   </div>
                 </div>
@@ -328,32 +316,38 @@ export function SMNASMessageAnalyzerPanel({ jobId }: SMNASMessageAnalyzerPanelPr
                   <table className="min-w-full divide-y divide-slate-200 text-sm">
                     <thead className="bg-slate-50">
                       <tr>
-                        <th className="px-4 py-3 text-left font-semibold text-cyan-700">Frame</th>
-                        <th className="px-4 py-3 text-left font-semibold text-cyan-700">方向</th>
-                        <th className="px-4 py-3 text-left font-semibold text-cyan-700">消息类型</th>
-                        <th className="px-4 py-3 text-left font-semibold text-cyan-700">源 IP</th>
-                        <th className="px-4 py-3 text-left font-semibold text-cyan-700">目的 IP</th>
-                        <th className="px-4 py-3 text-left font-semibold text-cyan-700">安全头</th>
-                        <th className="px-4 py-3 text-left font-semibold text-cyan-700">SEQ</th>
+                        <th className="px-4 py-3 text-left font-semibold text-cyan-700">类型</th>
+                        <th className="px-4 py-3 text-left font-semibold text-cyan-700">名称</th>
+                        <th className="px-4 py-3 text-left font-semibold text-cyan-700">状态 / 方向</th>
+                        <th className="px-4 py-3 text-left font-semibold text-cyan-700">帧</th>
+                        <th className="px-4 py-3 text-left font-semibold text-cyan-700">源 / 请求</th>
+                        <th className="px-4 py-3 text-left font-semibold text-cyan-700">目的 / 结果</th>
+                        <th className="px-4 py-3 text-right font-semibold text-cyan-700">耗时 / 安全头</th>
+                        <th className="px-4 py-3 text-right font-semibold text-cyan-700">步骤 / SEQ</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 bg-white">
-                      {pagedMessages.map(message => (
-                        <tr key={message.id} onClick={() => setSelectedMessage(message)} className="cursor-pointer hover:bg-cyan-50/60">
-                          <td className="px-4 py-3 font-mono text-slate-700">{message.frame_number}</td>
-                          <td className="px-4 py-3"><DirectionBadge direction={message.direction} /></td>
-                          <td className="px-4 py-3 font-semibold text-slate-800 whitespace-nowrap">{message.message_type}</td>
-                          <td className="px-4 py-3 font-mono text-xs text-slate-600 whitespace-nowrap">{message.source_ip}</td>
-                          <td className="px-4 py-3 font-mono text-xs text-slate-600 whitespace-nowrap">{message.destination_ip}</td>
-                          <td className="px-4 py-3 text-xs text-slate-600 whitespace-nowrap">{message.security_header_name || '-'}</td>
-                          <td className="px-4 py-3 font-mono text-slate-600">{message.sequence_number || '-'}</td>
+                      {pagedRows.map(row => (
+                        <tr
+                          key={row.id}
+                          onClick={() => row.flow ? setSelectedFlow(row.flow) : row.message && setSelectedMessage(row.message)}
+                          className="cursor-pointer hover:bg-cyan-50/60"
+                        >
+                          <td className="px-4 py-3"><RowKindBadge kind={row.kind} /></td>
+                          <td className="px-4 py-3 font-semibold text-slate-800 whitespace-nowrap">{row.flow ? 'PDU Session Establishment' : row.message?.message_type}</td>
+                          <td className="px-4 py-3">{row.flow ? <FlowStatusBadge status={row.flow.status} /> : row.message ? <DirectionBadge direction={row.message.direction} /> : '-'}</td>
+                          <td className="px-4 py-3 font-mono text-slate-700 whitespace-nowrap">{row.flow ? `${row.flow.start_frame} → ${row.flow.end_frame || '-'}` : row.message?.frame_number}</td>
+                          <td className="px-4 py-3 text-slate-700 whitespace-nowrap">{row.flow ? row.flow.request_message : row.message?.source_ip}</td>
+                          <td className="px-4 py-3 text-slate-700 whitespace-nowrap">{row.flow ? (row.flow.failure_reason || row.flow.result_message || '-') : row.message?.destination_ip}</td>
+                          <td className="px-4 py-3 text-right font-semibold tabular-nums text-slate-900">{row.flow ? formatDuration(row.flow.duration_ms) : row.message?.security_header_name || '-'}</td>
+                          <td className="px-4 py-3 text-right font-mono font-semibold text-slate-700">{row.flow ? row.flow.step_count : row.message?.sequence_number || '-'}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
-                {filteredMessages.length === 0 && <div className="py-8 text-center text-sm text-slate-500">没有匹配的 SM NAS 消息</div>}
-                {filteredMessages.length > 0 && <PaginationControls total={filteredMessages.length} page={messagePage} pageSize={PAGE_SIZE} onPageChange={setMessagePage} />}
+                {unifiedRows.length === 0 && <div className="py-8 text-center text-sm text-slate-500">没有匹配的 SM NAS 流程或消息</div>}
+                {unifiedRows.length > 0 && <PaginationControls total={unifiedRows.length} page={listPage} pageSize={PAGE_SIZE} onPageChange={setListPage} />}
               </div>
             </>
           )}
@@ -423,6 +417,11 @@ function TypeCard({ active, label, code, value, onClick }: { active: boolean; la
       </div>
     </button>
   )
+}
+
+function RowKindBadge({ kind }: { kind: 'flow' | 'message' }) {
+  const classes = kind === 'flow' ? 'bg-cyan-50 text-cyan-700 border-cyan-200' : 'bg-indigo-50 text-indigo-700 border-indigo-200'
+  return <span className={`inline-flex items-center rounded-md border px-2 py-1 text-xs font-bold ${classes}`}>{kind === 'flow' ? '流程' : '消息'}</span>
 }
 
 function DirectionBadge({ direction }: { direction: NASDirection }) {

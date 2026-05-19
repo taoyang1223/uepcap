@@ -114,7 +114,7 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
       const response = await fetch(`/api/jobs/${jobId}/s11-messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ limit: 500 }),
+        body: JSON.stringify({ limit: 20000 }),
       })
       const data = (await response.json()) as APIResponse<S11AnalysisResult>
       if (!data.success || !data.data) throw new Error(data.error || 'S11消息分析失败')

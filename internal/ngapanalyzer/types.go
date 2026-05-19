@@ -127,6 +127,8 @@ func ProcedureName(code string) string {
 		return "NAS Non Delivery Indication"
 	case "21":
 		return "NG Setup"
+	case "24":
+		return "Paging"
 	case "26":
 		return "PDU Session Resource Modify"
 	case "28":
@@ -143,6 +145,8 @@ func ProcedureName(code string) string {
 		return "UE Context Release"
 	case "42":
 		return "UE Context Release Request"
+	case "44":
+		return "UE Radio Capability Info Indication"
 	case "46":
 		return "Uplink NAS Transport"
 	default:

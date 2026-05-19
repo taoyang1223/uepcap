@@ -165,6 +165,10 @@ func ProcedureName(code string) string {
 		return "MME Configuration Update"
 	case "36":
 		return "Write Replace Warning"
+	case "40":
+		return "eNB Configuration Transfer"
+	case "41":
+		return "MME Configuration Transfer"
 	case "43":
 		return "Kill"
 	case "50":
