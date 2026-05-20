@@ -68,6 +68,7 @@ func (a *Analyzer) analyze(filename string, messages []*Message) *AnalysisResult
 		AnalyzedAt:   time.Now(),
 		TotalPackets: len(messages),
 	}
+	sessionEstablishmentResponseSEIDs := collectSessionEstablishmentResponseSEIDsByHeader(messages)
 
 	requests := make(map[string][]*Message)
 	responses := make(map[string]*Message)
@@ -102,7 +103,7 @@ func (a *Analyzer) analyze(filename string, messages []*Message) *AnalysisResult
 		if resp, ok := responses[key]; ok {
 			req := reqs[0]
 			txID++
-			tx := newTransaction(txID, req)
+			tx := newTransaction(txID, req, sessionEstablishmentResponseSEIDs)
 			if frames := requestCounts[makeRetransmitKey(req)]; len(frames) > 1 {
 				tx.RetransmitCount = len(frames) - 1
 				tx.RetransmitFrames = append([]int(nil), frames[1:]...)
@@ -111,6 +112,7 @@ func (a *Analyzer) analyze(filename string, messages []*Message) *AnalysisResult
 			tx.ResponseFSEID = resp.FSEID
 			tx.ResponseTime = &resp.Timestamp
 			tx.ResponseFrame = &resp.FrameNumber
+			tx.SEIDFilter = transactionSEIDFilter(sessionEstablishmentResponseSEIDs, req, resp)
 
 			responseTimeMs := resp.Timestamp.Sub(req.Timestamp).Seconds() * 1000
 			tx.ResponseTimeMs = &responseTimeMs
@@ -137,7 +139,7 @@ func (a *Analyzer) analyze(filename string, messages []*Message) *AnalysisResult
 		seenRetries := make(map[string]int)
 		for _, req := range reqs {
 			txID++
-			tx := newTransaction(txID, req)
+			tx := newTransaction(txID, req, sessionEstablishmentResponseSEIDs)
 			tx.Status = StatusNoResponse
 			retransmitKey := makeRetransmitKey(req)
 			if seenRetries[retransmitKey] > 0 {
@@ -160,7 +162,7 @@ func (a *Analyzer) analyze(filename string, messages []*Message) *AnalysisResult
 	return result
 }
 
-func newTransaction(id int, req *Message) *Transaction {
+func newTransaction(id int, req *Message, establishmentResponseSEIDs map[uint64][]uint64) *Transaction {
 	return &Transaction{
 		ID:              fmt.Sprintf("tx-%d", id),
 		RequestSEID:     req.HeaderSEID,
@@ -173,6 +175,7 @@ func newTransaction(id int, req *Message) *Transaction {
 		RequestTime:     req.Timestamp,
 		RequestFrame:    req.FrameNumber,
 		WiresharkFilter: transactionFilter(req),
+		SEIDFilter:      transactionSEIDFilter(establishmentResponseSEIDs, req),
 	}
 }
 
@@ -240,6 +243,72 @@ func makeRetransmitKey(msg *Message) string {
 		msg.FSEIDIPv4,
 		msg.FSEIDIPv6,
 	)
+}
+
+func collectSessionEstablishmentResponseSEIDsByHeader(messages []*Message) map[uint64][]uint64 {
+	seidsByHeader := make(map[uint64][]uint64)
+	seenByHeader := make(map[uint64]map[uint64]bool)
+	for _, msg := range messages {
+		if msg == nil || msg.MessageTypeCode != 51 || msg.HeaderSEID == 0 {
+			continue
+		}
+		seen := seenByHeader[msg.HeaderSEID]
+		if seen == nil {
+			seen = make(map[uint64]bool)
+			seenByHeader[msg.HeaderSEID] = seen
+		}
+		seids := seidsByHeader[msg.HeaderSEID]
+		addUniqueSEIDs(&seids, seen, msg.HeaderSEID, msg.FSEID)
+		seidsByHeader[msg.HeaderSEID] = seids
+	}
+	return seidsByHeader
+}
+
+func transactionSEIDFilter(establishmentResponseSEIDs map[uint64][]uint64, messages ...*Message) string {
+	var seids []uint64
+	seen := make(map[uint64]bool)
+	addAssociatedEstablishmentResponseSEIDs(&seids, seen, establishmentResponseSEIDs, messages...)
+	for _, msg := range messages {
+		if msg == nil {
+			continue
+		}
+		addUniqueSEIDs(&seids, seen, msg.HeaderSEID, msg.FSEID)
+	}
+	return formatSEIDFilter(seids)
+}
+
+func addAssociatedEstablishmentResponseSEIDs(out *[]uint64, seen map[uint64]bool, seidsByHeader map[uint64][]uint64, messages ...*Message) {
+	headerSeen := make(map[uint64]bool)
+	for _, msg := range messages {
+		if msg == nil {
+			continue
+		}
+		for _, candidate := range []uint64{msg.HeaderSEID, msg.FSEID} {
+			if candidate == 0 || headerSeen[candidate] {
+				continue
+			}
+			headerSeen[candidate] = true
+			addUniqueSEIDs(out, seen, seidsByHeader[candidate]...)
+		}
+	}
+}
+
+func addUniqueSEIDs(out *[]uint64, seen map[uint64]bool, values ...uint64) {
+	for _, seid := range values {
+		if seid == 0 || seen[seid] {
+			continue
+		}
+		seen[seid] = true
+		*out = append(*out, seid)
+	}
+}
+
+func formatSEIDFilter(seids []uint64) string {
+	parts := make([]string, 0, len(seids))
+	for _, seid := range seids {
+		parts = append(parts, fmt.Sprintf("(pfcp.seid == 0x%016X)", seid))
+	}
+	return strings.Join(parts, " || ")
 }
 
 func transactionFilter(msg *Message) string {

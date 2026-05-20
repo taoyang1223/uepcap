@@ -76,6 +76,88 @@ func TestAnalyzeMatchesSessionTransactions(t *testing.T) {
 	}
 }
 
+func TestAnalyzeAddsSessionSEIDFilterBesideTransactionFilter(t *testing.T) {
+	base := time.Unix(150, 0)
+	messages := []*Message{
+		{
+			FrameNumber:     90592,
+			Timestamp:       base,
+			SourceIP:        "127.0.0.3",
+			DestinationIP:   "127.0.0.5",
+			MessageTypeCode: 50,
+			FSEID:           0x602EA88297F0A125,
+			SequenceNumber:  61723,
+		},
+		{
+			FrameNumber:     90593,
+			Timestamp:       base.Add(time.Millisecond),
+			SourceIP:        "127.0.0.5",
+			DestinationIP:   "127.0.0.3",
+			MessageTypeCode: 51,
+			HeaderSEID:      0x602EA88297F0A125,
+			FSEID:           0x0000000000000190,
+			SequenceNumber:  61723,
+			Cause:           ptrUint8(CauseRequestAccepted),
+		},
+		{
+			FrameNumber:     90680,
+			Timestamp:       base.Add(2 * time.Millisecond),
+			SourceIP:        "127.0.0.3",
+			DestinationIP:   "127.0.0.5",
+			MessageTypeCode: 50,
+			FSEID:           0x6595C682AF233510,
+			SequenceNumber:  63216,
+		},
+		{
+			FrameNumber:     90681,
+			Timestamp:       base.Add(3 * time.Millisecond),
+			SourceIP:        "127.0.0.5",
+			DestinationIP:   "127.0.0.3",
+			MessageTypeCode: 51,
+			HeaderSEID:      0x6595C682AF233510,
+			FSEID:           0x0000000000000194,
+			SequenceNumber:  63216,
+			Cause:           ptrUint8(CauseRequestAccepted),
+		},
+		{
+			FrameNumber:     90706,
+			Timestamp:       base.Add(4 * time.Millisecond),
+			SourceIP:        "127.0.0.3",
+			DestinationIP:   "127.0.0.5",
+			MessageTypeCode: 50,
+			FSEID:           0x602EA88297F0A125,
+			SequenceNumber:  63221,
+		},
+		{
+			FrameNumber:     90707,
+			Timestamp:       base.Add(5 * time.Millisecond),
+			SourceIP:        "127.0.0.5",
+			DestinationIP:   "127.0.0.3",
+			MessageTypeCode: 51,
+			HeaderSEID:      0x602EA88297F0A125,
+			FSEID:           0x0000000000000196,
+			SequenceNumber:  63221,
+			Cause:           ptrUint8(CauseRequestAccepted),
+		},
+	}
+
+	analyzer := NewAnalyzer()
+	result := analyzer.analyze("sample.pcap", messages)
+
+	if result.Statistics.TotalTransactions != 3 {
+		t.Fatalf("total transactions = %d, want 3", result.Statistics.TotalTransactions)
+	}
+	tx := result.Transactions[2]
+	wantFilter := "(pfcp.msg_type == 50 || pfcp.msg_type == 51) && pfcp.seqno == 63221 && ip.addr == 127.0.0.3 && ip.addr == 127.0.0.5"
+	if got := tx.WiresharkFilter; got != wantFilter {
+		t.Fatalf("wireshark filter = %q, want %q", got, wantFilter)
+	}
+	wantSEIDFilter := "(pfcp.seid == 0x602EA88297F0A125) || (pfcp.seid == 0x0000000000000190) || (pfcp.seid == 0x0000000000000196)"
+	if got := tx.SEIDFilter; got != wantSEIDFilter {
+		t.Fatalf("seid filter = %q, want %q", got, wantSEIDFilter)
+	}
+}
+
 func TestAnalyzeDoesNotTreatSameSequenceDifferentSEIDAsRetransmit(t *testing.T) {
 	base := time.Unix(200, 0)
 	messages := []*Message{

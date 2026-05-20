@@ -64,6 +64,7 @@ interface PFCPSessionTransaction {
   retransmit_count: number
   retransmit_frames?: number[]
   wireshark_filter: string
+  seid_filter?: string
 }
 
 interface PFCPSessionResult {
@@ -119,7 +120,7 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
   const [responseTimeFilter, setResponseTimeFilter] = useState<ResponseTimeFilter>('all')
   const [query, setQuery] = useState('')
   const [transactionPage, setTransactionPage] = useState(1)
-  const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [selectedTransaction, setSelectedTransaction] = useState<PFCPSessionTransaction | null>(null)
   const [collapsed, setCollapsed] = useState(false)
 
@@ -187,11 +188,11 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
   }, [result, statusFilter, messageTypeFilter, responseTimeFilter, query])
   const pagedTransactions = useMemo(() => paginate(filteredTransactions, transactionPage), [filteredTransactions, transactionPage])
 
-  const handleCopyFilter = useCallback(async (tx: PFCPSessionTransaction) => {
-    const copied = await copyText(tx.wireshark_filter)
+  const handleCopyText = useCallback(async (key: string, text: string) => {
+    const copied = await copyText(text)
     if (!copied) return
-    setCopiedId(tx.id)
-    window.setTimeout(() => setCopiedId(null), 1200)
+    setCopiedKey(key)
+    window.setTimeout(() => setCopiedKey(null), 1200)
   }, [])
 
   const stats = result?.statistics
@@ -486,8 +487,14 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
       {selectedTransaction && (
         <TransactionDetailModal
           transaction={selectedTransaction}
-          copied={copiedId === selectedTransaction.id}
-          onCopy={() => handleCopyFilter(selectedTransaction)}
+          copiedFilter={copiedKey === `${selectedTransaction.id}:filter`}
+          copiedSEIDFilter={copiedKey === `${selectedTransaction.id}:seid`}
+          onCopyFilter={() => handleCopyText(`${selectedTransaction.id}:filter`, selectedTransaction.wireshark_filter)}
+          onCopySEIDFilter={() => {
+            if (selectedTransaction.seid_filter) {
+              handleCopyText(`${selectedTransaction.id}:seid`, selectedTransaction.seid_filter)
+            }
+          }}
           onClose={() => setSelectedTransaction(null)}
         />
       )}
@@ -580,7 +587,21 @@ function ResponseMetric({ active = false, label, value, tone, onClick }: { activ
   )
 }
 
-function TransactionDetailModal({ transaction, copied, onCopy, onClose }: { transaction: PFCPSessionTransaction; copied: boolean; onCopy: () => void; onClose: () => void }) {
+function TransactionDetailModal({
+  transaction,
+  copiedFilter,
+  copiedSEIDFilter,
+  onCopyFilter,
+  onCopySEIDFilter,
+  onClose,
+}: {
+  transaction: PFCPSessionTransaction
+  copiedFilter: boolean
+  copiedSEIDFilter: boolean
+  onCopyFilter: () => void
+  onCopySEIDFilter: () => void
+  onClose: () => void
+}) {
   const responseTime = transaction.response_time_ms == null ? '-' : formatMs(transaction.response_time_ms)
 
   return (
@@ -652,9 +673,19 @@ function TransactionDetailModal({ transaction, copied, onCopy, onClose }: { tran
             <div className="flex w-full items-start gap-2 rounded-lg bg-slate-950 px-4 py-3 text-cyan-200">
               <Copy className="mt-0.5 h-4 w-4 flex-shrink-0" />
               <code className="min-w-0 flex-1 break-all text-xs leading-5">{transaction.wireshark_filter}</code>
-              <button type="button" onClick={event => { event.preventDefault(); event.stopPropagation(); onCopy() }} className="shrink-0 rounded-md bg-white/10 px-2 py-1 text-xs font-bold text-cyan-100 hover:bg-white/20 active:scale-95">{copied ? '已复制' : '复制'}</button>
+              <button type="button" onClick={event => { event.preventDefault(); event.stopPropagation(); onCopyFilter() }} className="shrink-0 rounded-md bg-white/10 px-2 py-1 text-xs font-bold text-cyan-100 hover:bg-white/20 active:scale-95">{copiedFilter ? '已复制' : '复制'}</button>
             </div>
           </DetailSection>
+
+          {transaction.seid_filter && (
+            <DetailSection title="SEID 过滤器">
+              <div className="flex w-full items-start gap-2 rounded-lg bg-slate-950 px-4 py-3 text-cyan-200">
+                <Copy className="mt-0.5 h-4 w-4 flex-shrink-0" />
+                <code className="min-w-0 flex-1 break-all text-xs leading-5">{transaction.seid_filter}</code>
+                <button type="button" onClick={event => { event.preventDefault(); event.stopPropagation(); onCopySEIDFilter() }} className="shrink-0 rounded-md bg-white/10 px-2 py-1 text-xs font-bold text-cyan-100 hover:bg-white/20 active:scale-95">{copiedSEIDFilter ? '已复制' : '复制'}</button>
+              </div>
+            </DetailSection>
+          )}
         </div>
       </div>
     </div>

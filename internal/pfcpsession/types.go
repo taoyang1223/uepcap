@@ -57,6 +57,7 @@ type Transaction struct {
 	RetransmitFrames []int `json:"retransmit_frames,omitempty"`
 
 	WiresharkFilter string `json:"wireshark_filter"`
+	SEIDFilter      string `json:"seid_filter,omitempty"`
 }
 
 type AnalysisResult struct {
