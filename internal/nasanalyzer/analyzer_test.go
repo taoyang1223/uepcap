@@ -49,3 +49,9 @@ func TestFilterMMAndSMResultsSeparateCategories(t *testing.T) {
 		}
 	}
 }
+
+func TestMMMessageTypeNameIncludesServiceReject(t *testing.T) {
+	if got := MMMessageTypeName("0x4d"); got != "Service Reject" {
+		t.Fatalf("MMMessageTypeName(0x4d) = %q, want Service Reject", got)
+	}
+}

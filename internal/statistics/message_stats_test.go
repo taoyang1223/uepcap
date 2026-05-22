@@ -9,6 +9,7 @@ func TestCountFieldRowsCountsNASByAnalyzerCategory(t *testing.T) {
 	output := strings.Join([]string{
 		fieldLine("0x4c", "", "0x71", "15", "0", "", ""),
 		fieldLine("0x4c", "", "", "15", "0", "", ""),
+		fieldLine("0x4d", "", "", "", "", "", ""),
 		fieldLine("0x67", "0xc1", "", "46", "0", "", ""),
 		fieldLine("0x54", "", "", "4", "0", "", ""),
 		fieldLine("0x55", "", "", "46", "0", "", ""),
@@ -41,6 +42,11 @@ func TestCountFieldRowsCountsNASByAnalyzerCategory(t *testing.T) {
 	}
 	if serviceRequest.CorrectionReason != "" {
 		t.Fatalf("service request correction reason = %q, want empty", serviceRequest.CorrectionReason)
+	}
+
+	serviceReject := findItem(t, result, "nas", "service-reject")
+	if serviceReject.Count != 1 {
+		t.Fatalf("service reject count = %d, want 1", serviceReject.Count)
 	}
 
 	ulNASTransport := findItem(t, result, "nas", "ul-nas-transport")
@@ -160,6 +166,7 @@ func TestMessageDefinitionsUseTsharkValues(t *testing.T) {
 		want   messageDefinition
 	}{
 		{name: "NAS service accept", module: "nas", key: "service-accept", want: messageDefinition{Kind: matchNASMM, Value: "0x4e"}},
+		{name: "NAS service reject", module: "nas", key: "service-reject", want: messageDefinition{Kind: matchNASMM, Value: "0x4d"}},
 		{name: "NAS configuration update command", module: "nas", key: "configuration-update-command", want: messageDefinition{Kind: matchNASMM, Value: "0x54"}},
 		{name: "NAS authentication request", module: "nas", key: "authentication-request", want: messageDefinition{Kind: matchNASMM, Value: "0x56"}},
 		{name: "NAS authentication response", module: "nas", key: "authentication-response", want: messageDefinition{Kind: matchNASMM, Value: "0x57"}},

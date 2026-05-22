@@ -113,6 +113,7 @@ var moduleDefinitions = []moduleDefinition{
 			nasMM("deregistration-request", "DEREGISTRATION REQUEST", "0x45"),
 			nasMM("deregistration-accept", "DEREGISTRATION ACCEPT", "0x46"),
 			nasMM("service-request", "SERVICE REQUEST", "0x4C"),
+			nasMM("service-reject", "SERVICE REJECT", "0x4D"),
 			nasMM("service-accept", "SERVICE ACCEPT", "0x4E"),
 			nasMM("control-plane-service-request", "CONTROL PLANE SERVICE REQUEST", "0x4F"),
 			nasMM("configuration-update-command", "CONFIGURATION UPDATE COMMAND", "0x54"),

@@ -151,6 +151,7 @@ const NAS_5GMM_MESSAGES: Record<string, string> = {
   '0x44': 'Registration Reject',
   '0x45': 'Deregistration Request (UE)',
   '0x46': 'Deregistration Accept (UE)',
+  '0x4d': 'Service Reject',
   '0x56': 'Authentication Request',
   '0x57': 'Authentication Response',
   '0x5d': 'Security Mode Command',

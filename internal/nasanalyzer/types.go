@@ -134,6 +134,8 @@ func MMMessageTypeName(code string) string {
 		return "Deregistration Accept"
 	case "0x4c":
 		return "Service Request"
+	case "0x4d":
+		return "Service Reject"
 	case "0x4e":
 		return "Service Accept"
 	case "0x4f":
