@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -43,5 +44,84 @@ func TestGetMSIN(t *testing.T) {
 		if result != test.expected {
 			t.Errorf("getMSIN(%q) = %q, expected %q", test.imsi, result, test.expected)
 		}
+	}
+}
+
+func TestGetMSINCandidates(t *testing.T) {
+	tests := []struct {
+		imsi     string
+		expected []string
+	}{
+		{"460119000036099", []string{"9000036099", "000036099"}},
+		{"12345", []string{"12345"}},
+	}
+
+	for _, test := range tests {
+		result := getMSINCandidates(test.imsi)
+		if !reflect.DeepEqual(result, test.expected) {
+			t.Errorf("getMSINCandidates(%q) = %v, expected %v", test.imsi, result, test.expected)
+		}
+	}
+}
+
+func TestExtractIMSIsFromFieldLineWithSUCIMSIN(t *testing.T) {
+	scanner := NewIMSIScanner()
+	fields := []string{"e212.imsi", "pfcp.user_id.supi", "e212.mcc", "e212.mnc", "nas_5gs.mm.suci.msin"}
+
+	tests := []struct {
+		name     string
+		line     string
+		expected []string
+	}{
+		{
+			name:     "Reconstruct from NAS-5GS SUCI MSIN",
+			line:     "\t\t460\t11\t9000036099",
+			expected: []string{"460119000036099"},
+		},
+		{
+			name:     "Pad one-digit MNC from e212 output",
+			line:     "\t\t460\t2\t0000000101",
+			expected: []string{"460020000000101"},
+		},
+		{
+			name:     "Keep direct IMSI and reconstructed IMSI deduped",
+			line:     "460119000036099\t\t460\t11\t9000036099",
+			expected: []string{"460119000036099"},
+		},
+		{
+			name:     "Extract IMSI from PFCP SUPI",
+			line:     "\timsi-460119000036099\t\t\t",
+			expected: []string{"460119000036099"},
+		},
+		{
+			name:     "Ignore MSIN without MCC and MNC",
+			line:     "\t\t\t\t9000036099",
+			expected: []string{},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := scanner.extractIMSIsFromFieldLine(fields, test.line)
+			if !reflect.DeepEqual(result, test.expected) {
+				t.Errorf("extractIMSIsFromFieldLine() = %v, expected %v", result, test.expected)
+			}
+		})
+	}
+}
+
+func TestExtractIMSIsFromFieldLinesPrefersPrimaryOverSUCIFallback(t *testing.T) {
+	scanner := NewIMSIScanner()
+	fields := []string{"e212.imsi", "e212.mcc", "e212.mnc", "nas_5gs.mm.suci.msin"}
+	lines := []string{
+		"\t460\t11\t9000036099",
+		"460020000000011\t460\t2\t0000000011",
+	}
+
+	buckets := scanner.extractIMSIsFromFieldLines(fields, lines)
+	result := sortedIMSISet(preferredIMSISet(buckets.primary, buckets.fallback))
+	expected := []string{"460020000000011"}
+	if !reflect.DeepEqual(result, expected) {
+		t.Errorf("preferred IMSIs = %v, expected %v", result, expected)
 	}
 }

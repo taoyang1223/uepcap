@@ -5,6 +5,8 @@ interface FileUploadProps {
   onUploadComplete: (jobId: string, fileCount: number) => void
 }
 
+const pcapFilenamePattern = /\.(pcap\d*|pcapng|cap)$/i
+
 export function FileUpload({ onUploadComplete }: FileUploadProps) {
   const [files, setFiles] = useState<File[]>([])
   const [uploading, setUploading] = useState(false)
@@ -16,13 +18,10 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
   const handleFiles = useCallback((newFiles: FileList | null) => {
     if (!newFiles) return
     
-    const pcapFiles = Array.from(newFiles).filter(f => {
-      const name = f.name.toLowerCase()
-      return name.endsWith('.pcap') || name.endsWith('.pcap0') || name.endsWith('.pcapng') || name.endsWith('.cap')
-    })
+    const pcapFiles = Array.from(newFiles).filter(f => pcapFilenamePattern.test(f.name))
     
     if (pcapFiles.length === 0) {
-      setError('请选择 .pcap, .pcap0, .pcapng 或 .cap 文件')
+      setError('请选择 .pcap、.pcap1、.pcapng 或 .cap 文件')
       return
     }
     
@@ -112,7 +111,6 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
           ref={inputRef}
           type="file"
           multiple
-          accept=".pcap,.pcap0,.pcapng,.cap"
           className="hidden"
           onChange={(e) => handleFiles(e.target.files)}
         />
@@ -124,7 +122,7 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
           点击或拖拽文件到此处
         </h3>
         <p className="text-sm text-slate-500 max-w-xs mx-auto">
-          支持上传多个 .pcap, .pcap0, .pcapng 文件，系统将自动合并处理
+          支持上传多个 .pcap、.pcap1、.pcapng 文件，系统将自动合并处理
         </p>
       </div>
 

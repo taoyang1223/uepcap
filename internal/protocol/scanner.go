@@ -18,11 +18,15 @@ type IMSIScanner struct {
 }
 
 var imsiFieldCandidates = []string{
-	"e212.imsi",        // Generic E.212 IMSI (covers GTPv2, S1AP, NGAP, etc.)
-	"gsm_a.imsi",       // GSM/UMTS IMSI
-	"nas_5gs.mm.imsi",  // 5G NAS IMSI on newer Wireshark versions
-	"nas_eps.emm.imsi", // LTE NAS IMSI on newer Wireshark versions
-	"pfcp.user_id",     // PFCP User ID on newer Wireshark versions
+	"e212.imsi",            // Generic E.212 IMSI (covers GTPv2, S1AP, NGAP, etc.)
+	"gsm_a.imsi",           // GSM/UMTS IMSI
+	"nas_5gs.mm.imsi",      // 5G NAS IMSI on newer Wireshark versions
+	"nas_eps.emm.imsi",     // LTE NAS IMSI on newer Wireshark versions
+	"pfcp.user_id",         // PFCP User ID on newer Wireshark versions
+	"pfcp.user_id.supi",    // PFCP User ID SUPI on newer Wireshark versions
+	"e212.mcc",             // Needed to reconstruct IMSI from NAS-5GS SUCI MSIN
+	"e212.mnc",             // Needed to reconstruct IMSI from NAS-5GS SUCI MSIN
+	"nas_5gs.mm.suci.msin", // SUCI NULL-scheme MSIN, used when PFCP/IMSI fields are absent
 }
 
 var (
@@ -41,7 +45,8 @@ func NewIMSIScanner() *IMSIScanner {
 // Optimized: uses single tshark call with comprehensive field extraction
 func (s *IMSIScanner) ScanIMSIs(ctx context.Context, pcapFile string) ([]string, error) {
 	var mu sync.Mutex
-	imsiSet := make(map[string]bool)
+	primarySet := make(map[string]bool)
+	fallbackSet := make(map[string]bool)
 
 	// Run both strategies in parallel
 	var wg sync.WaitGroup
@@ -52,9 +57,8 @@ func (s *IMSIScanner) ScanIMSIs(ctx context.Context, pcapFile string) ([]string,
 		defer wg.Done()
 		results := s.scanByFieldsFast(ctx, pcapFile)
 		mu.Lock()
-		for imsi := range results {
-			imsiSet[imsi] = true
-		}
+		mergeBoolSet(primarySet, results.primary)
+		mergeBoolSet(fallbackSet, results.fallback)
 		mu.Unlock()
 	}()
 
@@ -64,31 +68,24 @@ func (s *IMSIScanner) ScanIMSIs(ctx context.Context, pcapFile string) ([]string,
 		results := s.scanVerboseCombined(ctx, pcapFile)
 		mu.Lock()
 		for imsi := range results {
-			imsiSet[imsi] = true
+			primarySet[imsi] = true
 		}
 		mu.Unlock()
 	}()
 
 	wg.Wait()
 
-	// Convert to sorted list
-	imsiList := make([]string, 0, len(imsiSet))
-	for imsi := range imsiSet {
-		imsiList = append(imsiList, imsi)
-	}
-	sort.Strings(imsiList)
-
-	return imsiList, nil
+	return sortedIMSISet(preferredIMSISet(primarySet, fallbackSet)), nil
 }
 
 // scanByFieldsFast extracts IMSI using a single tshark call with all known fields
-func (s *IMSIScanner) scanByFieldsFast(ctx context.Context, pcapFile string) map[string]bool {
-	imsiSet := make(map[string]bool)
+func (s *IMSIScanner) scanByFieldsFast(ctx context.Context, pcapFile string) imsiFieldBuckets {
+	buckets := newIMSIFieldBuckets()
 	log.Printf("[IMSIScanner] scanByFieldsFast starting, pcapFile: %s", pcapFile)
 
 	fields := supportedIMSIFields(ctx)
 	if len(fields) == 0 {
-		return imsiSet
+		return buckets
 	}
 
 	// Single tshark call with combined filter for signaling protocols
@@ -99,7 +96,7 @@ func (s *IMSIScanner) scanByFieldsFast(ctx context.Context, pcapFile string) map
 	result, err := tshark.TsharkFields(ctx, pcapFile, filter, fields)
 	if err != nil {
 		log.Printf("[IMSIScanner] scanByFieldsFast tshark error: %v", err)
-		return imsiSet
+		return buckets
 	}
 
 	log.Printf("[IMSIScanner] scanByFieldsFast tshark exitCode: %d, stderr: %s", result.ExitCode, result.Stderr)
@@ -111,21 +108,11 @@ func (s *IMSIScanner) scanByFieldsFast(ctx context.Context, pcapFile string) map
 	lines := strings.Split(result.Stdout, "\n")
 	log.Printf("[IMSIScanner] scanByFieldsFast got %d lines of output", len(lines))
 
-	for _, line := range lines {
-		if line == "" {
-			continue
-		}
-		parts := strings.Split(line, "\t")
-		for _, part := range parts {
-			part = strings.TrimSpace(part)
-			if s.isValidIMSI(part) {
-				imsiSet[part] = true
-			}
-		}
-	}
+	buckets = s.extractIMSIsFromFieldLines(fields, lines)
 
-	log.Printf("[IMSIScanner] scanByFieldsFast found %d IMSIs", len(imsiSet))
-	return imsiSet
+	log.Printf("[IMSIScanner] scanByFieldsFast found %d primary IMSIs, %d SUCI fallback IMSIs",
+		len(buckets.primary), len(buckets.fallback))
+	return buckets
 }
 
 // scanVerboseCombined uses a single verbose tshark call with combined filter
@@ -173,45 +160,47 @@ func (s *IMSIScanner) scanVerboseCombined(ctx context.Context, pcapFile string) 
 	return imsiSet
 }
 
-// ScanIMSIsStream scans IMSI values and streams results through a channel
-// Results are sent immediately as they're found
+// ScanIMSIsStream scans IMSI values and streams results through a channel.
+// It waits until both scan strategies finish so SUCI MSIN fallback values are only emitted
+// when no primary IMSI source (PFCP/direct IMSI fields or verbose IMSI text) was found.
 func (s *IMSIScanner) ScanIMSIsStream(ctx context.Context, pcapFile string, imsiChan chan<- string) error {
 	defer close(imsiChan)
 
 	var mu sync.Mutex
-	seen := make(map[string]bool)
-
-	// Helper to send unique IMSI
-	sendIMSI := func(imsi string) {
-		mu.Lock()
-		if !seen[imsi] {
-			seen[imsi] = true
-			mu.Unlock()
-			select {
-			case imsiChan <- imsi:
-			case <-ctx.Done():
-			}
-		} else {
-			mu.Unlock()
-		}
-	}
+	primarySet := make(map[string]bool)
+	fallbackSet := make(map[string]bool)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// Strategy 1: Fast field extraction - usually completes first
 	go func() {
 		defer wg.Done()
-		s.scanByFieldsStream(ctx, pcapFile, sendIMSI)
+		results := s.scanByFieldsFast(ctx, pcapFile)
+		mu.Lock()
+		mergeBoolSet(primarySet, results.primary)
+		mergeBoolSet(fallbackSet, results.fallback)
+		mu.Unlock()
 	}()
 
-	// Strategy 2: Verbose scan for additional matches
 	go func() {
 		defer wg.Done()
-		s.scanVerboseStream(ctx, pcapFile, sendIMSI)
+		results := s.scanVerboseCombined(ctx, pcapFile)
+		mu.Lock()
+		for imsi := range results {
+			primarySet[imsi] = true
+		}
+		mu.Unlock()
 	}()
 
 	wg.Wait()
+
+	for _, imsi := range sortedIMSISet(preferredIMSISet(primarySet, fallbackSet)) {
+		select {
+		case imsiChan <- imsi:
+		case <-ctx.Done():
+			return nil
+		}
+	}
 	return nil
 }
 
@@ -240,20 +229,186 @@ func (s *IMSIScanner) scanByFieldsStream(ctx context.Context, pcapFile string, s
 	log.Printf("[IMSIScanner] scanByFieldsStream got %d lines", len(lines))
 
 	foundCount := 0
+	buckets := s.extractIMSIsFromFieldLines(fields, lines)
+	for _, imsi := range sortedIMSISet(preferredIMSISet(buckets.primary, buckets.fallback)) {
+		foundCount++
+		sendIMSI(imsi)
+	}
+	log.Printf("[IMSIScanner] scanByFieldsStream completed, found %d IMSIs", foundCount)
+}
+
+type imsiFieldBuckets struct {
+	primary  map[string]bool
+	fallback map[string]bool
+}
+
+func newIMSIFieldBuckets() imsiFieldBuckets {
+	return imsiFieldBuckets{
+		primary:  make(map[string]bool),
+		fallback: make(map[string]bool),
+	}
+}
+
+func (s *IMSIScanner) extractIMSIsFromFieldLines(fields []string, lines []string) imsiFieldBuckets {
+	buckets := newIMSIFieldBuckets()
 	for _, line := range lines {
 		if line == "" {
 			continue
 		}
-		parts := strings.Split(line, "\t")
-		for _, part := range parts {
-			part = strings.TrimSpace(part)
-			if s.isValidIMSI(part) {
-				foundCount++
-				sendIMSI(part)
+		lineBuckets := s.extractIMSIBucketsFromFieldLine(fields, line)
+		mergeBoolSet(buckets.primary, lineBuckets.primary)
+		mergeBoolSet(buckets.fallback, lineBuckets.fallback)
+	}
+	return buckets
+}
+
+func (s *IMSIScanner) extractIMSIsFromFieldLine(fields []string, line string) []string {
+	buckets := s.extractIMSIBucketsFromFieldLine(fields, line)
+	return sortedIMSISet(preferredIMSISet(buckets.primary, buckets.fallback))
+}
+
+func (s *IMSIScanner) extractIMSIBucketsFromFieldLine(fields []string, line string) imsiFieldBuckets {
+	cols := strings.Split(line, "\t")
+	buckets := newIMSIFieldBuckets()
+	var mccValues []string
+	var mncValues []string
+	var msinValues []string
+
+	for idx, field := range fields {
+		if idx >= len(cols) {
+			break
+		}
+
+		values := splitTsharkValues(cols[idx])
+		if isDirectIMSIField(field) {
+			for _, value := range values {
+				for _, imsi := range s.extractValidIMSIsFromValue(value) {
+					buckets.primary[imsi] = true
+				}
+			}
+		}
+
+		switch field {
+		case "e212.mcc":
+			mccValues = append(mccValues, values...)
+		case "e212.mnc":
+			mncValues = append(mncValues, values...)
+		case "nas_5gs.mm.suci.msin":
+			msinValues = append(msinValues, values...)
+		}
+	}
+
+	for _, mcc := range mccValues {
+		mcc = normalizeDecimalDigits(mcc, 3, 3)
+		if mcc == "" {
+			continue
+		}
+		for _, mnc := range mncValues {
+			for _, msin := range msinValues {
+				if imsi := buildIMSIFromSUCIMSIN(mcc, mnc, msin); s.isValidIMSI(imsi) {
+					buckets.fallback[imsi] = true
+				}
 			}
 		}
 	}
-	log.Printf("[IMSIScanner] scanByFieldsStream completed, found %d IMSIs", foundCount)
+
+	return buckets
+}
+
+func isDirectIMSIField(field string) bool {
+	switch field {
+	case "e212.imsi", "gsm_a.imsi", "nas_5gs.mm.imsi", "nas_eps.emm.imsi", "pfcp.user_id", "pfcp.user_id.supi":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *IMSIScanner) extractValidIMSIsFromValue(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+
+	imsiSet := make(map[string]bool)
+	for _, valuePart := range splitTsharkValues(value) {
+		if s.isValidIMSI(valuePart) {
+			imsiSet[valuePart] = true
+			continue
+		}
+		for _, match := range s.imsiPattern.FindAllStringSubmatch(valuePart, -1) {
+			if len(match) > 1 && s.isValidIMSI(match[1]) {
+				imsiSet[match[1]] = true
+			}
+		}
+	}
+	return sortedIMSISet(imsiSet)
+}
+
+func buildIMSIFromSUCIMSIN(mcc, mnc, msin string) string {
+	msin = normalizeDecimalDigits(msin, 9, 10)
+	if msin == "" {
+		return ""
+	}
+
+	mnc = strings.TrimSpace(mnc)
+	mnc = strings.Trim(mnc, `"`)
+	if mnc == "" {
+		return ""
+	}
+	for _, c := range mnc {
+		if c < '0' || c > '9' {
+			return ""
+		}
+	}
+
+	if len(mnc) == 1 {
+		mnc = "0" + mnc
+	}
+	if len(mnc) < 2 || len(mnc) > 3 {
+		return ""
+	}
+
+	return mcc + mnc + msin
+}
+
+func normalizeDecimalDigits(value string, minLen, maxLen int) string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, `"`)
+	if value == "" {
+		return ""
+	}
+	for _, c := range value {
+		if c < '0' || c > '9' {
+			return ""
+		}
+	}
+	if len(value) < minLen || len(value) > maxLen {
+		return ""
+	}
+	return value
+}
+
+func preferredIMSISet(primary, fallback map[string]bool) map[string]bool {
+	if len(primary) > 0 {
+		return primary
+	}
+	return fallback
+}
+
+func sortedIMSISet(imsiSet map[string]bool) []string {
+	imsiList := make([]string, 0, len(imsiSet))
+	for imsi := range imsiSet {
+		imsiList = append(imsiList, imsi)
+	}
+	sort.Strings(imsiList)
+	return imsiList
+}
+
+func mergeBoolSet(dst, src map[string]bool) {
+	for value := range src {
+		dst[value] = true
+	}
 }
 
 // scanVerboseStream uses verbose output and streams IMSI results
@@ -352,5 +507,5 @@ func detectSupportedIMSIFields(parent context.Context) []string {
 }
 
 func imsiFieldScanFilter() string {
-	return "gtpv2 or s1ap or ngap or diameter or pfcp"
+	return "gtpv2 or s1ap or ngap or nas-5gs or diameter or pfcp"
 }

@@ -9,9 +9,13 @@ func TestIsPcapFile(t *testing.T) {
 	}{
 		{name: "capture.pcap", want: true},
 		{name: "capture.pcap0", want: true},
+		{name: "capture.pcap1", want: true},
+		{name: "capture.pcap14", want: true},
 		{name: "capture.pcapng", want: true},
 		{name: "capture.cap", want: true},
 		{name: "capture.PCAP0", want: true},
+		{name: "capture.PCAP14", want: true},
+		{name: "capture.pcapx", want: false},
 		{name: "capture.txt", want: false},
 		{name: "capture.pcap0.zip", want: false},
 	}

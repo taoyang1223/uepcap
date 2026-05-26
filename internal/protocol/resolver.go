@@ -401,6 +401,10 @@ func (r *NGAPResolver) resolveByPfcpTeid(ctx context.Context, pcapFile, imsi str
 		return "", nil
 	}
 
+	if filter, err := r.resolveByFieldCorrelation(ctx, pcapFile, imsi, seedRanIDs); err == nil && filter != "" {
+		return filter, nil
+	}
+
 	// Step 3: Get InitialUEMessage output for 5G-TMSI extraction
 	initialUEResult, err := tshark.TsharkVerbose(ctx, pcapFile, "ngap.procedureCode == 15")
 	initialUEOutput := ""
@@ -442,8 +446,12 @@ func (r *NGAPResolver) resolveByPfcpTeid(ctx context.Context, pcapFile, imsi str
 
 // resolveByMSIN implements the backup NGAP resolution path (original MSIN-based approach)
 func (r *NGAPResolver) resolveByMSIN(ctx context.Context, pcapFile, imsi string) (string, error) {
+	if filter, err := r.resolveByFieldCorrelation(ctx, pcapFile, imsi, nil); err == nil && filter != "" {
+		return filter, nil
+	}
+
 	// Step 1: Find RAN-UE-NGAP-ID from InitialUEMessage containing MSIN (initial registration)
-	msin := getMSIN(imsi)
+	msins := getMSINCandidates(imsi)
 
 	// Search InitialUEMessage for MSIN (multiple registrations = multiple RAN_UE_NGAP_IDs)
 	result, err := tshark.TsharkVerbose(ctx, pcapFile, "ngap.procedureCode == 15")
@@ -451,7 +459,18 @@ func (r *NGAPResolver) resolveByMSIN(ctx context.Context, pcapFile, imsi string)
 		return "", err
 	}
 
-	seedRanIDs := r.extractRanIDsFromInitialUE(result.Stdout, msin)
+	seedRanIDSet := make(map[string]bool)
+	for _, msin := range msins {
+		for _, ranID := range r.extractRanIDsFromInitialUE(result.Stdout, msin) {
+			seedRanIDSet[ranID] = true
+		}
+	}
+
+	seedRanIDs := make([]string, 0, len(seedRanIDSet))
+	for ranID := range seedRanIDSet {
+		seedRanIDs = append(seedRanIDs, ranID)
+	}
+	sort.Strings(seedRanIDs)
 
 	if len(seedRanIDs) == 0 {
 		return "", nil
@@ -489,6 +508,195 @@ func (r *NGAPResolver) resolveByMSIN(ctx context.Context, pcapFile, imsi string)
 	}
 
 	return strings.Join(parts, " || "), nil
+}
+
+var ngapCorrelationFields = []string{
+	"e212.imsi",
+	"nas_5gs.mm.suci.msin",
+	"ngap.RAN_UE_NGAP_ID",
+	"ngap.AMF_UE_NGAP_ID",
+	"3gpp.tmsi",
+	"nas_5gs.5g_tmsi",
+	"ngap.fiveG_TMSI",
+}
+
+type ngapFieldFrame struct {
+	containsTarget bool
+	ranIDs         map[string]bool
+	amfIDs         map[string]bool
+	tmsis          map[string]bool
+}
+
+type ngapCorrelation struct {
+	hasTarget bool
+	ranIDs    map[string]bool
+	amfIDs    map[string]bool
+	tmsis     map[string]bool
+}
+
+func newNGAPCorrelation() ngapCorrelation {
+	return ngapCorrelation{
+		ranIDs: make(map[string]bool),
+		amfIDs: make(map[string]bool),
+		tmsis:  make(map[string]bool),
+	}
+}
+
+func (r *NGAPResolver) resolveByFieldCorrelation(ctx context.Context, pcapFile, imsi string, seedRanIDs []string) (string, error) {
+	result, err := tshark.TsharkFields(ctx, pcapFile, "ngap", ngapCorrelationFields)
+	if err != nil {
+		return "", err
+	}
+	if result.ExitCode != 0 {
+		return "", nil
+	}
+
+	corr := r.extractNGAPCorrelationFromFields(result.Stdout, imsi, seedRanIDs)
+	if !corr.hasTarget || (len(corr.ranIDs) == 0 && len(corr.amfIDs) == 0) {
+		return "", nil
+	}
+
+	return buildNGAPCorrelationFilter(corr), nil
+}
+
+func buildNGAPCorrelationFilter(corr ngapCorrelation) string {
+	var parts []string
+	parts = addSortedParts(parts, corr.amfIDs, func(amfID string) string {
+		return fmt.Sprintf("ngap.AMF_UE_NGAP_ID == %s", amfID)
+	})
+	parts = addSortedParts(parts, corr.ranIDs, func(ranID string) string {
+		return fmt.Sprintf("ngap.RAN_UE_NGAP_ID == %s", ranID)
+	})
+	parts = addSortedParts(parts, corr.tmsis, func(tmsi string) string {
+		return fmt.Sprintf("(ngap.procedureCode == 24 && ngap.fiveG_TMSI == %s)", tmsi)
+	})
+	return strings.Join(parts, " || ")
+}
+
+func (r *NGAPResolver) extractNGAPCorrelationFromFields(output, imsi string, seedRanIDs []string) ngapCorrelation {
+	frames := parseNGAPFieldFrames(output, imsi, seedRanIDs)
+	corr := newNGAPCorrelation()
+
+	for _, frame := range frames {
+		if !frame.containsTarget {
+			continue
+		}
+		corr.hasTarget = true
+		mergeStringBoolSet(corr.ranIDs, frame.ranIDs)
+		mergeStringBoolSet(corr.amfIDs, frame.amfIDs)
+		mergeStringBoolSet(corr.tmsis, frame.tmsis)
+	}
+
+	for changed := true; changed; {
+		changed = false
+		for _, frame := range frames {
+			if !intersectsStringSet(frame.ranIDs, corr.ranIDs) &&
+				!intersectsStringSet(frame.amfIDs, corr.amfIDs) &&
+				!intersectsStringSet(frame.tmsis, corr.tmsis) {
+				continue
+			}
+			if mergeStringBoolSet(corr.ranIDs, frame.ranIDs) {
+				changed = true
+			}
+			if mergeStringBoolSet(corr.amfIDs, frame.amfIDs) {
+				changed = true
+			}
+			if mergeStringBoolSet(corr.tmsis, frame.tmsis) {
+				changed = true
+			}
+		}
+	}
+
+	return corr
+}
+
+func parseNGAPFieldFrames(output, imsi string, seedRanIDs []string) []ngapFieldFrame {
+	seedRanSet := make(map[string]bool)
+	for _, raw := range seedRanIDs {
+		if ranID, ok := normalizeUintDecimal(raw, 64, false); ok {
+			seedRanSet[ranID] = true
+		}
+	}
+
+	msinSet := make(map[string]bool)
+	for _, msin := range getMSINCandidates(imsi) {
+		if msin != "" {
+			msinSet[msin] = true
+		}
+	}
+
+	lines := strings.Split(output, "\n")
+	frames := make([]ngapFieldFrame, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		cols := strings.Split(line, "\t")
+		for len(cols) < len(ngapCorrelationFields) {
+			cols = append(cols, "")
+		}
+
+		frame := ngapFieldFrame{
+			containsTarget: containsIMSIValue(cols[0], imsi) || containsAnyValue(cols[1], msinSet),
+			ranIDs:         make(map[string]bool),
+			amfIDs:         make(map[string]bool),
+			tmsis:          make(map[string]bool),
+		}
+
+		addNormalizedUintValues(frame.ranIDs, cols[2], 64)
+		addNormalizedUintValues(frame.amfIDs, cols[3], 64)
+
+		// Prefer protocol-specific 5G-TMSI fields to avoid unrelated values that can appear in 3gpp.tmsi.
+		hasSpecificTMSI := false
+		if strings.TrimSpace(cols[5]) != "" {
+			hasSpecificTMSI = addNormalizedUintValues(frame.tmsis, cols[5], 32) || hasSpecificTMSI
+		}
+		if strings.TrimSpace(cols[6]) != "" {
+			hasSpecificTMSI = addNormalizedUintValues(frame.tmsis, cols[6], 32) || hasSpecificTMSI
+		}
+		if !hasSpecificTMSI {
+			addNormalizedUintValues(frame.tmsis, cols[4], 32)
+		}
+
+		if intersectsStringSet(frame.ranIDs, seedRanSet) {
+			frame.containsTarget = true
+		}
+
+		frames = append(frames, frame)
+	}
+	return frames
+}
+
+func containsAnyValue(field string, values map[string]bool) bool {
+	for _, value := range splitTsharkValues(field) {
+		if values[value] {
+			return true
+		}
+	}
+	return false
+}
+
+func addNormalizedUintValues(dst map[string]bool, field string, bitSize int) bool {
+	added := false
+	for _, raw := range splitTsharkValues(field) {
+		if value, ok := normalizeUintDecimal(raw, bitSize, false); ok {
+			dst[value] = true
+			added = true
+		}
+	}
+	return added
+}
+
+func mergeStringBoolSet(dst, src map[string]bool) bool {
+	changed := false
+	for value := range src {
+		if !dst[value] {
+			dst[value] = true
+			changed = true
+		}
+	}
+	return changed
 }
 
 // extractRanIDsFromNGAPVerbose extracts RAN_UE_NGAP_IDs from NGAP verbose output
@@ -1591,6 +1799,28 @@ func getMSIN(imsi string) string {
 		return imsi[5:]
 	}
 	return imsi
+}
+
+func getMSINCandidates(imsi string) []string {
+	candidates := make([]string, 0, 2)
+	seen := make(map[string]bool)
+	add := func(msin string) {
+		if msin == "" || seen[msin] {
+			return
+		}
+		seen[msin] = true
+		candidates = append(candidates, msin)
+	}
+
+	if len(imsi) >= 14 {
+		add(imsi[5:]) // MCC(3) + 2-digit MNC
+		if len(imsi) >= 15 {
+			add(imsi[6:]) // MCC(3) + 3-digit MNC
+		}
+	} else {
+		add(imsi)
+	}
+	return candidates
 }
 
 // UEIPResolver resolves IP layer filters for an IMSI by extracting UE IPv4 from NGAP/S1AP IE/NAS

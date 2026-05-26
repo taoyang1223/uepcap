@@ -644,6 +644,69 @@ func TestExtractGTPv2CorrelationFromFields(t *testing.T) {
 	})
 }
 
+func TestExtractNGAPCorrelationFromFields(t *testing.T) {
+	resolver := &NGAPResolver{}
+	output := strings.Join([]string{
+		// Initial registration with SUCI MSIN seeds the first RAN context.
+		"\t9000036099\t1501154281\t\t\t\t",
+		// Registration accept assigns the first 5G-TMSI.
+		"\t\t1501154281\t2789\t687868645\t687868645",
+		// Paging has no UE NGAP IDs, so it must be kept through ngap.fiveG_TMSI.
+		"\t\t\t\t1056805\t\t687868645",
+		// Later service request uses that TMSI and creates a new RAN context.
+		"\t\t1501164967\t\t687868645,2113577\t687868645\t687868645",
+		// Configuration update command assigns a new 5G-TMSI.
+		"\t\t1501164967\t17568\t738215072\t738215072",
+		// Later service request uses the new TMSI and creates another RAN context.
+		"\t\t1501164496\t\t738215072,2113580\t738215072\t738215072",
+		// Attached context for the latest RAN ID.
+		"\t\t1501164496\t23855\t738221353\t738221353",
+		// Unrelated UE should not be pulled in.
+		"\t9000036100\t999\t888\t777\t777",
+	}, "\n")
+
+	corr := resolver.extractNGAPCorrelationFromFields(output, "460119000036099", nil)
+	if !corr.hasTarget {
+		t.Fatal("expected NGAP seed frame")
+	}
+	assertStringSet(t, "ngap ran ids", corr.ranIDs, []string{
+		"1501154281",
+		"1501164967",
+		"1501164496",
+	})
+	assertStringSet(t, "ngap amf ids", corr.amfIDs, []string{
+		"2789",
+		"17568",
+		"23855",
+	})
+	assertStringSet(t, "ngap tmsis", corr.tmsis, []string{
+		"687868645",
+		"738215072",
+		"738221353",
+	})
+}
+
+func TestBuildNGAPCorrelationFilterIncludesPagingTMSI(t *testing.T) {
+	corr := newNGAPCorrelation()
+	corr.amfIDs["2789"] = true
+	corr.ranIDs["1501154281"] = true
+	corr.tmsis["620773070"] = true
+
+	filter := buildNGAPCorrelationFilter(corr)
+	for _, want := range []string{
+		"ngap.AMF_UE_NGAP_ID == 2789",
+		"ngap.RAN_UE_NGAP_ID == 1501154281",
+		"(ngap.procedureCode == 24 && ngap.fiveG_TMSI == 620773070)",
+	} {
+		if !strings.Contains(filter, want) {
+			t.Fatalf("expected %q in NGAP filter: %s", want, filter)
+		}
+	}
+	if strings.Contains(filter, "3gpp.tmsi == 620773070") {
+		t.Fatalf("NGAP filter should use the paging-specific field, got: %s", filter)
+	}
+}
+
 // Integration test using the actual pcap file
 // This test is skipped if tshark is not installed or the pcap file doesn't exist
 func TestNGAPResolverIntegration(t *testing.T) {
@@ -695,11 +758,6 @@ func TestNGAPResolverIntegration(t *testing.T) {
 		// Verify the filter contains expected patterns
 		if !strings.Contains(ngapFilter, "ngap.RAN_UE_NGAP_ID") && !strings.Contains(ngapFilter, "ngap.AMF_UE_NGAP_ID") {
 			t.Errorf("NGAP filter doesn't contain expected ID patterns: %s", ngapFilter)
-		}
-		// New requirement: also include 5G-TMSI conditions in NGAP filter.
-		// Use the generic `3gpp.tmsi` field for better compatibility across tshark versions.
-		if !strings.Contains(ngapFilter, "3gpp.tmsi") {
-			t.Errorf("NGAP filter doesn't contain 3gpp.tmsi condition: %s", ngapFilter)
 		}
 		t.Logf("NGAP filter validated: %s", ngapFilter)
 	}

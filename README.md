@@ -1212,6 +1212,53 @@ func (h *Handler) StreamIMSIList(w http.ResponseWriter, r *http.Request) {
 
 ---
 
+## Docker Compose 部署
+
+项目提供 `Dockerfile` 和 `docker-compose.yml`，镜像内置 Web 前端、Go 后端以及 `tshark`/`mergecap` 运行依赖。
+
+当前 `docker-compose.yml` 默认使用 `runtime-local` 构建目标，适合内网/离线机器：先在宿主机完成前后端构建，再把生成的 `uepcap` 二进制打进运行镜像。
+
+```bash
+cp .env.example .env
+make build
+docker-compose up -d --build
+```
+
+访问：
+
+```text
+http://<服务器IP>:8080
+```
+
+常用命令：
+
+```bash
+docker-compose ps
+docker-compose logs -f uepcap
+docker-compose restart uepcap
+docker-compose down
+```
+
+默认配置：
+
+| 配置项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `UEPCAP_PORT` | `8080` | 宿主机访问端口 |
+| `UEPCAP_TTL` | `1h` | 运行中任务 TTL |
+| `UEPCAP_MAX_JOBS` | `20` | 内存中最多保留任务数 |
+| `UEPCAP_MAX_TSHARK` | `0` | 并发 tshark/mergecap 数量，`0` 表示自动 |
+| `UEPCAP_RETENTION_DAYS` | `2` | 清理容器删除超过多少天的 `data/tmp` 任务目录 |
+
+Compose 会把 `./data` 挂载到容器的 `/app/data`，并通过 `uepcap-cleanup` 服务定期清理历史临时目录。Docker 日志使用 `json-file`，主服务单文件最大 `50M`，保留 `7` 份。
+
+如果部署环境可以直接访问 Docker Hub，也可以使用完整源码多阶段构建：
+
+```bash
+docker build -t uepcap:source .
+```
+
+---
+
 ## License
 
 MIT

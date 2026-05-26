@@ -1,0 +1,64 @@
+version: "3.8"
+
+services:
+  uepcap:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime-local
+      network: host
+    image: uepcap:local
+    container_name: uepcap
+    restart: unless-stopped
+    ports:
+      - "${UEPCAP_PORT:-8080}:8080"
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"
+    command:
+      - uepcap
+      - -port
+      - "8080"
+      - -data
+      - /app/data
+      - -ttl
+      - "${UEPCAP_TTL:-1h}"
+      - -max-jobs
+      - "${UEPCAP_MAX_JOBS:-20}"
+      - -max-tshark
+      - "${UEPCAP_MAX_TSHARK:-0}"
+    volumes:
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "7"
+
+  uepcap-cleanup:
+    image: uepcap:local
+    container_name: uepcap-cleanup
+    restart: unless-stopped
+    depends_on:
+      - uepcap
+    environment:
+      TZ: "${TZ:-Asia/Shanghai}"
+      UEPCAP_RETENTION_DAYS: "${UEPCAP_RETENTION_DAYS:-2}"
+      UEPCAP_CLEANUP_INTERVAL_SECONDS: "${UEPCAP_CLEANUP_INTERVAL_SECONDS:-86400}"
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - |
+        while true; do
+          find /app/data/tmp -mindepth 1 -maxdepth 1 -type d -mtime +$${UEPCAP_RETENTION_DAYS:-2} -print -exec rm -rf -- {} + 2>/dev/null || true;
+          sleep $${UEPCAP_CLEANUP_INTERVAL_SECONDS:-86400};
+        done
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      disable: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
