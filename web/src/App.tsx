@@ -6,7 +6,7 @@ import { ProtocolSelect } from './components/ProtocolSelect'
 import { ExportPanel } from './components/ExportPanel'
 import { JobInfo } from './components/JobInfo'
 import { MessageStatsPanel } from './components/MessageStatsPanel'
-import { Network, BookOpen } from 'lucide-react'
+import { FileDiff, Network, BookOpen } from 'lucide-react'
 
 function lazyWithReload(factory: () => Promise<{ default: ComponentType<any> }>) {
   return lazy(() => factory().catch(error => {
@@ -30,6 +30,7 @@ const PFCPSessionPanel = lazyWithReload(() => import('./components/PFCPSessionPa
 const TimelineViewer = lazyWithReload(() => import('./components/TimelineViewer').then(module => ({ default: module.TimelineViewer })))
 const InstallGuide = lazyWithReload(() => import('./components/InstallGuide').then(module => ({ default: module.InstallGuide })))
 const FlowViewer = lazyWithReload(() => import('./components/FlowViewer').then(module => ({ default: module.FlowViewer })))
+const PacketCompare = lazyWithReload(() => import('./components/PacketCompare').then(module => ({ default: module.PacketCompare })))
 
 interface Job {
   id: string
@@ -37,7 +38,7 @@ interface Job {
   file_count?: number
 }
 
-type ViewMode = 'main' | 'timeline' | 'guide' | 'flow'
+type ViewMode = 'main' | 'timeline' | 'guide' | 'flow' | 'compare'
 
 function App() {
   const [currentJob, setCurrentJob] = useState<Job | null>(null)
@@ -187,6 +188,16 @@ function App() {
     setViewMode('main')
   }, [])
 
+  // 切换到双抓包消息对比视图
+  const handleShowCompare = useCallback(() => {
+    setViewMode('compare')
+  }, [])
+
+  // 从双抓包消息对比返回主视图
+  const handleBackFromCompare = useCallback(() => {
+    setViewMode('main')
+  }, [])
+
   // Auto-trigger IMSI scan when job is ready
   const hasAutoScanned = useRef(false)
   useEffect(() => {
@@ -231,6 +242,13 @@ function App() {
         )}
       </div>
 
+      {/* Packet Compare */}
+      <div className={viewMode === 'compare' ? '' : 'hidden'}>
+        <Suspense fallback={<PageLoading />}>
+          <PacketCompare onBack={handleBackFromCompare} />
+        </Suspense>
+      </div>
+
       {/* Main View */}
       <div className={viewMode === 'main' ? '' : 'hidden'}>
         <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-indigo-100 selection:text-indigo-900">
@@ -247,6 +265,13 @@ function App() {
                 </div>
               </div>
               <div className="flex items-center gap-3">
+                <button
+                  onClick={handleShowCompare}
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 hover:text-teal-600 hover:bg-teal-50 rounded-xl transition-all duration-200"
+                >
+                  <FileDiff className="w-4 h-4" />
+                  <span>消息对比</span>
+                </button>
                 <button
                   onClick={handleShowGuide}
                   className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all duration-200"
