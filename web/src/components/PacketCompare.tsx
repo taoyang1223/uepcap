@@ -128,12 +128,6 @@ interface ComparisonResult {
 
 const PAGE_SIZE = 12
 const pcapFilenamePattern = /\.(pcap\d*|pcapng|cap)$/i
-const defaultVisibleDiffKinds: Record<DiffKind, boolean> = {
-  changed: true,
-  left: true,
-  right: true,
-  same: false,
-}
 
 const emptyCaptureState: CaptureState = {
   job: null,
@@ -206,7 +200,6 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
   const [comparison, setComparison] = useState<ComparisonResult | null>(null)
   const [compareError, setCompareError] = useState<string | null>(null)
   const [comparing, setComparing] = useState(false)
-  const [visibleDiffKinds, setVisibleDiffKinds] = useState<Record<DiffKind, boolean>>(defaultVisibleDiffKinds)
 
   const config = useMemo(() => protocolConfigs.find(item => item.key === protocol) || protocolConfigs[0], [protocol])
   const leftSelected = useMemo(() => selectedMessage(captures.left), [captures.left])
@@ -225,7 +218,6 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
     setProtocol(nextProtocol)
     setComparison(null)
     setCompareError(null)
-    setVisibleDiffKinds(defaultVisibleDiffKinds)
     setCaptures(previous => ({
       left: resetCaptureAnalysis(previous.left),
       right: resetCaptureAnalysis(previous.right),
@@ -239,14 +231,12 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
     }))
     setComparison(null)
     setCompareError(null)
-    setVisibleDiffKinds(defaultVisibleDiffKinds)
   }, [updateCapture])
 
   const handleClearJob = useCallback((side: CaptureSide) => {
     updateCapture(side, () => ({ ...emptyCaptureState }))
     setComparison(null)
     setCompareError(null)
-    setVisibleDiffKinds(defaultVisibleDiffKinds)
   }, [updateCapture])
 
   const loadMessages = useCallback(async (side: CaptureSide) => {
@@ -305,7 +295,6 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
     }))
     setComparison(null)
     setCompareError(null)
-    setVisibleDiffKinds(defaultVisibleDiffKinds)
   }, [updateCapture])
 
   const handleCompare = useCallback(async () => {
@@ -337,7 +326,6 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
         rows: diffResult.rows,
         positionHints: diffResult.positionHints,
       })
-      setVisibleDiffKinds(defaultVisibleDiffKinds)
     } catch (err) {
       setCompareError('消息详情对比失败: ' + (err as Error).message)
     } finally {
@@ -346,20 +334,7 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
   }, [captures.left, captures.right])
 
   const diffStats = useMemo(() => getDiffStats(comparison?.rows || []), [comparison])
-  const visibleDiffRows = useMemo(() => {
-    if (!comparison) return []
-    return comparison.rows.filter(row => visibleDiffKinds[row.kind])
-  }, [comparison, visibleDiffKinds])
-  const hasAnyVisibleKind = useMemo(() => Object.values(visibleDiffKinds).some(Boolean), [visibleDiffKinds])
   const structureDiffCount = diffStats.changed + diffStats.left + diffStats.right
-
-  const showDefaultDiffView = useCallback(() => {
-    setVisibleDiffKinds(defaultVisibleDiffKinds)
-  }, [])
-
-  const showAllStructures = useCallback(() => {
-    setVisibleDiffKinds({ changed: true, left: true, right: true, same: true })
-  }, [])
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -489,34 +464,10 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
                   <SummaryPill label="结构差异" value={structureDiffCount} title="结构无法完全对齐的数量，已忽略具体值差异" className="border-amber-200 bg-amber-50 text-amber-700" />
                   <SummaryPill label="位置调整" value={comparison.positionHints.length} title="同一结构在左右消息中出现位置不同，需要按中间两列对齐查看" className="border-blue-200 bg-blue-50 text-blue-700" />
                   <SummaryPill label="结构相同" value={diffStats.same} title="结构相同，具体值可能不同但已忽略" className="border-slate-200 bg-white text-slate-600" />
-                  <button
-                    type="button"
-                    onClick={showDefaultDiffView}
-                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-600 hover:bg-slate-100"
-                  >
-                    默认差异视图
-                  </button>
-                  <button
-                    type="button"
-                    onClick={showAllStructures}
-                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-600 hover:bg-slate-100"
-                  >
-                    全部结构
-                  </button>
                 </div>
               </div>
             </div>
-            {comparison.positionHints.length > 0 ? (
-              <FourPaneDiffViewer leftTree={comparison.leftTree} rightTree={comparison.rightTree} rows={comparison.rows} hints={comparison.positionHints} />
-            ) : visibleDiffRows.length === 0 ? (
-              <div className="px-5 py-10 text-center">
-                <CheckCircle2 className="mx-auto h-10 w-10 text-emerald-500" />
-                <p className="mt-3 text-base font-black text-slate-900">{hasAnyVisibleKind ? '未发现结构差异' : '当前没有打开任何显示项'}</p>
-                <p className="mt-1 text-sm text-slate-500">{hasAnyVisibleKind ? '两条消息的结构内容一致' : '点击默认差异视图恢复显示'}</p>
-              </div>
-            ) : (
-              <TwoPaneDiffViewer rows={visibleDiffRows} />
-            )}
+            <FourPaneDiffViewer leftTree={comparison.leftTree} rightTree={comparison.rightTree} rows={comparison.rows} hints={comparison.positionHints} />
           </section>
         )}
       </main>
@@ -813,22 +764,6 @@ function SelectedMessagePill({ label, message }: { label: string; message: Compa
   )
 }
 
-function TwoPaneDiffViewer({ rows }: { rows: DiffRow[] }) {
-  return (
-    <div className="max-h-[720px] overflow-auto">
-      <div className="grid min-w-[980px] grid-cols-[minmax(0,1fr)_minmax(0,1fr)] border-b border-slate-200 bg-white text-xs font-black text-slate-500">
-        <div className="border-r border-slate-200 px-4 py-3">左侧消息详情</div>
-        <div className="px-4 py-3">右侧消息详情</div>
-      </div>
-      <div className="min-w-[980px]">
-        {rows.map((row, index) => (
-          <DiffLine key={`${index}:${row.kind}`} row={row} />
-        ))}
-      </div>
-    </div>
-  )
-}
-
 interface ConnectorLine {
   id: string
   side: CaptureSide
@@ -1120,17 +1055,6 @@ function connectorPath({ x1, y1, x2, y2 }: ConnectorLine) {
   const distance = Math.abs(x2 - x1)
   const curve = Math.min(90, Math.max(12, distance * 0.45))
   return `M ${x1} ${y1} C ${x1 + direction * curve} ${y1}, ${x2 - direction * curve} ${y2}, ${x2} ${y2}`
-}
-
-function DiffLine({ row }: { row: DiffRow }) {
-  const leftClass = diffCellClass(row.kind, 'left')
-  const rightClass = diffCellClass(row.kind, 'right')
-  return (
-    <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] border-b border-slate-100 text-xs">
-      <pre className={`min-h-8 whitespace-pre-wrap break-words border-r border-slate-200 px-4 py-2 font-mono leading-5 ${leftClass}`}>{renderDiffContent(row, 'left')}</pre>
-      <pre className={`min-h-8 whitespace-pre-wrap break-words px-4 py-2 font-mono leading-5 ${rightClass}`}>{renderDiffContent(row, 'right')}</pre>
-    </div>
-  )
 }
 
 function renderDiffContent(row: DiffRow, side: 'left' | 'right') {
