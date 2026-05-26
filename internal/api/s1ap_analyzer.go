@@ -10,7 +10,8 @@ import (
 )
 
 type S1APMessagesRequest struct {
-	Limit int `json:"limit,omitempty"`
+	Limit           int    `json:"limit,omitempty"`
+	ProcedureFilter string `json:"procedure_filter,omitempty"`
 }
 
 func (h *Handler) GetS1APMessages(w http.ResponseWriter, r *http.Request) {
@@ -49,6 +50,6 @@ func (h *Handler) GetS1APMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out := windowS1APAnalysis(result, normalizedAnalysisLimit(req.Limit))
+	out := windowS1APAnalysis(result, normalizedAnalysisLimit(req.Limit), req.ProcedureFilter)
 	writeSuccess(w, out)
 }

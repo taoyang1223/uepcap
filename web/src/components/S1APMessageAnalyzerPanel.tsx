@@ -248,16 +248,18 @@ export function S1APMessageAnalyzerPanel({ jobId }: S1APMessageAnalyzerPanelProp
   const [selectedMessage, setSelectedMessage] = useState<S1APMessage | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
 
-  const handleAnalyze = useCallback(async () => {
+  const fetchAnalysis = useCallback(async (nextProcedureFilter: string) => {
     setLoading(true)
     setError(null)
     const controller = new AbortController()
     const timeoutId = window.setTimeout(() => controller.abort(), ANALYSIS_TIMEOUT_MS)
     try {
+      const requestBody: { limit: number; procedure_filter?: string } = { limit: 20000 }
+      if (nextProcedureFilter !== 'all') requestBody.procedure_filter = nextProcedureFilter
       const response = await fetch(`/api/jobs/${jobId}/s1ap-messages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ limit: 20000 }),
+        body: JSON.stringify(requestBody),
         signal: controller.signal,
       })
       const data = (await response.json()) as APIResponse<S1APAnalysisResult>
@@ -265,23 +267,50 @@ export function S1APMessageAnalyzerPanel({ jobId }: S1APMessageAnalyzerPanelProp
         throw new Error(data.error || 'S1AP消息分析失败')
       }
       setResult(data.data)
-      setStatusFilter('all')
-      setProcedureFilter('all')
-      setPduFilter('all')
-      setQuery('')
-      setListPage(1)
       setSelectedTransaction(null)
       setSelectedMessage(null)
+      return true
     } catch (err) {
       const message = err instanceof DOMException && err.name === 'AbortError'
         ? 'S1AP消息分析超时，请稍后重试或先缩小抓包范围'
         : 'S1AP消息分析失败: ' + (err as Error).message
       setError(message)
+      return false
     } finally {
       window.clearTimeout(timeoutId)
       setLoading(false)
     }
   }, [jobId])
+
+  const handleAnalyze = useCallback(async () => {
+    const ok = await fetchAnalysis('all')
+    if (!ok) return
+    setStatusFilter('all')
+    setProcedureFilter('all')
+    setPduFilter('all')
+    setQuery('')
+    setListPage(1)
+  }, [fetchAnalysis])
+
+  const handleProcedureSelect = useCallback(async (code: string) => {
+    const nextProcedureFilter = procedureFilter === code ? 'all' : code
+    setProcedureFilter(nextProcedureFilter)
+    setStatusFilter('all')
+    setListPage(1)
+    await fetchAnalysis(nextProcedureFilter)
+  }, [fetchAnalysis, procedureFilter])
+
+  const handleClearFilters = useCallback(() => {
+    const shouldReloadDefaultWindow = procedureFilter !== 'all'
+    setStatusFilter('all')
+    setProcedureFilter('all')
+    setPduFilter('all')
+    setQuery('')
+    setListPage(1)
+    if (shouldReloadDefaultWindow) {
+      void fetchAnalysis('all')
+    }
+  }, [fetchAnalysis, procedureFilter])
 
   const filteredTransactions = useMemo(() => {
     if (!result) return []
@@ -464,7 +493,7 @@ export function S1APMessageAnalyzerPanel({ jobId }: S1APMessageAnalyzerPanelProp
                         columnsClass="xl:grid-cols-3"
                         getValue={item => transactionCountsByProcedure[item.code] || 0}
                         getValueDetail={item => `${item.count} 条消息`}
-                        onSelect={code => { setProcedureFilter(procedureFilter === code ? 'all' : code); setListPage(1) }}
+                        onSelect={handleProcedureSelect}
                       />
                       <ProcedureGroup
                         title="单向 / 承载消息"
@@ -474,7 +503,7 @@ export function S1APMessageAnalyzerPanel({ jobId }: S1APMessageAnalyzerPanelProp
                         columnsClass="xl:grid-cols-4"
                         getValue={item => item.count}
                         getValueDetail={() => '条消息'}
-                        onSelect={code => { setProcedureFilter(procedureFilter === code ? 'all' : code); setListPage(1) }}
+                        onSelect={handleProcedureSelect}
                       />
                     </div>
                   </div>
@@ -502,13 +531,7 @@ export function S1APMessageAnalyzerPanel({ jobId }: S1APMessageAnalyzerPanelProp
                       <div className="flex flex-col gap-2 md:flex-row md:items-center">
                         {(statusFilter !== 'all' || procedureFilter !== 'all' || pduFilter !== 'all' || query.trim() !== '') && (
                           <button
-                            onClick={() => {
-                              setStatusFilter('all')
-                              setProcedureFilter('all')
-                              setPduFilter('all')
-                              setQuery('')
-                              setListPage(1)
-                            }}
+                            onClick={handleClearFilters}
                             className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-500 hover:bg-slate-50 hover:text-slate-700"
                           >
                             清除消息筛选

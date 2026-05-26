@@ -55,3 +55,91 @@ func TestMMMessageTypeNameIncludesServiceReject(t *testing.T) {
 		t.Fatalf("MMMessageTypeName(0x4d) = %q, want Service Reject", got)
 	}
 }
+
+func TestPDUEstablishmentDuplicateRequestBeforeAcceptIsOneSuccessfulFlow(t *testing.T) {
+	result := analyze("sample.pcap", []*Message{
+		{
+			FrameNumber:     1,
+			Category:        CategorySM,
+			MessageTypeCode: "0xc1",
+			MessageType:     SMMessageTypeName("0xc1"),
+			ProcTransID:     "1",
+			PDUSessionID:    "5",
+		},
+		{
+			FrameNumber:     2,
+			Category:        CategorySM,
+			MessageTypeCode: "0xc1",
+			MessageType:     SMMessageTypeName("0xc1"),
+			ProcTransID:     "1",
+			PDUSessionID:    "5",
+		},
+		{
+			FrameNumber:     3,
+			Category:        CategorySM,
+			MessageTypeCode: "0xc2",
+			MessageType:     SMMessageTypeName("0xc2"),
+			ProcTransID:     "1",
+			PDUSessionID:    "5",
+		},
+	})
+
+	sm := FilterSMResult(result)
+	if sm.Statistics.SuccessfulFlows != 1 || sm.Statistics.InProgressFlows != 0 {
+		t.Fatalf("flow stats success/in-progress = %d/%d, want 1/0", sm.Statistics.SuccessfulFlows, sm.Statistics.InProgressFlows)
+	}
+	if len(sm.Flows) != 1 {
+		t.Fatalf("flow count = %d, want 1", len(sm.Flows))
+	}
+	if sm.Flows[0].Status != FlowStatusSuccess {
+		t.Fatalf("flow status = %s, want success", sm.Flows[0].Status)
+	}
+	if sm.Flows[0].StepCount != 3 {
+		t.Fatalf("flow step count = %d, want 3", sm.Flows[0].StepCount)
+	}
+}
+
+func TestPDUEstablishmentParallelTransactionsUseProcedureTransactionID(t *testing.T) {
+	result := analyze("sample.pcap", []*Message{
+		{
+			FrameNumber:     1,
+			Category:        CategorySM,
+			MessageTypeCode: "0xc1",
+			MessageType:     SMMessageTypeName("0xc1"),
+			ProcTransID:     "1",
+			PDUSessionID:    "5",
+		},
+		{
+			FrameNumber:     2,
+			Category:        CategorySM,
+			MessageTypeCode: "0xc1",
+			MessageType:     SMMessageTypeName("0xc1"),
+			ProcTransID:     "2",
+			PDUSessionID:    "6",
+		},
+		{
+			FrameNumber:     3,
+			Category:        CategorySM,
+			MessageTypeCode: "0xc2",
+			MessageType:     SMMessageTypeName("0xc2"),
+			ProcTransID:     "1",
+			PDUSessionID:    "5",
+		},
+		{
+			FrameNumber:     4,
+			Category:        CategorySM,
+			MessageTypeCode: "0xc2",
+			MessageType:     SMMessageTypeName("0xc2"),
+			ProcTransID:     "2",
+			PDUSessionID:    "6",
+		},
+	})
+
+	sm := FilterSMResult(result)
+	if sm.Statistics.SuccessfulFlows != 2 || sm.Statistics.InProgressFlows != 0 {
+		t.Fatalf("flow stats success/in-progress = %d/%d, want 2/0", sm.Statistics.SuccessfulFlows, sm.Statistics.InProgressFlows)
+	}
+	if len(sm.Flows) != 2 {
+		t.Fatalf("flow count = %d, want 2", len(sm.Flows))
+	}
+}

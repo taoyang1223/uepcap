@@ -30,6 +30,10 @@ type Message struct {
 	SecurityHeaderType string       `json:"security_header_type,omitempty"`
 	SecurityHeaderName string       `json:"security_header_name,omitempty"`
 	SequenceNumber     string       `json:"sequence_number,omitempty"`
+	ProcTransID        string       `json:"procedure_transaction_id,omitempty"`
+	PDUSessionID       string       `json:"pdu_session_id,omitempty"`
+	AMFUENGAPID        string       `json:"amf_ue_ngap_id,omitempty"`
+	RANUENGAPID        string       `json:"ran_ue_ngap_id,omitempty"`
 	NGAPProcedureCode  string       `json:"ngap_procedure_code,omitempty"`
 	NGAPPDU            string       `json:"ngap_pdu,omitempty"`
 	ElementIDs         []string     `json:"element_ids,omitempty"`
@@ -104,18 +108,24 @@ type Flow struct {
 	RequestMessage  string     `json:"request_message"`
 	ResultMessage   string     `json:"result_message,omitempty"`
 	FailureReason   string     `json:"failure_reason,omitempty"`
+	ProcTransID     string     `json:"procedure_transaction_id,omitempty"`
+	PDUSessionID    string     `json:"pdu_session_id,omitempty"`
+	AMFUENGAPID     string     `json:"amf_ue_ngap_id,omitempty"`
+	RANUENGAPID     string     `json:"ran_ue_ngap_id,omitempty"`
 	StepCount       int        `json:"step_count"`
 	Steps           []FlowStep `json:"steps"`
 	WiresharkFilter string     `json:"wireshark_filter"`
 }
 
 type FlowStep struct {
-	FrameNumber int          `json:"frame_number"`
-	Timestamp   time.Time    `json:"timestamp"`
-	Direction   NASDirection `json:"direction"`
-	Category    NASCategory  `json:"category"`
-	MessageType string       `json:"message_type"`
-	Code        string       `json:"code"`
+	FrameNumber  int          `json:"frame_number"`
+	Timestamp    time.Time    `json:"timestamp"`
+	Direction    NASDirection `json:"direction"`
+	Category     NASCategory  `json:"category"`
+	MessageType  string       `json:"message_type"`
+	Code         string       `json:"code"`
+	ProcTransID  string       `json:"procedure_transaction_id,omitempty"`
+	PDUSessionID string       `json:"pdu_session_id,omitempty"`
 }
 
 func MMMessageTypeName(code string) string {

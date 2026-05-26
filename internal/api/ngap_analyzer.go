@@ -10,7 +10,8 @@ import (
 )
 
 type NGAPMessagesRequest struct {
-	Limit int `json:"limit,omitempty"`
+	Limit           int    `json:"limit,omitempty"`
+	ProcedureFilter string `json:"procedure_filter,omitempty"`
 }
 
 func (h *Handler) GetNGAPMessages(w http.ResponseWriter, r *http.Request) {
@@ -49,6 +50,6 @@ func (h *Handler) GetNGAPMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out := windowNGAPAnalysis(result, normalizedAnalysisLimit(req.Limit))
+	out := windowNGAPAnalysis(result, normalizedAnalysisLimit(req.Limit), req.ProcedureFilter)
 	writeSuccess(w, out)
 }

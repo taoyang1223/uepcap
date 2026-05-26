@@ -3,6 +3,7 @@ package api
 import (
 	"math"
 	"sort"
+	"strings"
 
 	"gitee.com/yangdadayyds/uepcap/internal/nasanalyzer"
 	"gitee.com/yangdadayyds/uepcap/internal/ngapanalyzer"
@@ -255,9 +256,11 @@ func nasFlowDurationForSort(flow *nasanalyzer.Flow) float64 {
 	return flow.DurationMs
 }
 
-func windowNGAPAnalysis(result *ngapanalyzer.AnalysisResult, limit int) ngapanalyzer.AnalysisResult {
+func windowNGAPAnalysis(result *ngapanalyzer.AnalysisResult, limit int, procedureFilter string) ngapanalyzer.AnalysisResult {
 	out := *result
-	transactions := append([]*ngapanalyzer.Transaction(nil), result.Transactions...)
+	procedureFilter = normalizedProcedureFilter(procedureFilter)
+	sourceTransactions := filterNGAPTransactions(result.Transactions, procedureFilter)
+	transactions := append([]*ngapanalyzer.Transaction(nil), sourceTransactions...)
 	sort.SliceStable(transactions, func(i, j int) bool {
 		left := ngapTransactionDurationForSort(transactions[i])
 		right := ngapTransactionDurationForSort(transactions[j])
@@ -271,10 +274,12 @@ func windowNGAPAnalysis(result *ngapanalyzer.AnalysisResult, limit int) ngapanal
 	} else {
 		out.Transactions = transactions
 	}
-	if len(result.Messages) > limit {
-		out.Messages = append([]*ngapanalyzer.Message(nil), result.Messages[:limit]...)
+	out.Transactions = appendMissingNGAPAttentionTransactions(out.Transactions, sourceTransactions)
+	sourceMessages := filterNGAPMessages(result.Messages, procedureFilter)
+	if len(sourceMessages) > limit {
+		out.Messages = append([]*ngapanalyzer.Message(nil), sourceMessages[:limit]...)
 	} else {
-		out.Messages = append([]*ngapanalyzer.Message(nil), result.Messages...)
+		out.Messages = append([]*ngapanalyzer.Message(nil), sourceMessages...)
 	}
 	if out.Transactions == nil {
 		out.Transactions = []*ngapanalyzer.Transaction{}
@@ -295,9 +300,63 @@ func ngapTransactionDurationForSort(tx *ngapanalyzer.Transaction) float64 {
 	return tx.DurationMs
 }
 
-func windowS1APAnalysis(result *s1apanalyzer.AnalysisResult, limit int) s1apanalyzer.AnalysisResult {
+func filterNGAPTransactions(transactions []*ngapanalyzer.Transaction, procedureFilter string) []*ngapanalyzer.Transaction {
+	if procedureFilter == "" {
+		return transactions
+	}
+	filtered := make([]*ngapanalyzer.Transaction, 0)
+	for _, tx := range transactions {
+		if tx != nil && tx.ProcedureCode == procedureFilter {
+			filtered = append(filtered, tx)
+		}
+	}
+	return filtered
+}
+
+func filterNGAPMessages(messages []*ngapanalyzer.Message, procedureFilter string) []*ngapanalyzer.Message {
+	if procedureFilter == "" {
+		return messages
+	}
+	filtered := make([]*ngapanalyzer.Message, 0)
+	for _, msg := range messages {
+		if msg != nil && msg.ProcedureCode == procedureFilter {
+			filtered = append(filtered, msg)
+		}
+	}
+	return filtered
+}
+
+func appendMissingNGAPAttentionTransactions(window, all []*ngapanalyzer.Transaction) []*ngapanalyzer.Transaction {
+	present := make(map[*ngapanalyzer.Transaction]bool, len(window))
+	for _, tx := range window {
+		if tx != nil {
+			present[tx] = true
+		}
+	}
+	for _, tx := range all {
+		if tx == nil || present[tx] || !isNGAPAttentionTransaction(tx) {
+			continue
+		}
+		window = append(window, tx)
+		present[tx] = true
+	}
+	return window
+}
+
+func isNGAPAttentionTransaction(tx *ngapanalyzer.Transaction) bool {
+	switch tx.Status {
+	case ngapanalyzer.TransactionFailed, ngapanalyzer.TransactionInProgress:
+		return true
+	default:
+		return false
+	}
+}
+
+func windowS1APAnalysis(result *s1apanalyzer.AnalysisResult, limit int, procedureFilter string) s1apanalyzer.AnalysisResult {
 	out := *result
-	transactions := append([]*s1apanalyzer.Transaction(nil), result.Transactions...)
+	procedureFilter = normalizedProcedureFilter(procedureFilter)
+	sourceTransactions := filterS1APTransactions(result.Transactions, procedureFilter)
+	transactions := append([]*s1apanalyzer.Transaction(nil), sourceTransactions...)
 	sort.SliceStable(transactions, func(i, j int) bool {
 		left := s1apTransactionDurationForSort(transactions[i])
 		right := s1apTransactionDurationForSort(transactions[j])
@@ -311,10 +370,12 @@ func windowS1APAnalysis(result *s1apanalyzer.AnalysisResult, limit int) s1apanal
 	} else {
 		out.Transactions = transactions
 	}
-	if len(result.Messages) > limit {
-		out.Messages = append([]*s1apanalyzer.Message(nil), result.Messages[:limit]...)
+	out.Transactions = appendMissingS1APAttentionTransactions(out.Transactions, sourceTransactions)
+	sourceMessages := filterS1APMessages(result.Messages, procedureFilter)
+	if len(sourceMessages) > limit {
+		out.Messages = append([]*s1apanalyzer.Message(nil), sourceMessages[:limit]...)
 	} else {
-		out.Messages = append([]*s1apanalyzer.Message(nil), result.Messages...)
+		out.Messages = append([]*s1apanalyzer.Message(nil), sourceMessages...)
 	}
 	if out.Transactions == nil {
 		out.Transactions = []*s1apanalyzer.Transaction{}
@@ -333,4 +394,64 @@ func s1apTransactionDurationForSort(tx *s1apanalyzer.Transaction) float64 {
 		return math.Inf(-1)
 	}
 	return tx.DurationMs
+}
+
+func filterS1APTransactions(transactions []*s1apanalyzer.Transaction, procedureFilter string) []*s1apanalyzer.Transaction {
+	if procedureFilter == "" {
+		return transactions
+	}
+	filtered := make([]*s1apanalyzer.Transaction, 0)
+	for _, tx := range transactions {
+		if tx != nil && tx.ProcedureCode == procedureFilter {
+			filtered = append(filtered, tx)
+		}
+	}
+	return filtered
+}
+
+func filterS1APMessages(messages []*s1apanalyzer.Message, procedureFilter string) []*s1apanalyzer.Message {
+	if procedureFilter == "" {
+		return messages
+	}
+	filtered := make([]*s1apanalyzer.Message, 0)
+	for _, msg := range messages {
+		if msg != nil && msg.ProcedureCode == procedureFilter {
+			filtered = append(filtered, msg)
+		}
+	}
+	return filtered
+}
+
+func appendMissingS1APAttentionTransactions(window, all []*s1apanalyzer.Transaction) []*s1apanalyzer.Transaction {
+	present := make(map[*s1apanalyzer.Transaction]bool, len(window))
+	for _, tx := range window {
+		if tx != nil {
+			present[tx] = true
+		}
+	}
+	for _, tx := range all {
+		if tx == nil || present[tx] || !isS1APAttentionTransaction(tx) {
+			continue
+		}
+		window = append(window, tx)
+		present[tx] = true
+	}
+	return window
+}
+
+func isS1APAttentionTransaction(tx *s1apanalyzer.Transaction) bool {
+	switch tx.Status {
+	case s1apanalyzer.TransactionFailed, s1apanalyzer.TransactionInProgress:
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizedProcedureFilter(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.EqualFold(value, "all") {
+		return ""
+	}
+	return value
 }

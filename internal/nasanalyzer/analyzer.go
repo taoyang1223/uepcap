@@ -26,6 +26,10 @@ var tsharkNASFields = []string{
 	"nas_5gs.security_header_type",
 	"nas_5gs.seq_no",
 	"nas_5gs.mm.elem_id",
+	"nas_5gs.proc_trans_id",
+	"nas_5gs.pdu_session_id",
+	"ngap.AMF_UE_NGAP_ID",
+	"ngap.RAN_UE_NGAP_ID",
 }
 
 type Analyzer struct{}
@@ -183,6 +187,10 @@ func parseFieldRows(output string) []*Message {
 			NGAPProcedureCode:  firstValue(cols[6]),
 			NGAPPDU:            firstValue(cols[7]),
 			ElementIDs:         splitValues(cols[12]),
+			ProcTransID:        firstValue(cols[13]),
+			PDUSessionID:       firstValue(cols[14]),
+			AMFUENGAPID:        firstValue(cols[15]),
+			RANUENGAPID:        firstValue(cols[16]),
 		}
 		if mmType != "" {
 			msg := base
@@ -277,7 +285,7 @@ func analyzeFlows(messages []*Message) []*Flow {
 	var registration *Flow
 	var authentication *Flow
 	var securityMode *Flow
-	var pduSession *Flow
+	pduSessions := make([]*Flow, 0)
 
 	for _, msg := range messages {
 		code := normalizeHex(msg.MessageTypeCode)
@@ -327,9 +335,13 @@ func analyzeFlows(messages []*Message) []*Flow {
 			}
 		}
 
-		if pduSession != nil && msg.Category == CategorySM {
+		if msg.Category == CategorySM {
 			switch code {
 			case "0xc2", "0xc3":
+				pduSession, index := findMatchingPDUSessionFlow(pduSessions, msg)
+				if pduSession == nil {
+					break
+				}
 				addFlowStep(pduSession, msg)
 				if code == "0xc2" {
 					closeFlow(pduSession, FlowStatusSuccess, msg, "")
@@ -337,7 +349,7 @@ func analyzeFlows(messages []*Message) []*Flow {
 					closeFlow(pduSession, FlowStatusFailed, msg, "PDU session establishment rejected")
 				}
 				flows = append(flows, pduSession)
-				pduSession = nil
+				pduSessions = removeFlowAt(pduSessions, index)
 			}
 		}
 
@@ -361,19 +373,23 @@ func analyzeFlows(messages []*Message) []*Flow {
 			}
 			securityMode = newFlow(FlowSecurityMode, msg)
 		case "0xc1":
-			if pduSession != nil {
-				closeFlow(pduSession, FlowStatusInProgress, registrationMessage(pduSession), "")
-				flows = append(flows, pduSession)
+			if pduSession, _ := findMatchingPDUSessionFlow(pduSessions, msg); pduSession != nil {
+				addFlowStep(pduSession, msg)
+				break
 			}
-			pduSession = newFlow(FlowPDUSessionEst, msg)
+			pduSessions = append(pduSessions, newFlow(FlowPDUSessionEst, msg))
 		}
 	}
 
-	for _, flow := range []*Flow{registration, authentication, securityMode, pduSession} {
+	for _, flow := range []*Flow{registration, authentication, securityMode} {
 		if flow != nil {
 			closeFlow(flow, FlowStatusInProgress, registrationMessage(flow), "")
 			flows = append(flows, flow)
 		}
+	}
+	for _, flow := range pduSessions {
+		closeFlow(flow, FlowStatusInProgress, registrationMessage(flow), "")
+		flows = append(flows, flow)
 	}
 
 	sort.SliceStable(flows, func(i, j int) bool {
@@ -393,10 +409,67 @@ func newFlow(flowType FlowType, msg *Message) *Flow {
 		StartFrame:      msg.FrameNumber,
 		StartTime:       msg.Timestamp,
 		RequestMessage:  msg.MessageType,
+		ProcTransID:     msg.ProcTransID,
+		PDUSessionID:    msg.PDUSessionID,
+		AMFUENGAPID:     msg.AMFUENGAPID,
+		RANUENGAPID:     msg.RANUENGAPID,
 		WiresharkFilter: fmt.Sprintf("frame.number == %d", msg.FrameNumber),
 	}
 	addFlowStep(flow, msg)
 	return flow
+}
+
+func findMatchingPDUSessionFlow(flows []*Flow, msg *Message) (*Flow, int) {
+	bestIndex := -1
+	bestScore := 0
+	for i, flow := range flows {
+		score, conflict := pduSessionMatchScore(flow, msg)
+		if conflict {
+			continue
+		}
+		if score > bestScore {
+			bestScore = score
+			bestIndex = i
+		}
+	}
+	if bestIndex >= 0 {
+		return flows[bestIndex], bestIndex
+	}
+	if len(flows) == 1 {
+		score, conflict := pduSessionMatchScore(flows[0], msg)
+		if !conflict && score == 0 {
+			return flows[0], 0
+		}
+	}
+	return nil, -1
+}
+
+func pduSessionMatchScore(flow *Flow, msg *Message) (int, bool) {
+	score := 0
+	conflict := false
+	score += compareFlowValue(flow.ProcTransID, msg.ProcTransID, &conflict)
+	score += compareFlowValue(flow.PDUSessionID, msg.PDUSessionID, &conflict)
+	score += compareFlowValue(flow.AMFUENGAPID, msg.AMFUENGAPID, &conflict)
+	score += compareFlowValue(flow.RANUENGAPID, msg.RANUENGAPID, &conflict)
+	return score, conflict
+}
+
+func compareFlowValue(flowValue, msgValue string, conflict *bool) int {
+	if flowValue == "" || msgValue == "" {
+		return 0
+	}
+	if flowValue != msgValue {
+		*conflict = true
+		return 0
+	}
+	return 1
+}
+
+func removeFlowAt(flows []*Flow, index int) []*Flow {
+	if index < 0 || index >= len(flows) {
+		return flows
+	}
+	return append(flows[:index], flows[index+1:]...)
 }
 
 func addFlowStep(flow *Flow, msg *Message) {
@@ -407,15 +480,29 @@ func addFlowStep(flow *Flow, msg *Message) {
 		return
 	}
 	flow.Steps = append(flow.Steps, FlowStep{
-		FrameNumber: msg.FrameNumber,
-		Timestamp:   msg.Timestamp,
-		Direction:   msg.Direction,
-		Category:    msg.Category,
-		MessageType: msg.MessageType,
-		Code:        msg.MessageTypeCode,
+		FrameNumber:  msg.FrameNumber,
+		Timestamp:    msg.Timestamp,
+		Direction:    msg.Direction,
+		Category:     msg.Category,
+		MessageType:  msg.MessageType,
+		Code:         msg.MessageTypeCode,
+		ProcTransID:  msg.ProcTransID,
+		PDUSessionID: msg.PDUSessionID,
 	})
 	flow.EndFrame = msg.FrameNumber
 	flow.EndTime = msg.Timestamp
+	if flow.ProcTransID == "" {
+		flow.ProcTransID = msg.ProcTransID
+	}
+	if flow.PDUSessionID == "" {
+		flow.PDUSessionID = msg.PDUSessionID
+	}
+	if flow.AMFUENGAPID == "" {
+		flow.AMFUENGAPID = msg.AMFUENGAPID
+	}
+	if flow.RANUENGAPID == "" {
+		flow.RANUENGAPID = msg.RANUENGAPID
+	}
 	if !flow.StartTime.IsZero() && !flow.EndTime.IsZero() {
 		flow.DurationMs = flow.EndTime.Sub(flow.StartTime).Seconds() * 1000
 	}
@@ -492,6 +579,18 @@ func messageFilter(msg *Message) string {
 		fmt.Sprintf("%s == %s", field, displayHex(msg.MessageTypeCode)),
 		addressFilter(msg.SourceIP),
 		addressFilter(msg.DestinationIP),
+	}
+	if msg.ProcTransID != "" {
+		parts = append(parts, fmt.Sprintf("nas_5gs.proc_trans_id == %s", msg.ProcTransID))
+	}
+	if msg.PDUSessionID != "" {
+		parts = append(parts, fmt.Sprintf("nas_5gs.pdu_session_id == %s", msg.PDUSessionID))
+	}
+	if msg.AMFUENGAPID != "" {
+		parts = append(parts, fmt.Sprintf("ngap.AMF_UE_NGAP_ID == %s", msg.AMFUENGAPID))
+	}
+	if msg.RANUENGAPID != "" {
+		parts = append(parts, fmt.Sprintf("ngap.RAN_UE_NGAP_ID == %s", msg.RANUENGAPID))
 	}
 	return strings.Join(parts, " && ")
 }
