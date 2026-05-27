@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  ClipboardPaste,
   FileArchive,
   FileDiff,
   Loader2,
@@ -124,8 +125,8 @@ interface StructureDiffResult {
 }
 
 interface ComparisonResult {
-  left: ComparableMessage
-  right: ComparableMessage
+  title: string
+  subtitle: string
   leftTree: string
   rightTree: string
   rows: DiffRow[]
@@ -206,6 +207,9 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
   const [comparison, setComparison] = useState<ComparisonResult | null>(null)
   const [compareError, setCompareError] = useState<string | null>(null)
   const [comparing, setComparing] = useState(false)
+  const [pasteInputOpen, setPasteInputOpen] = useState(false)
+  const [pasteDrafts, setPasteDrafts] = useState<Record<CaptureSide, string>>({ left: '', right: '' })
+  const [pasteCompareError, setPasteCompareError] = useState<string | null>(null)
 
   const config = useMemo(() => protocolConfigs.find(item => item.key === protocol) || protocolConfigs[0], [protocol])
   const leftSelected = useMemo(() => selectedMessage(captures.left), [captures.left])
@@ -224,6 +228,8 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
     setProtocol(nextProtocol)
     setComparison(null)
     setCompareError(null)
+    setPasteInputOpen(false)
+    setPasteCompareError(null)
     setCaptures(previous => ({
       left: resetCaptureAnalysis(previous.left),
       right: resetCaptureAnalysis(previous.right),
@@ -237,12 +243,16 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
     }))
     setComparison(null)
     setCompareError(null)
+    setPasteInputOpen(false)
+    setPasteCompareError(null)
   }, [updateCapture])
 
   const handleClearJob = useCallback((side: CaptureSide) => {
     updateCapture(side, () => ({ ...emptyCaptureState }))
     setComparison(null)
     setCompareError(null)
+    setPasteInputOpen(false)
+    setPasteCompareError(null)
   }, [updateCapture])
 
   const loadMessages = useCallback(async (side: CaptureSide) => {
@@ -260,6 +270,8 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
     }))
     setComparison(null)
     setCompareError(null)
+    setPasteInputOpen(false)
+    setPasteCompareError(null)
 
     try {
       const response = await fetch(`/api/jobs/${capture.job.id}/${config.endpoint}`, {
@@ -301,6 +313,8 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
     }))
     setComparison(null)
     setCompareError(null)
+    setPasteInputOpen(false)
+    setPasteCompareError(null)
   }, [updateCapture])
 
   const handleCompare = useCallback(async () => {
@@ -325,19 +339,60 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
       ])
       const diffResult = buildLineDiff(leftTree, rightTree)
       setComparison({
-        left,
-        right,
+        title: left.typeLabel,
+        subtitle: `左 Frame ${left.frameNumber} · 右 Frame ${right.frameNumber} · ${left.treeProtocol}`,
         leftTree,
         rightTree,
         rows: diffResult.rows,
         positionHints: diffResult.positionHints,
       })
+      setPasteInputOpen(false)
+      setPasteCompareError(null)
     } catch (err) {
       setCompareError('消息详情对比失败: ' + (err as Error).message)
     } finally {
       setComparing(false)
     }
   }, [captures.left, captures.right])
+
+  const handlePasteDraftChange = useCallback((side: CaptureSide, value: string) => {
+    setPasteDrafts(previous => ({ ...previous, [side]: value }))
+    setPasteCompareError(null)
+  }, [])
+
+  const handleOpenPasteInput = useCallback(() => {
+    setPasteInputOpen(true)
+    setPasteCompareError(null)
+    if (!comparison) {
+      setComparison(createEmptyPasteComparison())
+    }
+  }, [comparison])
+
+  const handleClosePasteInput = useCallback(() => {
+    setPasteInputOpen(false)
+    setPasteCompareError(null)
+  }, [])
+
+  const handleComparePastedContent = useCallback(() => {
+    try {
+      const leftTree = pastedInputToTree(pasteDrafts.left, '左侧内容')
+      const rightTree = pastedInputToTree(pasteDrafts.right, '右侧内容')
+      const diffResult = buildLineDiff(leftTree, rightTree)
+      setComparison({
+        title: '复制内容结构对比',
+        subtitle: '左侧复制内容 · 右侧复制内容 · 已忽略具体值差异',
+        leftTree,
+        rightTree,
+        rows: diffResult.rows,
+        positionHints: diffResult.positionHints,
+      })
+      setPasteInputOpen(false)
+      setPasteCompareError(null)
+      setCompareError(null)
+    } catch (err) {
+      setPasteCompareError((err as Error).message)
+    }
+  }, [pasteDrafts.left, pasteDrafts.right])
 
   const diffStats = useMemo(() => getDiffStats(comparison?.rows || []), [comparison])
   const structureDiffCount = diffStats.changed + diffStats.left + diffStats.right
@@ -452,6 +507,14 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
                 {comparing ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileDiff className="h-4 w-4" />}
                 <span>{comparing ? '正在对比...' : '对比所选消息'}</span>
               </button>
+              <button
+                type="button"
+                onClick={handleOpenPasteInput}
+                className="inline-flex items-center justify-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm font-black text-blue-700 transition hover:border-blue-300 hover:bg-white"
+              >
+                <ClipboardPaste className="h-4 w-4" />
+                <span>粘贴内容对比</span>
+              </button>
             </div>
           </div>
         </section>
@@ -461,19 +524,34 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
             <div className="border-b border-slate-200 bg-slate-50 px-5 py-4">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                 <div>
-                  <p className="text-base font-black text-slate-900">{comparison.left.typeLabel}</p>
-                  <p className="mt-1 text-sm font-semibold text-slate-500">
-                    左 Frame {comparison.left.frameNumber} · 右 Frame {comparison.right.frameNumber} · {comparison.left.treeProtocol}
-                  </p>
+                  <p className="text-base font-black text-slate-900">{comparison.title}</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-500">{comparison.subtitle}</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 text-xs font-black">
+                  {pasteCompareError && (
+                    <span className="inline-flex rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-rose-700">
+                      {pasteCompareError}
+                    </span>
+                  )}
                   <SummaryPill label="结构差异" value={structureDiffCount} title="结构无法完全对齐的数量，已忽略具体值差异" className="border-amber-200 bg-amber-50 text-amber-700" />
                   <SummaryPill label="位置调整" value={comparison.positionHints.length} title="同一结构在左右消息中出现位置不同，需要按中间两列对齐查看" className="border-blue-200 bg-blue-50 text-blue-700" />
                   <SummaryPill label="结构相同" value={diffStats.same} title="结构相同，具体值可能不同但已忽略" className="border-slate-200 bg-white text-slate-600" />
                 </div>
               </div>
             </div>
-            <FourPaneDiffViewer leftTree={comparison.leftTree} rightTree={comparison.rightTree} rows={comparison.rows} hints={comparison.positionHints} />
+            <FourPaneDiffViewer
+              leftTree={comparison.leftTree}
+              rightTree={comparison.rightTree}
+              rows={comparison.rows}
+              hints={comparison.positionHints}
+              pasteInputOpen={pasteInputOpen}
+              pasteDrafts={pasteDrafts}
+              pasteCompareError={pasteCompareError}
+              onPasteDraftChange={handlePasteDraftChange}
+              onOpenPasteInput={handleOpenPasteInput}
+              onClosePasteInput={handleClosePasteInput}
+              onComparePastedContent={handleComparePastedContent}
+            />
           </section>
         )}
       </main>
@@ -779,7 +857,31 @@ interface ConnectorLine {
   y2: number
 }
 
-function FourPaneDiffViewer({ leftTree, rightTree, rows, hints }: { leftTree: string; rightTree: string; rows: DiffRow[]; hints: PositionHint[] }) {
+function FourPaneDiffViewer({
+  leftTree,
+  rightTree,
+  rows,
+  hints,
+  pasteInputOpen,
+  pasteDrafts,
+  pasteCompareError,
+  onPasteDraftChange,
+  onOpenPasteInput,
+  onClosePasteInput,
+  onComparePastedContent,
+}: {
+  leftTree: string
+  rightTree: string
+  rows: DiffRow[]
+  hints: PositionHint[]
+  pasteInputOpen: boolean
+  pasteDrafts: Record<CaptureSide, string>
+  pasteCompareError: string | null
+  onPasteDraftChange: (side: CaptureSide, value: string) => void
+  onOpenPasteInput: () => void
+  onClosePasteInput: () => void
+  onComparePastedContent: () => void
+}) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const frameRef = useRef<number | null>(null)
   const leftAlignedScrollRef = useRef<HTMLDivElement | null>(null)
@@ -916,7 +1018,14 @@ function FourPaneDiffViewer({ leftTree, rightTree, rows, hints }: { leftTree: st
           rows={rows}
           hintIndexesByAlignedLine={leftHintIndexesByAlignedLine}
           expanded={alignedExpanded}
+          pasteInputOpen={pasteInputOpen}
+          pasteValue={pasteDrafts.left}
+          pasteCompareError={pasteCompareError}
           onToggleExpanded={toggleAlignedExpanded}
+          onOpenPasteInput={onOpenPasteInput}
+          onClosePasteInput={onClosePasteInput}
+          onPasteChange={value => onPasteDraftChange('left', value)}
+          onComparePastedContent={onComparePastedContent}
           scrollRef={leftAlignedScrollRef}
           onScroll={handleLeftAlignedScroll}
           className="border border-slate-200"
@@ -927,7 +1036,14 @@ function FourPaneDiffViewer({ leftTree, rightTree, rows, hints }: { leftTree: st
           rows={rows}
           hintIndexesByAlignedLine={rightHintIndexesByAlignedLine}
           expanded={alignedExpanded}
+          pasteInputOpen={pasteInputOpen}
+          pasteValue={pasteDrafts.right}
+          pasteCompareError={pasteCompareError}
           onToggleExpanded={toggleAlignedExpanded}
+          onOpenPasteInput={onOpenPasteInput}
+          onClosePasteInput={onClosePasteInput}
+          onPasteChange={value => onPasteDraftChange('right', value)}
+          onComparePastedContent={onComparePastedContent}
           scrollRef={rightAlignedScrollRef}
           onScroll={handleRightAlignedScroll}
           className="border border-slate-200"
@@ -970,6 +1086,19 @@ function PaneIconButton({ title, onClick, children }: { title: string; onClick: 
       title={title}
       onClick={onClick}
       className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 shadow-sm hover:bg-slate-50 hover:text-slate-900"
+    >
+      {children}
+    </button>
+  )
+}
+
+function PaneTextButton({ title, onClick, children }: { title: string; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      className="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-black text-slate-600 shadow-sm hover:bg-slate-50 hover:text-slate-900"
     >
       {children}
     </button>
@@ -1030,44 +1159,119 @@ function OriginalTreePane({ title, side, lines, hintIndexesByLine, collapsed, cl
   )
 }
 
-function AlignedPositionPane({ title, side, rows, hintIndexesByAlignedLine, expanded, className = '', scrollRef, onToggleExpanded, onScroll }: { title: string; side: CaptureSide; rows: DiffRow[]; hintIndexesByAlignedLine: Map<number, number[]>; expanded: boolean; className?: string; scrollRef: Ref<HTMLDivElement>; onToggleExpanded: () => void; onScroll: (event: UIEvent<HTMLDivElement>) => void }) {
+function AlignedPositionPane({
+  title,
+  side,
+  rows,
+  hintIndexesByAlignedLine,
+  expanded,
+  pasteInputOpen,
+  pasteValue,
+  pasteCompareError,
+  className = '',
+  scrollRef,
+  onToggleExpanded,
+  onOpenPasteInput,
+  onClosePasteInput,
+  onPasteChange,
+  onComparePastedContent,
+  onScroll,
+}: {
+  title: string
+  side: CaptureSide
+  rows: DiffRow[]
+  hintIndexesByAlignedLine: Map<number, number[]>
+  expanded: boolean
+  pasteInputOpen: boolean
+  pasteValue: string
+  pasteCompareError: string | null
+  className?: string
+  scrollRef: Ref<HTMLDivElement>
+  onToggleExpanded: () => void
+  onOpenPasteInput: () => void
+  onClosePasteInput: () => void
+  onPasteChange: (value: string) => void
+  onComparePastedContent: () => void
+  onScroll: (event: UIEvent<HTMLDivElement>) => void
+}) {
   return (
     <PaneFrame
       title={title}
       tone="align"
       className={className}
       actions={(
-        <PaneIconButton title={expanded ? '恢复四栏宽度' : '横向扩展对齐区'} onClick={onToggleExpanded}>
-          {expanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-        </PaneIconButton>
+        <>
+          {pasteInputOpen ? (
+            <>
+              <PaneTextButton title="对比左右复制内容" onClick={onComparePastedContent}>
+                <FileDiff className="h-3.5 w-3.5" />
+                对比
+              </PaneTextButton>
+              <PaneIconButton title="关闭内容输入" onClick={onClosePasteInput}>
+                <X className="h-4 w-4" />
+              </PaneIconButton>
+            </>
+          ) : (
+            <PaneTextButton title="粘贴复制内容进行结构对比" onClick={onOpenPasteInput}>
+              <ClipboardPaste className="h-3.5 w-3.5" />
+              粘贴
+            </PaneTextButton>
+          )}
+          <PaneIconButton title={expanded ? '恢复四栏宽度' : '横向扩展对齐区'} onClick={onToggleExpanded}>
+            {expanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+          </PaneIconButton>
+        </>
       )}
       scrollRef={scrollRef}
       onScroll={onScroll}
     >
-      {rows.map((row, index) => {
-        const alignedLineNumber = row.alignedLineNumber || index + 1
-        const lineNumber = side === 'left' ? row.leftLineNumber : row.rightLineNumber
-        const hintIndexes = hintIndexesByAlignedLine.get(alignedLineNumber) || []
-        return (
-          <pre
-            key={`${side}:aligned:${index}:${row.kind}`}
-            className={`relative min-h-8 whitespace-pre border-b border-slate-100 py-2 pl-16 pr-4 font-mono text-xs leading-5 ${diffCellClass(row.kind, side)}`}
-          >
-            {hintIndexes.map(hintIndex => (
-              <span
-                key={`${side}:target:${hintIndex}`}
-                data-connector={`${side}-target-${hintIndex}`}
-                className={`absolute top-1/2 h-0 w-0 ${side === 'left' ? 'left-0' : 'right-0'}`}
-              />
-            ))}
-            <span className={`absolute left-2 top-2 w-10 text-right font-sans text-[10px] font-black ${lineNumber ? 'text-blue-600' : 'text-slate-300'}`}>
-              {lineNumber || ''}
-            </span>
-            {renderDiffContent(row, side) || ' '}
-          </pre>
-        )
-      })}
+      {pasteInputOpen ? (
+        <PasteTextEditor side={side} value={pasteValue} error={pasteCompareError} onChange={onPasteChange} />
+      ) : (
+        rows.map((row, index) => {
+          const alignedLineNumber = row.alignedLineNumber || index + 1
+          const lineNumber = side === 'left' ? row.leftLineNumber : row.rightLineNumber
+          const hintIndexes = hintIndexesByAlignedLine.get(alignedLineNumber) || []
+          return (
+            <pre
+              key={`${side}:aligned:${index}:${row.kind}`}
+              className={`relative min-h-8 whitespace-pre border-b border-slate-100 py-2 pl-16 pr-4 font-mono text-xs leading-5 ${diffCellClass(row.kind, side)}`}
+            >
+              {hintIndexes.map(hintIndex => (
+                <span
+                  key={`${side}:target:${hintIndex}`}
+                  data-connector={`${side}-target-${hintIndex}`}
+                  className={`absolute top-1/2 h-0 w-0 ${side === 'left' ? 'left-0' : 'right-0'}`}
+                />
+              ))}
+              <span className={`absolute left-2 top-2 w-10 text-right font-sans text-[10px] font-black ${lineNumber ? 'text-blue-600' : 'text-slate-300'}`}>
+                {lineNumber || ''}
+              </span>
+              {renderDiffContent(row, side) || ' '}
+            </pre>
+          )
+        })
+      )}
     </PaneFrame>
+  )
+}
+
+function PasteTextEditor({ side, value, error, onChange }: { side: CaptureSide; value: string; error: string | null; onChange: (value: string) => void }) {
+  return (
+    <div className="flex min-h-full min-w-[360px] flex-col gap-3 bg-white p-3">
+      {error && (
+        <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-black text-rose-700">
+          {error}
+        </div>
+      )}
+      <textarea
+        value={value}
+        onChange={event => onChange(event.target.value)}
+        spellCheck={false}
+        placeholder={`粘贴${side === 'left' ? '左侧' : '右侧'}复制内容，例如 Wireshark 协议树文本`}
+        className="min-h-[610px] flex-1 resize-none rounded-lg border border-slate-200 bg-slate-50 p-3 font-mono text-xs leading-5 text-slate-800 outline-none focus:border-blue-300 focus:bg-white focus:ring-2 focus:ring-blue-100"
+      />
+    </div>
   )
 }
 
@@ -1291,6 +1495,106 @@ async function fetchPacketTree(jobId: string, message: ComparableMessage) {
   return data.data.tree
 }
 
+function createEmptyPasteComparison(): ComparisonResult {
+  return {
+    title: '复制内容结构对比',
+    subtitle: '在中间两列粘贴左右复制内容后点击对比',
+    leftTree: '',
+    rightTree: '',
+    rows: [],
+    positionHints: [],
+  }
+}
+
+function pastedInputToTree(source: string, label: string) {
+  const trimmed = source.trim()
+  if (!trimmed) {
+    throw new Error(`${label} 不能为空`)
+  }
+
+  if (looksLikeJson(trimmed)) {
+    try {
+      return buildJsonTreeLines(JSON.parse(trimmed)).join('\n')
+    } catch (err) {
+      throw new Error(`${label} JSON 格式错误: ${(err as Error).message}`)
+    }
+  }
+
+  return normalizePastedTreeText(trimmed)
+}
+
+function looksLikeJson(value: string) {
+  return (value.startsWith('{') && value.endsWith('}')) || (value.startsWith('[') && value.endsWith(']'))
+}
+
+function normalizePastedTreeText(value: string) {
+  return value
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map(line => line.replace(/\s+$/g, ''))
+    .filter(line => line.trim() !== '')
+    .join('\n')
+}
+
+function buildJsonTreeLines(value: unknown, label = 'JSON', depth = 0): string[] {
+  const lines = [`${'  '.repeat(depth)}${formatJsonKey(label)}: ${pasteValueKind(value)}`]
+  if (Array.isArray(value)) {
+    for (const item of uniqueJsonArrayItems(value)) {
+      lines.push(...buildJsonTreeLines(item, '[]', depth + 1))
+    }
+    return lines
+  }
+  if (isJsonObject(value)) {
+    for (const key of Object.keys(value).sort((left, right) => left.localeCompare(right))) {
+      lines.push(...buildJsonTreeLines(value[key], key, depth + 1))
+    }
+  }
+  return lines
+}
+
+function uniqueJsonArrayItems(items: unknown[]) {
+  const seen = new Set<string>()
+  const uniqueItems: unknown[] = []
+  for (const item of items) {
+    const signature = jsonStructureSignature(item)
+    if (seen.has(signature)) continue
+    seen.add(signature)
+    uniqueItems.push(item)
+  }
+  return uniqueItems
+}
+
+function jsonStructureSignature(value: unknown): string {
+  if (Array.isArray(value)) {
+    const childSignatures = uniqueJsonArrayItems(value)
+      .map(item => jsonStructureSignature(item))
+      .sort()
+      .join('|')
+    return `array[${childSignatures}]`
+  }
+  if (isJsonObject(value)) {
+    return `object{${Object.keys(value)
+      .sort((left, right) => left.localeCompare(right))
+      .map(key => `${formatJsonKey(key)}:${jsonStructureSignature(value[key])}`)
+      .join(',')}}`
+  }
+  return pasteValueKind(value)
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function pasteValueKind(value: unknown) {
+  if (Array.isArray(value)) return 'array'
+  if (value === null) return 'null'
+  return typeof value
+}
+
+function formatJsonKey(key: string) {
+  return key.replace(/\s+/g, ' ').trim() || '""'
+}
+
 function buildLineDiff(leftTree: string, rightTree: string): StructureDiffResult {
   const leftLines = parseTreeLines(leftTree)
   const rightLines = parseTreeLines(rightTree)
@@ -1464,7 +1768,7 @@ function parseTreeLines(tree: string): ParsedTreeLine[] {
     const key = `${indent}|${parentPath}>${content}`
     const familyKey = `${indent}|${parentPath}>${family}`
     const looseFamilyKey = `${indent}|${family}`
-    const anchorKey = structureAnchorKey(line, content, family, indent)
+    const anchorKey = structureAnchorKey(line, content, family, indent, parentPath)
     if (content !== '') {
       stack.push({ indent, key: content })
     }
@@ -1472,13 +1776,13 @@ function parseTreeLines(tree: string): ParsedTreeLine[] {
   })
 }
 
-function structureAnchorKey(line: string, content: string, family: string, indent: number) {
+function structureAnchorKey(line: string, content: string, family: string, indent: number, parentPath: string) {
   const trimmed = line.trim()
   if (content === '' || family === '') return ''
   if (trimmed.includes(' = ')) return ''
-  if (/^(IE Length|Length|Flags?|Spare|Sequence Number|SEID|IPv4|IPv6|Rule ID|PDR ID|FAR ID|QER ID|URR ID)\b/i.test(content)) return ''
+  if (isScalarStructureLabel(family) || isScalarStructureLabel(content)) return ''
   if (/^(?:\.*[01]\.*\s*)+[=:]/.test(trimmed)) return ''
-  return `${indent}|${family}`
+  return `${indent}|${parentPath}>${family}`
 }
 
 function groupTreeLinesByKey(lines: ParsedTreeLine[], keyFn: (line: ParsedTreeLine) => string = line => line.key) {
@@ -1500,7 +1804,7 @@ function shouldShowPositionHint(left: ParsedTreeLine, right: ParsedTreeLine) {
   if (!isPositionHintStructureLine(left.line)) return false
   const label = structureHintLabel(left.line)
   if (label === '') return false
-  if (/^(spare|flags?|length|sequence number|ipv4|ipv6|seid|rule id|pdr id|ie type|ie length)$/i.test(label)) return false
+  if (isScalarStructureLabel(label)) return false
   return Math.abs(left.index - right.index) >= 3
 }
 
@@ -1508,11 +1812,15 @@ function isPositionHintStructureLine(line: string) {
   const trimmed = line.trim()
   if (trimmed === '') return false
   if (trimmed.includes(' = ')) return false
-  if (/^(IE Type|IE Length|Flags?|Length|Sequence Number)\b/i.test(trimmed)) return false
+  const content = normalizedStructureContentFromLine(line)
+  const label = structureHintLabel(line)
+  if (isScalarStructureLabel(label) || isScalarStructureLabel(content)) return false
   if (/^(?:\.*[01]\.*\s*)+[=:]/.test(trimmed)) return false
-  if (/^(IPv4|IPv6|SEID|Rule ID|PDR ID|F-SEID|F-TEID)\b/i.test(trimmed)) return false
   if (/:\s*(?:0x[0-9a-fA-F]+|-?\d+|\d{1,3}(?:\.\d{1,3}){3})\b/.test(trimmed)) return false
-  return trimmed.endsWith(':') || trimmed.includes('[Grouped IE]') || /^(Create|Update|Remove|Forwarding|Outer Header|SDF|UE IP|Network Instance)\b/i.test(trimmed)
+  return trimmed.endsWith(':')
+    || trimmed.includes('[Grouped IE]')
+    || /^(Item|ProtocolIE|IE|AVP|Create|Update|Remove|Forwarding|Outer Header|SDF|UE IP|Network Instance|Bearer|PDU Session|QoS|Transport|Security|Authentication|Registration|Service|Attach|Detach|Handover|Setup|Release|Modification|Establishment|Initial|Uplink|Downlink|NAS|GTP|NGAP|S1AP)\b/i.test(trimmed)
+    || /\b(PDU|Message|Field|Container|Context|Request|Response|Command|Accept|Reject|Identity|Information|Parameters|List)\b/i.test(trimmed)
 }
 
 function buildPositionHint(left: ParsedTreeLine, right: ParsedTreeLine, alignedLineNumber: number): PositionHint {
@@ -1546,11 +1854,11 @@ function normalizedStructureContentFromLine(line: string) {
   if (equalsIndex >= 0) {
     content = content.slice(equalsIndex + 3).trim()
   }
-  return normalizeStructureContent(content)
+  return canonicalStructureContent(normalizeStructureContent(content))
 }
 
 function structureFamilyContent(content: string) {
-  if (/^(IE Type|Message Type|Procedure|Packet Forwarding Control Protocol|S1 Application Protocol|NG Application Protocol)\b/i.test(content)) {
+  if (/^(IE Type|Message Type|Procedure|Packet Forwarding Control Protocol|S1 Application Protocol|NG Application Protocol|GPRS Tunneling Protocol|Non-Access-Stratum|NAS-5GS|NAS-EPS|Diameter Protocol)\b/i.test(content)) {
     return content
   }
   const spacedColonIndex = content.indexOf(' : ')
@@ -1564,12 +1872,38 @@ function structureFamilyContent(content: string) {
   return content
 }
 
+function canonicalStructureContent(content: string) {
+  const colonIndex = content.indexOf(':')
+  if (colonIndex <= 0) return content
+
+  const label = content.slice(0, colonIndex).trim()
+  const value = content.slice(colonIndex + 1).trim()
+  if (shouldPreserveColonValue(label, value, content)) {
+    return content
+  }
+  return label
+}
+
+function shouldPreserveColonValue(label: string, value: string, content: string) {
+  if (value === '') return false
+  if (/^(IE Type|Message Type|Procedure|NGAP-PDU|S1AP-PDU|GTPv2 Message Type|GTP Message Type|NAS Message Type)$/i.test(label)) return true
+  if (/^Item\b/i.test(label) && !/^(?:0x[0-9a-fA-F]+|-?\d+|\d{1,3}(?:\.\d{1,3}){3})$/.test(value)) return true
+  if (/^\[[^\]]+\]$/.test(value)) return true
+  if (content.includes('[Grouped IE]')) return true
+  return false
+}
+
+function isScalarStructureLabel(label: string) {
+  return /^(?:IE Length|Length|Flags?|Spare|Sequence Number|Seq(?:uence)?|SEID|TEID|GRE Key|IPv4|IPv6|IP Address|Port|Rule ID|PDR ID|FAR ID|QER ID|URR ID|Bearer ID|EPS Bearer ID|EBI|QFI|RAB ID|E-RAB ID|DRB ID|RAN UE NGAP ID|AMF UE NGAP ID|MME UE S1AP ID|eNB UE S1AP ID|ENB UE S1AP ID|gNB CU UE F1AP ID|gNB DU UE F1AP ID|Procedure Code|Criticality|Presence|ID|Value|Cause|TAC|MCC|MNC|PLMN|Cell Identity|ECGI|NCGI|TAI|GUMMEI|GUAMI|TMSI|5G-TMSI|M-TMSI|IMSI|SUCI|SUPI|MSIN|IMEI|IMEISV|APN|DNN|S-NSSAI|SST|SD|PTI|PDU Session ID|Message Authentication Code|NAS Key Set Identifier|Security Header Type|Protocol Discriminator|Access Type|Direction|Priority|Precedence|Delay|Timestamp|Time|Counter|Mask|Offset|Size|Checksum|Window|Stream identifier|Verification tag)\b/i.test(label.trim())
+}
+
 function normalizeStructureContent(content: string) {
   return content
     .replace(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g, '')
     .replace(/\b[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{0,4}){2,}\b/g, '')
     .replace(/\b0x[0-9a-fA-F]+\b/g, '')
     .replace(/\b(?:true|false|True|False)\b/g, '')
+    .replace(/\b(?:present|not present|Present|Not Present)\b/g, '')
     .replace(/(^|[^A-Za-z0-9_-])-?\d+(?:\.\d+)?(?=$|[^A-Za-z0-9_-])/g, '$1')
     .replace(/\(\s*\)/g, '')
     .replace(/\[\s*\]/g, '')
