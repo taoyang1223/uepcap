@@ -35,7 +35,8 @@ func newMessageStatsCacheStore() *messageStatsCacheStore {
 
 // MessageStatsRequest represents a message statistics request body.
 type MessageStatsRequest struct {
-	IMSIs []string `json:"imsis"`
+	IMSIs     []string `json:"imsis"`
+	BatchRows int      `json:"batch_rows,omitempty"`
 }
 
 // GetMessageStats handles POST /api/jobs/{id}/message-stats.
@@ -63,6 +64,81 @@ func (h *Handler) GetMessageStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeSuccess(w, result)
+}
+
+// StreamMessageStats handles POST /api/jobs/{id}/message-stats/stream.
+func (h *Handler) StreamMessageStats(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	job, ok := h.jobMgr.GetJob(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+
+	var req MessageStatsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
+		return
+	}
+
+	flusher, ok := prepareEventStream(w)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	key := messageStatsCacheKey(id, req.IMSIs)
+	h.messageStats.mu.Lock()
+	if result, ok := h.messageStats.results[key]; ok {
+		h.messageStats.mu.Unlock()
+		sendSSEEvent(w, flusher, "done", map[string]any{
+			"progress": statistics.StreamProgress{Done: true},
+			"result":   result,
+			"cached":   true,
+		})
+		return
+	}
+	h.messageStats.mu.Unlock()
+
+	ctx := r.Context()
+	scopeFilter, err := resolveMessageStatsScope(ctx, job.MergedPcap, req.IMSIs)
+	if err != nil {
+		sendSSEEvent(w, flusher, "error", err.Error())
+		return
+	}
+
+	sendSSEEvent(w, flusher, "progress", map[string]any{
+		"phase": "counting",
+	})
+	result, err := statistics.CountStream(ctx, job.MergedPcap, scopeFilter, normalizedStreamBatchRows(req.BatchRows), func(progress statistics.StreamProgress, result *statistics.Result) error {
+		if len(req.IMSIs) > 0 {
+			result.ScopeFilter = fmt.Sprintf("%d 个 UE", len(cleanIMSIs(req.IMSIs)))
+		} else {
+			result.ScopeFilter = "全量抓包"
+		}
+		event := "partial_result"
+		if progress.Done {
+			event = "done"
+		}
+		sendSSEEvent(w, flusher, event, map[string]any{
+			"progress": progress,
+			"result":   result,
+		})
+		return nil
+	})
+	if err != nil {
+		sendSSEEvent(w, flusher, "error", err.Error())
+		return
+	}
+	if len(req.IMSIs) > 0 {
+		result.ScopeFilter = fmt.Sprintf("%d 个 UE", len(cleanIMSIs(req.IMSIs)))
+	} else {
+		result.ScopeFilter = "全量抓包"
+	}
+
+	h.messageStats.mu.Lock()
+	h.messageStats.results[key] = result
+	h.messageStats.mu.Unlock()
 }
 
 func (h *Handler) messageStatsResult(ctx context.Context, jobID, pcapFile string, imsis []string) (*statistics.Result, error) {

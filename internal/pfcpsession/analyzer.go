@@ -73,6 +73,60 @@ func (a *Analyzer) AnalyzeFile(ctx context.Context, pcapFile string) (*AnalysisR
 	return result, nil
 }
 
+type StreamProgress struct {
+	ProcessedMessages int  `json:"processed_messages"`
+	ChunkIndex        int  `json:"chunk_index"`
+	ChunkMessages     int  `json:"chunk_messages"`
+	ChunkTarget       int  `json:"chunk_target"`
+	Done              bool `json:"done,omitempty"`
+}
+
+func (a *Analyzer) AnalyzeFileStream(ctx context.Context, pcapFile string, batchMessages int, onUpdate func(StreamProgress, *AnalysisResult) error) (*AnalysisResult, error) {
+	if batchMessages <= 0 {
+		batchMessages = 5000
+	}
+	state := newStreamState(pcapFile, a.timeout)
+	chunkMessages := 0
+	chunkIndex := 1
+	emit := func(done bool) error {
+		return onUpdate(StreamProgress{
+			ProcessedMessages: state.totalPackets,
+			ChunkIndex:        chunkIndex,
+			ChunkMessages:     chunkMessages,
+			ChunkTarget:       batchMessages,
+			Done:              done,
+		}, state.result(done))
+	}
+
+	result, err := tshark.TsharkFieldsStream(ctx, pcapFile, pfcpTransactionDisplayFilter, tsharkSessionFields, func(line string) error {
+		msg := parseFieldRow(line)
+		if msg == nil {
+			return nil
+		}
+		state.add(msg)
+		chunkMessages++
+		if chunkMessages >= batchMessages {
+			if err := emit(false); err != nil {
+				return err
+			}
+			chunkIndex++
+			chunkMessages = 0
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if result.ExitCode != 0 {
+		return nil, fmt.Errorf("tshark PFCP transaction analysis failed: %s", strings.TrimSpace(result.Stderr))
+	}
+	final := state.result(true)
+	if err := emit(true); err != nil {
+		return nil, err
+	}
+	return final, nil
+}
+
 var errPFCPMessageLimitReached = errors.New("PFCP message limit reached")
 
 func (a *Analyzer) readMessages(ctx context.Context, pcapFile string) ([]*Message, bool, error) {
@@ -200,6 +254,148 @@ func (a *Analyzer) analyze(filename string, messages []*Message) *AnalysisResult
 	result.Transactions = transactions
 	result.Statistics = calculateStatistics(transactions)
 	return result
+}
+
+type streamState struct {
+	filename                          string
+	timeout                           time.Duration
+	totalPackets                      int
+	sessionEstablishmentResponseSEIDs map[uint64][]uint64
+	sessionEstablishmentSeen          map[uint64]map[uint64]bool
+	pendingRequests                   map[string][]*Message
+	orphanResponses                   map[string]*Message
+	requestCounts                     map[string][]int
+	completed                         []*Transaction
+}
+
+func newStreamState(filename string, timeout time.Duration) *streamState {
+	return &streamState{
+		filename:                          filename,
+		timeout:                           timeout,
+		sessionEstablishmentResponseSEIDs: make(map[uint64][]uint64),
+		sessionEstablishmentSeen:          make(map[uint64]map[uint64]bool),
+		pendingRequests:                   make(map[string][]*Message),
+		orphanResponses:                   make(map[string]*Message),
+		requestCounts:                     make(map[string][]int),
+	}
+}
+
+func (s *streamState) add(msg *Message) {
+	s.totalPackets++
+	s.collectSessionEstablishmentResponseSEIDs(msg)
+	if !isSessionMessage(msg.MessageTypeCode) {
+		return
+	}
+	if isRequest(msg.MessageTypeCode) {
+		retransmitKey := makeRetransmitKey(msg)
+		s.requestCounts[retransmitKey] = append(s.requestCounts[retransmitKey], msg.FrameNumber)
+		key := makeKey(msg)
+		s.pendingRequests[key] = append(s.pendingRequests[key], msg)
+		if resp, ok := s.orphanResponses[key]; ok {
+			s.complete(key, resp)
+			delete(s.orphanResponses, key)
+		}
+		return
+	}
+	if isResponse(msg.MessageTypeCode) {
+		key := makeReverseKey(msg)
+		if len(s.pendingRequests[key]) > 0 {
+			s.complete(key, msg)
+			return
+		}
+		if _, exists := s.orphanResponses[key]; !exists {
+			s.orphanResponses[key] = msg
+		}
+	}
+}
+
+func (s *streamState) collectSessionEstablishmentResponseSEIDs(msg *Message) {
+	if msg == nil || msg.MessageTypeCode != 51 || msg.HeaderSEID == 0 {
+		return
+	}
+	seen := s.sessionEstablishmentSeen[msg.HeaderSEID]
+	if seen == nil {
+		seen = make(map[uint64]bool)
+		s.sessionEstablishmentSeen[msg.HeaderSEID] = seen
+	}
+	seids := s.sessionEstablishmentResponseSEIDs[msg.HeaderSEID]
+	addUniqueSEIDs(&seids, seen, msg.HeaderSEID, msg.FSEID)
+	s.sessionEstablishmentResponseSEIDs[msg.HeaderSEID] = seids
+}
+
+func (s *streamState) complete(key string, resp *Message) {
+	reqs := s.pendingRequests[key]
+	if len(reqs) == 0 {
+		return
+	}
+	req := reqs[0]
+	tx := newTransaction(0, req, s.sessionEstablishmentResponseSEIDs)
+	if frames := s.requestCounts[makeRetransmitKey(req)]; len(frames) > 1 {
+		tx.RetransmitCount = len(frames) - 1
+		tx.RetransmitFrames = append([]int(nil), frames[1:]...)
+	}
+	tx.ResponseSEID = resp.HeaderSEID
+	tx.ResponseFSEID = resp.FSEID
+	tx.ResponseTime = &resp.Timestamp
+	tx.ResponseFrame = &resp.FrameNumber
+	tx.SEIDFilter = transactionSEIDFilter(s.sessionEstablishmentResponseSEIDs, req, resp)
+
+	responseTimeMs := resp.Timestamp.Sub(req.Timestamp).Seconds() * 1000
+	tx.ResponseTimeMs = &responseTimeMs
+
+	if resp.Cause != nil {
+		tx.Cause = resp.Cause
+		tx.CauseName = CauseName(*resp.Cause)
+		if *resp.Cause == CauseRequestAccepted {
+			if resp.Timestamp.Sub(req.Timestamp) > s.timeout {
+				tx.Status = StatusTimeout
+			} else {
+				tx.Status = StatusSuccess
+			}
+		} else {
+			tx.Status = StatusFailed
+		}
+	} else {
+		tx.Status = StatusSuccess
+	}
+	s.completed = append(s.completed, tx)
+	delete(s.pendingRequests, key)
+}
+
+func (s *streamState) result(final bool) *AnalysisResult {
+	transactions := make([]*Transaction, 0, len(s.completed)+len(s.pendingRequests))
+	transactions = append(transactions, s.completed...)
+	for _, reqs := range s.pendingRequests {
+		seenRetries := make(map[string]int)
+		for _, req := range reqs {
+			tx := newTransaction(0, req, s.sessionEstablishmentResponseSEIDs)
+			tx.Status = StatusNoResponse
+			retransmitKey := makeRetransmitKey(req)
+			if final {
+				if frames := s.requestCounts[retransmitKey]; len(frames) > 1 {
+					tx.RetransmitCount = len(frames) - 1
+					tx.RetransmitFrames = append([]int(nil), frames[1:]...)
+				}
+			} else if seenRetries[retransmitKey] > 0 {
+				tx.RetransmitCount = 1
+			}
+			seenRetries[retransmitKey]++
+			transactions = append(transactions, tx)
+		}
+	}
+	sort.Slice(transactions, func(i, j int) bool {
+		return transactions[i].RequestTime.Before(transactions[j].RequestTime)
+	})
+	for i, tx := range transactions {
+		tx.ID = fmt.Sprintf("tx-%d", i+1)
+	}
+	return &AnalysisResult{
+		Filename:     s.filename,
+		AnalyzedAt:   time.Now(),
+		TotalPackets: s.totalPackets,
+		Statistics:   calculateStatistics(transactions),
+		Transactions: transactions,
+	}
 }
 
 func newTransaction(id int, req *Message, establishmentResponseSEIDs map[uint64][]uint64) *Transaction {

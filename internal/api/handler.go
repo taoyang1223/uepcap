@@ -58,6 +58,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// Message statistics operations
 	mux.HandleFunc("POST /api/jobs/{id}/message-stats", h.GetMessageStats)
+	mux.HandleFunc("POST /api/jobs/{id}/message-stats/stream", h.StreamMessageStats)
 	mux.HandleFunc("POST /api/jobs/{id}/ngap-messages", h.GetNGAPMessages)
 	mux.HandleFunc("POST /api/jobs/{id}/s1ap-messages", h.GetS1APMessages)
 	mux.HandleFunc("POST /api/jobs/{id}/nas-messages", h.GetNASMessages)
@@ -66,6 +67,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// PFCP session transaction analysis operations
 	mux.HandleFunc("POST /api/jobs/{id}/pfcp-sessions", h.GetPFCPSessions)
+	mux.HandleFunc("POST /api/jobs/{id}/pfcp-sessions/stream", h.StreamPFCPSessions)
 
 	// Flow analysis operations
 	mux.HandleFunc("POST /api/jobs/{id}/flow/brief", h.GetFlowBrief)

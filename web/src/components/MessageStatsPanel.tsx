@@ -1,5 +1,6 @@
 import { startTransition, useCallback, useEffect, useMemo, useState } from 'react'
 import { BarChart3, ChevronDown, Download, Loader2, RefreshCw, Sigma } from 'lucide-react'
+import { readEventStream } from '../utils/eventStream'
 
 interface MessageStatsPanelProps {
   jobId: string
@@ -32,21 +33,31 @@ interface MessageStatsResult {
   modules: StatsModule[]
 }
 
-interface APIResponse<T> {
-  success: boolean
-  data?: T
-  error?: string
+interface StreamProgress {
+  processed_rows?: number
+  chunk_index?: number
+  chunk_rows?: number
+  chunk_target?: number
+  done?: boolean
+}
+
+interface StreamPayload<T> {
+  progress?: StreamProgress
+  result?: T
+  cached?: boolean
 }
 
 export function MessageStatsPanel({ jobId, selectedIMSIs: _selectedIMSIs }: MessageStatsPanelProps) {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<MessageStatsResult | null>(null)
+  const [progress, setProgress] = useState<StreamProgress | null>(null)
   const [activeModuleKey, setActiveModuleKey] = useState<string>('')
   const [error, setError] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
 
   useEffect(() => {
     setResult(null)
+    setProgress(null)
     setActiveModuleKey('')
     setError(null)
   }, [jobId])
@@ -55,23 +66,33 @@ export function MessageStatsPanel({ jobId, selectedIMSIs: _selectedIMSIs }: Mess
     if (loading) return
     setLoading(true)
     setError(null)
+    setProgress(null)
 
     try {
-      const response = await fetch(`/api/jobs/${jobId}/message-stats`, {
+      const response = await fetch(`/api/jobs/${jobId}/message-stats/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ batch_rows: 5000 }),
       })
-      const data = (await response.json()) as APIResponse<MessageStatsResult>
-
-      if (!data.success || !data.data) {
-        throw new Error(data.error || '消息统计失败')
-      }
-
-      startTransition(() => {
-        const nextResult = normalizeStatsResult(data.data!)
-        setResult(nextResult)
-        setActiveModuleKey(nextResult.modules[0]?.key || '')
+      await readEventStream<StreamPayload<MessageStatsResult> | string>(response, ({ event, data }) => {
+        if (event === 'error') {
+          throw new Error(typeof data === 'string' ? data : '消息统计失败')
+        }
+        if (event === 'progress' && typeof data === 'object') {
+          setProgress((data as StreamPayload<MessageStatsResult>).progress || {})
+          return
+        }
+        if ((event === 'partial_result' || event === 'done') && typeof data === 'object') {
+          const payload = data as StreamPayload<MessageStatsResult>
+          if (payload.progress) setProgress(payload.progress)
+          if (payload.result) {
+            startTransition(() => {
+              const nextResult = normalizeStatsResult(payload.result!)
+              setResult(nextResult)
+              setActiveModuleKey(current => current || nextResult.modules[0]?.key || '')
+            })
+          }
+        }
       })
     } catch (err) {
       setError('消息统计失败: ' + (err as Error).message)
@@ -162,6 +183,10 @@ export function MessageStatsPanel({ jobId, selectedIMSIs: _selectedIMSIs }: Mess
 
       {!collapsed && (
         <>
+
+      {loading && (
+        <StreamProgressBar progress={progress} label="正在流式统计" unit="行" />
+      )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
         <div className="bg-slate-50 rounded-lg px-4 py-3">
@@ -292,6 +317,23 @@ function normalizeStatsResult(result: MessageStatsResult): MessageStatsResult {
       items: module.items || [],
     })),
   }
+}
+
+function StreamProgressBar({ progress, label, unit }: { progress: StreamProgress | null; label: string; unit: string }) {
+  const chunkRows = progress?.chunk_rows || 0
+  const chunkTarget = progress?.chunk_target || 5000
+  const percent = Math.min(100, Math.round((chunkRows / chunkTarget) * 100))
+  return (
+    <div className="mb-5 rounded-xl border border-cyan-100 bg-cyan-50 px-4 py-3">
+      <div className="mb-2 flex items-center justify-between text-sm font-semibold text-cyan-800">
+        <span>{label}</span>
+        <span>第 {progress?.chunk_index || 1} 批 · 已处理 {formatCount(progress?.processed_rows || 0)} {unit}</span>
+      </div>
+      <div className="h-2 overflow-hidden rounded-full bg-white">
+        <div className="h-full rounded-full bg-cyan-600 transition-all duration-300" style={{ width: `${percent}%` }} />
+      </div>
+    </div>
+  )
 }
 
 function buildStatsWorkbookXLSX(result: MessageStatsResult, scopeLabel: string): Uint8Array {

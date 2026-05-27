@@ -432,6 +432,68 @@ func Count(ctx context.Context, pcapFile, scopeFilter string) (*Result, error) {
 	return result, nil
 }
 
+type StreamProgress struct {
+	ProcessedRows int  `json:"processed_rows"`
+	ChunkIndex    int  `json:"chunk_index"`
+	ChunkRows     int  `json:"chunk_rows"`
+	ChunkTarget   int  `json:"chunk_target"`
+	Done          bool `json:"done,omitempty"`
+}
+
+func CountStream(ctx context.Context, pcapFile, scopeFilter string, batchRows int, onUpdate func(StreamProgress, *Result) error) (*Result, error) {
+	if batchRows <= 0 {
+		batchRows = 5000
+	}
+
+	queryFilter := statsProtocolFilter
+	if strings.TrimSpace(scopeFilter) != "" {
+		queryFilter = fmt.Sprintf("(%s) && (%s)", scopeFilter, statsProtocolFilter)
+	}
+
+	result, itemsByKey, index := newCountResult()
+	processedRows := 0
+	chunkRows := 0
+	chunkIndex := 1
+	emit := func(done bool) error {
+		finalizeCountResult(result)
+		result.ScopeFilter = scopeFilter
+		return onUpdate(StreamProgress{
+			ProcessedRows: processedRows,
+			ChunkIndex:    chunkIndex,
+			ChunkRows:     chunkRows,
+			ChunkTarget:   batchRows,
+			Done:          done,
+		}, result)
+	}
+
+	tsharkResult, err := tshark.TsharkFieldsStream(ctx, pcapFile, queryFilter, tsharkFields, func(line string) error {
+		if strings.TrimSpace(line) == "" {
+			return nil
+		}
+		countFieldLine(line, itemsByKey, index)
+		processedRows++
+		chunkRows++
+		if chunkRows >= batchRows {
+			if err := emit(false); err != nil {
+				return err
+			}
+			chunkIndex++
+			chunkRows = 0
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if tsharkResult.ExitCode != 0 {
+		return nil, fmt.Errorf("tshark statistics failed: %s", strings.TrimSpace(tsharkResult.Stderr))
+	}
+	if err := emit(true); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 var errStatsRowLimitReached = errors.New("statistics row limit reached")
 
 func countFieldRows(output string) *Result {
@@ -521,6 +583,8 @@ func countFieldLine(line string, itemsByKey map[string]*Item, index *definitionI
 func finalizeCountResult(result *Result) {
 	for i := range result.Modules {
 		moduleKey := result.Modules[i].Key
+		result.Modules[i].RawTotal = 0
+		result.Modules[i].FinalTotal = 0
 		sort.SliceStable(result.Modules[i].Items, func(a, b int) bool {
 			left := result.Modules[i].Items[a]
 			right := result.Modules[i].Items[b]

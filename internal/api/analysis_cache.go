@@ -30,6 +30,28 @@ func newAnalysisCacheStore(max int) *analysisCacheStore {
 	}
 }
 
+func (s *analysisCacheStore) get(key string) (any, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result, ok := s.results[key]
+	return result, ok
+}
+
+func (s *analysisCacheStore) set(key string, result any) {
+	if result == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.results[key] = result
+	s.order = append(s.order, key)
+	for len(s.order) > s.max {
+		oldest := s.order[0]
+		s.order = s.order[1:]
+		delete(s.results, oldest)
+	}
+}
+
 func (s *analysisCacheStore) getOrCompute(ctx context.Context, key string, compute func(context.Context) (any, error)) (any, error) {
 	s.mu.Lock()
 	if result, ok := s.results[key]; ok {
