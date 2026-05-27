@@ -2,7 +2,10 @@ import { useCallback, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Activity, CheckCircle2, ChevronDown, Clock3, Copy, Layers3, Loader2, Network, RefreshCw, Search, Upload, X, XCircle } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
+import { readEventStream } from '../utils/eventStream'
 import { PaginationControls } from './PaginationControls'
+import { StreamProgressBar } from './StreamProgressBar'
+import type { StreamProgress } from './StreamProgressBar'
 
 interface NGAPMessageAnalyzerPanelProps {
   jobId: string
@@ -98,10 +101,10 @@ interface NGAPAnalysisResult {
   transactions: NGAPTransaction[]
 }
 
-interface APIResponse<T> {
-  success: boolean
-  data?: T
-  error?: string
+interface StreamPayload<T> {
+  progress?: StreamProgress
+  result?: T
+  cached?: boolean
 }
 
 const directionLabels: Record<Direction, string> = {
@@ -143,11 +146,11 @@ const statusClasses: Record<TransactionStatus, string> = {
 }
 
 const PAGE_SIZE = 15
-const ANALYSIS_TIMEOUT_MS = 120000
 
 export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProps) {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<NGAPAnalysisResult | null>(null)
+  const [progress, setProgress] = useState<StreamProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
   const [statusFilter, setStatusFilter] = useState<'all' | TransactionStatus>('all')
@@ -162,33 +165,36 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
   const fetchAnalysis = useCallback(async (nextProcedureFilter: string) => {
     setLoading(true)
     setError(null)
-    const controller = new AbortController()
-    const timeoutId = window.setTimeout(() => controller.abort(), ANALYSIS_TIMEOUT_MS)
+    setProgress(null)
     try {
-      const requestBody: { limit: number; procedure_filter?: string } = { limit: 20000 }
+      const requestBody: { limit: number; procedure_filter?: string; batch_rows: number } = { limit: 20000, batch_rows: 10000 }
       if (nextProcedureFilter !== 'all') requestBody.procedure_filter = nextProcedureFilter
-      const response = await fetch(`/api/jobs/${jobId}/ngap-messages`, {
+      const response = await fetch(`/api/jobs/${jobId}/ngap-messages/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody),
-        signal: controller.signal,
       })
-      const data = (await response.json()) as APIResponse<NGAPAnalysisResult>
-      if (!data.success || !data.data) {
-        throw new Error(data.error || 'NGAP消息分析失败')
-      }
-      setResult(data.data)
+      await readEventStream<StreamPayload<NGAPAnalysisResult> | string>(response, ({ event, data }) => {
+        if (event === 'error') {
+          throw new Error(typeof data === 'string' ? data : 'NGAP消息分析失败')
+        }
+        if (event === 'progress' && typeof data === 'object') {
+          setProgress((data as StreamPayload<NGAPAnalysisResult>).progress || {})
+          return
+        }
+        if ((event === 'partial_result' || event === 'done') && typeof data === 'object') {
+          const payload = data as StreamPayload<NGAPAnalysisResult>
+          if (payload.progress) setProgress(payload.progress)
+          if (payload.result) setResult(payload.result)
+        }
+      })
       setSelectedTransaction(null)
       setSelectedMessage(null)
       return true
     } catch (err) {
-      const message = err instanceof DOMException && err.name === 'AbortError'
-        ? 'NGAP消息分析超时，请稍后重试或先缩小抓包范围'
-        : 'NGAP消息分析失败: ' + (err as Error).message
-      setError(message)
+      setError('NGAP消息分析失败: ' + (err as Error).message)
       return false
     } finally {
-      window.clearTimeout(timeoutId)
       setLoading(false)
     }
   }, [jobId])
@@ -353,11 +359,7 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
 
       {!collapsed && (result || error || loading) && (
         <div className="p-6">
-          {loading && !result && (
-            <div className="rounded-xl border border-sky-100 bg-sky-50 px-5 py-4 text-sm font-semibold text-sky-700">
-              正在分析 NGAP 消息...
-            </div>
-          )}
+          {loading && <StreamProgressBar progress={progress} label="正在流式分析 NGAP 消息" />}
           {error && <div className="p-3 bg-red-50 rounded-lg text-red-700 text-sm font-medium">{error}</div>}
           {result && (
             <>

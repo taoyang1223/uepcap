@@ -60,10 +60,15 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/jobs/{id}/message-stats", h.GetMessageStats)
 	mux.HandleFunc("POST /api/jobs/{id}/message-stats/stream", h.StreamMessageStats)
 	mux.HandleFunc("POST /api/jobs/{id}/ngap-messages", h.GetNGAPMessages)
+	mux.HandleFunc("POST /api/jobs/{id}/ngap-messages/stream", h.StreamNGAPMessages)
 	mux.HandleFunc("POST /api/jobs/{id}/s1ap-messages", h.GetS1APMessages)
+	mux.HandleFunc("POST /api/jobs/{id}/s1ap-messages/stream", h.StreamS1APMessages)
 	mux.HandleFunc("POST /api/jobs/{id}/nas-messages", h.GetNASMessages)
+	mux.HandleFunc("POST /api/jobs/{id}/nas-messages/stream", h.StreamNASMessages)
 	mux.HandleFunc("POST /api/jobs/{id}/sm-nas-messages", h.GetSMNASMessages)
+	mux.HandleFunc("POST /api/jobs/{id}/sm-nas-messages/stream", h.StreamSMNASMessages)
 	mux.HandleFunc("POST /api/jobs/{id}/s11-messages", h.GetS11Messages)
+	mux.HandleFunc("POST /api/jobs/{id}/s11-messages/stream", h.StreamS11Messages)
 
 	// PFCP session transaction analysis operations
 	mux.HandleFunc("POST /api/jobs/{id}/pfcp-sessions", h.GetPFCPSessions)

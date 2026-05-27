@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gitee.com/yangdadayyds/uepcap/internal/analysislimit"
+	"gitee.com/yangdadayyds/uepcap/internal/analysisstream"
 	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
 
@@ -47,6 +48,58 @@ func (a *Analyzer) AnalyzeFile(ctx context.Context, pcapFile string) (*AnalysisR
 		result.MessageLimit = analysislimit.MaxRows("UEPCAP_NGAP_ANALYSIS_MAX_MESSAGES")
 	}
 	return result, nil
+}
+
+func (a *Analyzer) AnalyzeFileStream(ctx context.Context, pcapFile string, batchMessages int, onUpdate func(analysisstream.Progress, *AnalysisResult) error) (*AnalysisResult, error) {
+	if batchMessages <= 0 {
+		batchMessages = 5000
+	}
+	messages := make([]*Message, 0, 4096)
+	chunkMessages := 0
+	chunkIndex := 1
+	emit := func(done bool) error {
+		return onUpdate(analysisstream.Progress{
+			ProcessedMessages: len(messages),
+			ChunkIndex:        chunkIndex,
+			ChunkMessages:     chunkMessages,
+			ChunkTarget:       batchMessages,
+			Done:              done,
+		}, analyze(pcapFile, append([]*Message(nil), messages...)))
+	}
+
+	result, err := tshark.TsharkFieldsStream(ctx, pcapFile, "ngap", tsharkNGAPFields, func(line string) error {
+		msg := parseFieldRow(line)
+		if msg == nil {
+			return nil
+		}
+		messages = append(messages, msg)
+		chunkMessages++
+		if chunkMessages >= batchMessages {
+			if err := emit(false); err != nil {
+				return err
+			}
+			chunkIndex++
+			chunkMessages = 0
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if result.ExitCode != 0 {
+		return nil, fmt.Errorf("tshark NGAP analysis failed: %s", strings.TrimSpace(result.Stderr))
+	}
+	final := analyze(pcapFile, append([]*Message(nil), messages...))
+	if err := onUpdate(analysisstream.Progress{
+		ProcessedMessages: len(messages),
+		ChunkIndex:        chunkIndex,
+		ChunkMessages:     chunkMessages,
+		ChunkTarget:       batchMessages,
+		Done:              true,
+	}, final); err != nil {
+		return nil, err
+	}
+	return final, nil
 }
 
 var errNGAPMessageLimitReached = errors.New("NGAP message limit reached")

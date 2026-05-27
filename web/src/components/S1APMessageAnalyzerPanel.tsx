@@ -2,7 +2,10 @@ import { useCallback, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { CheckCircle2, ChevronDown, Clock3, Copy, Layers3, Loader2, Network, RefreshCw, Search, Upload, X, XCircle } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
+import { readEventStream } from '../utils/eventStream'
 import { PaginationControls } from './PaginationControls'
+import { StreamProgressBar } from './StreamProgressBar'
+import type { StreamProgress } from './StreamProgressBar'
 
 interface S1APMessageAnalyzerPanelProps {
   jobId: string
@@ -100,10 +103,10 @@ interface S1APAnalysisResult {
   transactions: S1APTransaction[]
 }
 
-interface APIResponse<T> {
-  success: boolean
-  data?: T
-  error?: string
+interface StreamPayload<T> {
+  progress?: StreamProgress
+  result?: T
+  cached?: boolean
 }
 
 const directionLabels: Record<Direction, string> = {
@@ -234,11 +237,11 @@ const s1apProcedureFeatures: Record<string, ProcedureFeature> = {
 }
 
 const PAGE_SIZE = 15
-const ANALYSIS_TIMEOUT_MS = 120000
 
 export function S1APMessageAnalyzerPanel({ jobId }: S1APMessageAnalyzerPanelProps) {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<S1APAnalysisResult | null>(null)
+  const [progress, setProgress] = useState<StreamProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
   const [statusFilter, setStatusFilter] = useState<'all' | TransactionStatus>('all')
@@ -253,33 +256,36 @@ export function S1APMessageAnalyzerPanel({ jobId }: S1APMessageAnalyzerPanelProp
   const fetchAnalysis = useCallback(async (nextProcedureFilter: string) => {
     setLoading(true)
     setError(null)
-    const controller = new AbortController()
-    const timeoutId = window.setTimeout(() => controller.abort(), ANALYSIS_TIMEOUT_MS)
+    setProgress(null)
     try {
-      const requestBody: { limit: number; procedure_filter?: string } = { limit: 20000 }
+      const requestBody: { limit: number; procedure_filter?: string; batch_rows: number } = { limit: 20000, batch_rows: 10000 }
       if (nextProcedureFilter !== 'all') requestBody.procedure_filter = nextProcedureFilter
-      const response = await fetch(`/api/jobs/${jobId}/s1ap-messages`, {
+      const response = await fetch(`/api/jobs/${jobId}/s1ap-messages/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody),
-        signal: controller.signal,
       })
-      const data = (await response.json()) as APIResponse<S1APAnalysisResult>
-      if (!data.success || !data.data) {
-        throw new Error(data.error || 'S1AP消息分析失败')
-      }
-      setResult(data.data)
+      await readEventStream<StreamPayload<S1APAnalysisResult> | string>(response, ({ event, data }) => {
+        if (event === 'error') {
+          throw new Error(typeof data === 'string' ? data : 'S1AP消息分析失败')
+        }
+        if (event === 'progress' && typeof data === 'object') {
+          setProgress((data as StreamPayload<S1APAnalysisResult>).progress || {})
+          return
+        }
+        if ((event === 'partial_result' || event === 'done') && typeof data === 'object') {
+          const payload = data as StreamPayload<S1APAnalysisResult>
+          if (payload.progress) setProgress(payload.progress)
+          if (payload.result) setResult(payload.result)
+        }
+      })
       setSelectedTransaction(null)
       setSelectedMessage(null)
       return true
     } catch (err) {
-      const message = err instanceof DOMException && err.name === 'AbortError'
-        ? 'S1AP消息分析超时，请稍后重试或先缩小抓包范围'
-        : 'S1AP消息分析失败: ' + (err as Error).message
-      setError(message)
+      setError('S1AP消息分析失败: ' + (err as Error).message)
       return false
     } finally {
-      window.clearTimeout(timeoutId)
       setLoading(false)
     }
   }, [jobId])
@@ -456,11 +462,7 @@ export function S1APMessageAnalyzerPanel({ jobId }: S1APMessageAnalyzerPanelProp
 
       {!collapsed && (result || error || loading) && (
         <div className="p-6">
-          {loading && !result && (
-            <div className="rounded-xl border border-cyan-100 bg-cyan-50 px-5 py-4 text-sm font-semibold text-cyan-700">
-              正在分析 S1AP 消息...
-            </div>
-          )}
+          {loading && <StreamProgressBar progress={progress} label="正在流式分析 S1AP 消息" />}
           {error && <div className="p-3 bg-red-50 rounded-lg text-red-700 text-sm font-medium">{error}</div>}
           {result && (
             <>

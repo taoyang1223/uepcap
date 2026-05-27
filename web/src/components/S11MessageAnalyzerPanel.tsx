@@ -2,7 +2,10 @@ import { useCallback, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Activity, CheckCircle2, ChevronDown, Clock3, Copy, DatabaseZap, Loader2, RefreshCw, RotateCw, Search, Timer, Upload, X, XCircle } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
+import { readEventStream } from '../utils/eventStream'
 import { PaginationControls } from './PaginationControls'
+import { StreamProgressBar } from './StreamProgressBar'
+import type { StreamProgress } from './StreamProgressBar'
 
 interface S11MessageAnalyzerPanelProps {
   jobId: string
@@ -72,10 +75,10 @@ interface S11AnalysisResult {
   procedure_stats: ProcedureCount[]
 }
 
-interface APIResponse<T> {
-  success: boolean
-  data?: T
-  error?: string
+interface StreamPayload<T> {
+  progress?: StreamProgress
+  result?: T
+  cached?: boolean
 }
 
 const statusLabels: Record<TransactionStatus, string> = {
@@ -99,6 +102,7 @@ const PAGE_SIZE = 15
 export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps) {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<S11AnalysisResult | null>(null)
+  const [progress, setProgress] = useState<StreamProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
   const [statusFilter, setStatusFilter] = useState<'all' | TransactionStatus>('all')
@@ -112,15 +116,27 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
   const handleAnalyze = useCallback(async () => {
     setLoading(true)
     setError(null)
+    setProgress(null)
     try {
-      const response = await fetch(`/api/jobs/${jobId}/s11-messages`, {
+      const response = await fetch(`/api/jobs/${jobId}/s11-messages/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ limit: 20000 }),
+        body: JSON.stringify({ limit: 20000, batch_rows: 10000 }),
       })
-      const data = (await response.json()) as APIResponse<S11AnalysisResult>
-      if (!data.success || !data.data) throw new Error(data.error || 'S11消息分析失败')
-      setResult(data.data)
+      await readEventStream<StreamPayload<S11AnalysisResult> | string>(response, ({ event, data }) => {
+        if (event === 'error') {
+          throw new Error(typeof data === 'string' ? data : 'S11消息分析失败')
+        }
+        if (event === 'progress' && typeof data === 'object') {
+          setProgress((data as StreamPayload<S11AnalysisResult>).progress || {})
+          return
+        }
+        if ((event === 'partial_result' || event === 'done') && typeof data === 'object') {
+          const payload = data as StreamPayload<S11AnalysisResult>
+          if (payload.progress) setProgress(payload.progress)
+          if (payload.result) setResult(payload.result)
+        }
+      })
       setStatusFilter('all')
       setProcedureFilter('all')
       setResponseTimeFilter('all')
@@ -220,7 +236,7 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
 
       {!collapsed && (result || error || loading) && (
         <div className="p-6">
-          {loading && !result && <div className="rounded-xl border border-orange-100 bg-orange-50 px-5 py-4 text-sm font-semibold text-orange-700">正在分析 S11/GTPv2-C 消息...</div>}
+          {loading && <StreamProgressBar progress={progress} label="正在流式分析 S11/GTPv2-C 消息" />}
           {error && <div className="p-3 bg-red-50 rounded-lg text-red-700 text-sm font-medium">{error}</div>}
           {result && (
             <>

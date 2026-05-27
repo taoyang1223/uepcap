@@ -2,7 +2,10 @@ import { useCallback, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Activity, CheckCircle2, ChevronDown, Clock3, Copy, KeyRound, Layers3, Loader2, Radio, RefreshCw, Search, Shield, Upload, X, XCircle } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
+import { readEventStream } from '../utils/eventStream'
 import { PaginationControls } from './PaginationControls'
+import { StreamProgressBar } from './StreamProgressBar'
+import type { StreamProgress } from './StreamProgressBar'
 
 interface NASMessageAnalyzerPanelProps {
   jobId: string
@@ -98,10 +101,10 @@ interface NASAnalysisResult {
   flows: NASFlow[]
 }
 
-interface APIResponse<T> {
-  success: boolean
-  data?: T
-  error?: string
+interface StreamPayload<T> {
+  progress?: StreamProgress
+  result?: T
+  cached?: boolean
 }
 
 const directionLabels: Record<NASDirection, string> = {
@@ -145,6 +148,7 @@ const PAGE_SIZE = 15
 export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps) {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<NASAnalysisResult | null>(null)
+  const [progress, setProgress] = useState<StreamProgress | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
   const [flowStatusFilter, setFlowStatusFilter] = useState<'all' | NASFlowStatus>('all')
@@ -159,17 +163,27 @@ export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps)
   const handleAnalyze = useCallback(async () => {
     setLoading(true)
     setError(null)
+    setProgress(null)
     try {
-      const response = await fetch(`/api/jobs/${jobId}/nas-messages`, {
+      const response = await fetch(`/api/jobs/${jobId}/nas-messages/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ limit: 20000 }),
+        body: JSON.stringify({ limit: 20000, batch_rows: 10000 }),
       })
-      const data = (await response.json()) as APIResponse<NASAnalysisResult>
-      if (!data.success || !data.data) {
-        throw new Error(data.error || '5GMM消息分析失败')
-      }
-      setResult(data.data)
+      await readEventStream<StreamPayload<NASAnalysisResult> | string>(response, ({ event, data }) => {
+        if (event === 'error') {
+          throw new Error(typeof data === 'string' ? data : '5GMM消息分析失败')
+        }
+        if (event === 'progress' && typeof data === 'object') {
+          setProgress((data as StreamPayload<NASAnalysisResult>).progress || {})
+          return
+        }
+        if ((event === 'partial_result' || event === 'done') && typeof data === 'object') {
+          const payload = data as StreamPayload<NASAnalysisResult>
+          if (payload.progress) setProgress(payload.progress)
+          if (payload.result) setResult(payload.result)
+        }
+      })
       setFlowStatusFilter('all')
       setFlowTypeFilter('all')
       setTypeFilter('all')
@@ -323,11 +337,7 @@ export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps)
 
       {!collapsed && (result || error || loading) && (
         <div className="p-6">
-          {loading && !result && (
-            <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-5 py-4 text-sm font-semibold text-indigo-700">
-              正在分析 5GMM 消息...
-            </div>
-          )}
+          {loading && <StreamProgressBar progress={progress} label="正在流式分析 5GMM 消息" />}
 
           {error && (
             <div className="p-3 bg-red-50 rounded-lg text-red-700 text-sm font-medium">

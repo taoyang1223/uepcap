@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"time"
 
+	"gitee.com/yangdadayyds/uepcap/internal/analysisstream"
 	"gitee.com/yangdadayyds/uepcap/internal/ngapanalyzer"
 )
 
 type NGAPMessagesRequest struct {
 	Limit           int    `json:"limit,omitempty"`
 	ProcedureFilter string `json:"procedure_filter,omitempty"`
+	BatchRows       int    `json:"batch_rows,omitempty"`
 }
 
 func (h *Handler) GetNGAPMessages(w http.ResponseWriter, r *http.Request) {
@@ -52,4 +54,57 @@ func (h *Handler) GetNGAPMessages(w http.ResponseWriter, r *http.Request) {
 
 	out := windowNGAPAnalysis(result, normalizedAnalysisLimit(req.Limit), req.ProcedureFilter)
 	writeSuccess(w, out)
+}
+
+func (h *Handler) StreamNGAPMessages(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	job, ok := h.jobMgr.GetJob(id)
+	if !ok {
+		writeError(w, http.StatusNotFound, "job not found")
+		return
+	}
+
+	var req NGAPMessagesRequest
+	if err := decodeOptionalJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid request body: %v", err))
+		return
+	}
+
+	flusher, ok := prepareEventStream(w)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	cacheKey := id + "|ngap-v3-stream"
+	if value, ok := h.analysis.get(cacheKey); ok {
+		if result, ok := value.(*ngapanalyzer.AnalysisResult); ok {
+			sendSSEEvent(w, flusher, "done", map[string]any{
+				"progress": analysisstream.Progress{Done: true},
+				"result":   windowNGAPAnalysis(result, normalizedAnalysisLimit(req.Limit), req.ProcedureFilter),
+				"cached":   true,
+			})
+			return
+		}
+	}
+
+	sendSSEEvent(w, flusher, "progress", map[string]any{"phase": "analyzing"})
+	result, err := ngapanalyzer.NewAnalyzer().AnalyzeFileStream(r.Context(), job.MergedPcap, normalizedStreamBatchRows(req.BatchRows), func(progress analysisstream.Progress, result *ngapanalyzer.AnalysisResult) error {
+		result.Filename = displayPcapFilename(job.OriginalFiles, job.MergedPcap)
+		event := "partial_result"
+		if progress.Done {
+			event = "done"
+		}
+		sendSSEEvent(w, flusher, event, map[string]any{
+			"progress": progress,
+			"result":   windowNGAPAnalysis(result, normalizedAnalysisLimit(req.Limit), req.ProcedureFilter),
+		})
+		return nil
+	})
+	if err != nil {
+		sendSSEEvent(w, flusher, "error", err.Error())
+		return
+	}
+	result.Filename = displayPcapFilename(job.OriginalFiles, job.MergedPcap)
+	h.analysis.set(cacheKey, result)
 }
