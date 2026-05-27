@@ -4,9 +4,13 @@ import {
   AlertCircle,
   ArrowLeft,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   FileArchive,
   FileDiff,
   Loader2,
+  Maximize2,
+  Minimize2,
   RefreshCw,
   Search,
   UploadCloud,
@@ -99,6 +103,8 @@ interface ParsedTreeLine {
   line: string
   key: string
   familyKey: string
+  looseFamilyKey: string
+  anchorKey: string
   index: number
 }
 
@@ -780,12 +786,24 @@ function FourPaneDiffViewer({ leftTree, rightTree, rows, hints }: { leftTree: st
   const rightAlignedScrollRef = useRef<HTMLDivElement | null>(null)
   const syncingAlignedScrollRef = useRef(false)
   const [connectors, setConnectors] = useState<ConnectorLine[]>([])
-  const visibleHints = useMemo(() => hints.slice(0, 180), [hints])
+  const [leftOriginalCollapsed, setLeftOriginalCollapsed] = useState(false)
+  const [rightOriginalCollapsed, setRightOriginalCollapsed] = useState(false)
+  const [alignedExpanded, setAlignedExpanded] = useState(false)
+  const visibleHints = useMemo(() => hints.filter(hint => hintMovedOnSide(hint, 'left') || hintMovedOnSide(hint, 'right')).slice(0, 180), [hints])
   const leftLines = useMemo(() => splitTreeLines(leftTree), [leftTree])
   const rightLines = useMemo(() => splitTreeLines(rightTree), [rightTree])
   const leftHintIndexesByLine = useMemo(() => groupHintIndexesByLine(visibleHints, 'left'), [visibleHints])
   const rightHintIndexesByLine = useMemo(() => groupHintIndexesByLine(visibleHints, 'right'), [visibleHints])
-  const hintIndexesByAlignedLine = useMemo(() => groupHintIndexesByAlignedLine(visibleHints), [visibleHints])
+  const leftHintIndexesByAlignedLine = useMemo(() => groupHintIndexesByAlignedLine(visibleHints, 'left'), [visibleHints])
+  const rightHintIndexesByAlignedLine = useMemo(() => groupHintIndexesByAlignedLine(visibleHints, 'right'), [visibleHints])
+  const leftOriginalHidden = alignedExpanded || leftOriginalCollapsed
+  const rightOriginalHidden = alignedExpanded || rightOriginalCollapsed
+  const gridTemplateColumns = [
+    leftOriginalHidden ? '44px' : 'minmax(220px, 0.85fr)',
+    'minmax(280px, 1.35fr)',
+    'minmax(280px, 1.35fr)',
+    rightOriginalHidden ? '44px' : 'minmax(220px, 0.85fr)',
+  ].join(' ')
 
   const updateConnectors = useCallback(() => {
     const root = rootRef.current
@@ -850,6 +868,20 @@ function FourPaneDiffViewer({ leftTree, rightTree, rows, hints }: { leftTree: st
     syncAlignedScroll('right', event)
   }, [syncAlignedScroll])
 
+  const toggleLeftOriginal = useCallback(() => {
+    setAlignedExpanded(false)
+    setLeftOriginalCollapsed(previous => alignedExpanded ? false : !previous)
+  }, [alignedExpanded])
+
+  const toggleRightOriginal = useCallback(() => {
+    setAlignedExpanded(false)
+    setRightOriginalCollapsed(previous => alignedExpanded ? false : !previous)
+  }, [alignedExpanded])
+
+  const toggleAlignedExpanded = useCallback(() => {
+    setAlignedExpanded(previous => !previous)
+  }, [])
+
   useEffect(() => {
     scheduleConnectorUpdate()
     window.addEventListener('resize', scheduleConnectorUpdate)
@@ -861,14 +893,20 @@ function FourPaneDiffViewer({ leftTree, rightTree, rows, hints }: { leftTree: st
     }
   }, [scheduleConnectorUpdate])
 
+  useEffect(() => {
+    scheduleConnectorUpdate()
+  }, [leftOriginalHidden, rightOriginalHidden, alignedExpanded, scheduleConnectorUpdate])
+
   return (
     <div ref={rootRef} className="relative h-[720px] overflow-hidden bg-slate-100">
-      <div className="grid h-full min-h-0 grid-cols-4 gap-x-6">
+      <div className="grid h-full min-h-0 gap-x-3" style={{ gridTemplateColumns }}>
         <OriginalTreePane
           title="左侧原始位置"
           side="left"
           lines={leftLines}
           hintIndexesByLine={leftHintIndexesByLine}
+          collapsed={leftOriginalHidden}
+          onToggleCollapse={toggleLeftOriginal}
           onScroll={handleIndependentScroll}
           className="border border-slate-200"
         />
@@ -876,7 +914,9 @@ function FourPaneDiffViewer({ leftTree, rightTree, rows, hints }: { leftTree: st
           title="左侧对齐后"
           side="left"
           rows={rows}
-          hintIndexesByAlignedLine={hintIndexesByAlignedLine}
+          hintIndexesByAlignedLine={leftHintIndexesByAlignedLine}
+          expanded={alignedExpanded}
+          onToggleExpanded={toggleAlignedExpanded}
           scrollRef={leftAlignedScrollRef}
           onScroll={handleLeftAlignedScroll}
           className="border border-slate-200"
@@ -885,7 +925,9 @@ function FourPaneDiffViewer({ leftTree, rightTree, rows, hints }: { leftTree: st
           title="右侧对齐后"
           side="right"
           rows={rows}
-          hintIndexesByAlignedLine={hintIndexesByAlignedLine}
+          hintIndexesByAlignedLine={rightHintIndexesByAlignedLine}
+          expanded={alignedExpanded}
+          onToggleExpanded={toggleAlignedExpanded}
           scrollRef={rightAlignedScrollRef}
           onScroll={handleRightAlignedScroll}
           className="border border-slate-200"
@@ -895,6 +937,8 @@ function FourPaneDiffViewer({ leftTree, rightTree, rows, hints }: { leftTree: st
           side="right"
           lines={rightLines}
           hintIndexesByLine={rightHintIndexesByLine}
+          collapsed={rightOriginalHidden}
+          onToggleCollapse={toggleRightOriginal}
           onScroll={handleIndependentScroll}
           className="border border-slate-200"
         />
@@ -904,11 +948,14 @@ function FourPaneDiffViewer({ leftTree, rightTree, rows, hints }: { leftTree: st
   )
 }
 
-function PaneFrame({ title, tone = 'plain', className = '', scrollRef, onScroll, children }: { title: string; tone?: 'plain' | 'align'; className?: string; scrollRef?: Ref<HTMLDivElement>; onScroll: (event: UIEvent<HTMLDivElement>) => void; children: ReactNode }) {
+function PaneFrame({ title, tone = 'plain', className = '', actions, scrollRef, onScroll, children }: { title: string; tone?: 'plain' | 'align'; className?: string; actions?: ReactNode; scrollRef?: Ref<HTMLDivElement>; onScroll: (event: UIEvent<HTMLDivElement>) => void; children: ReactNode }) {
   const headerClass = tone === 'align' ? 'bg-blue-50 text-blue-800' : 'bg-white text-slate-500'
   return (
     <div className={`flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-white ${className}`}>
-      <div className={`shrink-0 border-b border-slate-200 px-4 py-3 text-xs font-black ${headerClass}`}>{title}</div>
+      <div className={`flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 text-xs font-black ${headerClass}`}>
+        <span className="min-w-0 truncate">{title}</span>
+        {actions && <div className="flex shrink-0 items-center gap-1">{actions}</div>}
+      </div>
       <div ref={scrollRef} data-scroll-pane className="min-h-0 flex-1 overscroll-contain overflow-x-auto overflow-y-scroll [scrollbar-gutter:stable]" onScroll={onScroll}>
         {children}
       </div>
@@ -916,9 +963,46 @@ function PaneFrame({ title, tone = 'plain', className = '', scrollRef, onScroll,
   )
 }
 
-function OriginalTreePane({ title, side, lines, hintIndexesByLine, className = '', onScroll }: { title: string; side: CaptureSide; lines: string[]; hintIndexesByLine: Map<number, number[]>; className?: string; onScroll: (event: UIEvent<HTMLDivElement>) => void }) {
+function PaneIconButton({ title, onClick, children }: { title: string; onClick: () => void; children: ReactNode }) {
   return (
-    <PaneFrame title={title} className={className} onScroll={onScroll}>
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 shadow-sm hover:bg-slate-50 hover:text-slate-900"
+    >
+      {children}
+    </button>
+  )
+}
+
+function CollapsedPane({ title, side, className = '', onExpand }: { title: string; side: CaptureSide; className?: string; onExpand: () => void }) {
+  return (
+    <div className={`flex h-full min-h-0 min-w-0 flex-col items-center overflow-hidden bg-white ${className}`}>
+      <PaneIconButton title={`展开${title}`} onClick={onExpand}>
+        {side === 'left' ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+      </PaneIconButton>
+      <span className="mt-3 min-h-0 text-[11px] font-black text-slate-500 [writing-mode:vertical-rl]">{title}</span>
+    </div>
+  )
+}
+
+function OriginalTreePane({ title, side, lines, hintIndexesByLine, collapsed, className = '', onToggleCollapse, onScroll }: { title: string; side: CaptureSide; lines: string[]; hintIndexesByLine: Map<number, number[]>; collapsed: boolean; className?: string; onToggleCollapse: () => void; onScroll: (event: UIEvent<HTMLDivElement>) => void }) {
+  if (collapsed) {
+    return <CollapsedPane title={title} side={side} className={className} onExpand={onToggleCollapse} />
+  }
+
+  return (
+    <PaneFrame
+      title={title}
+      className={className}
+      actions={(
+        <PaneIconButton title={`折叠${title}`} onClick={onToggleCollapse}>
+          {side === 'left' ? <ChevronLeft className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+        </PaneIconButton>
+      )}
+      onScroll={onScroll}
+    >
       {lines.map((line, index) => {
         const lineNumber = index + 1
         const hintIndexes = hintIndexesByLine.get(lineNumber) || []
@@ -946,9 +1030,20 @@ function OriginalTreePane({ title, side, lines, hintIndexesByLine, className = '
   )
 }
 
-function AlignedPositionPane({ title, side, rows, hintIndexesByAlignedLine, className = '', scrollRef, onScroll }: { title: string; side: CaptureSide; rows: DiffRow[]; hintIndexesByAlignedLine: Map<number, number[]>; className?: string; scrollRef: Ref<HTMLDivElement>; onScroll: (event: UIEvent<HTMLDivElement>) => void }) {
+function AlignedPositionPane({ title, side, rows, hintIndexesByAlignedLine, expanded, className = '', scrollRef, onToggleExpanded, onScroll }: { title: string; side: CaptureSide; rows: DiffRow[]; hintIndexesByAlignedLine: Map<number, number[]>; expanded: boolean; className?: string; scrollRef: Ref<HTMLDivElement>; onToggleExpanded: () => void; onScroll: (event: UIEvent<HTMLDivElement>) => void }) {
   return (
-    <PaneFrame title={title} tone="align" className={className} scrollRef={scrollRef} onScroll={onScroll}>
+    <PaneFrame
+      title={title}
+      tone="align"
+      className={className}
+      actions={(
+        <PaneIconButton title={expanded ? '恢复四栏宽度' : '横向扩展对齐区'} onClick={onToggleExpanded}>
+          {expanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+        </PaneIconButton>
+      )}
+      scrollRef={scrollRef}
+      onScroll={onScroll}
+    >
       {rows.map((row, index) => {
         const alignedLineNumber = row.alignedLineNumber || index + 1
         const lineNumber = side === 'left' ? row.leftLineNumber : row.rightLineNumber
@@ -1006,6 +1101,7 @@ function MergeConnectorOverlay({ connectors }: { connectors: ConnectorLine[] }) 
 function groupHintIndexesByLine(hints: PositionHint[], side: CaptureSide) {
   const grouped = new Map<number, number[]>()
   hints.forEach((hint, index) => {
+    if (!hintMovedOnSide(hint, side)) return
     const lineNumber = side === 'left' ? hint.leftLineNumber : hint.rightLineNumber
     const indexes = grouped.get(lineNumber)
     if (indexes) {
@@ -1017,9 +1113,10 @@ function groupHintIndexesByLine(hints: PositionHint[], side: CaptureSide) {
   return grouped
 }
 
-function groupHintIndexesByAlignedLine(hints: PositionHint[]) {
+function groupHintIndexesByAlignedLine(hints: PositionHint[], side: CaptureSide) {
   const grouped = new Map<number, number[]>()
   hints.forEach((hint, index) => {
+    if (!hintMovedOnSide(hint, side)) return
     const indexes = grouped.get(hint.alignedLineNumber)
     if (indexes) {
       indexes.push(index)
@@ -1028,6 +1125,11 @@ function groupHintIndexesByAlignedLine(hints: PositionHint[]) {
     }
   })
   return grouped
+}
+
+function hintMovedOnSide(hint: PositionHint, side: CaptureSide) {
+  const sourceLineNumber = side === 'left' ? hint.leftLineNumber : hint.rightLineNumber
+  return sourceLineNumber !== hint.alignedLineNumber
 }
 
 function connectorPoint(root: HTMLElement, connectorId: string) {
@@ -1193,7 +1295,6 @@ function buildLineDiff(leftTree: string, rightTree: string): StructureDiffResult
   const leftLines = parseTreeLines(leftTree)
   const rightLines = parseTreeLines(rightTree)
   const rows: DiffRow[] = []
-  const positionHints: PositionHint[] = []
 
   let leftCursor = 0
   let rightCursor = 0
@@ -1204,9 +1305,6 @@ function buildLineDiff(leftTree: string, rightTree: string): StructureDiffResult
     const left = leftLines[anchor.leftIndex]
     const right = rightLines[anchor.rightIndex]
     rows.push({ kind: 'same', left: left.line, right: right.line, leftLineNumber: left.index + 1, rightLineNumber: right.index + 1, alignedLineNumber: rows.length + 1 })
-    if (shouldShowPositionHint(left, right)) {
-      positionHints.push(buildPositionHint(left, right, rows.length))
-    }
 
     leftCursor = anchor.leftIndex + 1
     rightCursor = anchor.rightIndex + 1
@@ -1214,12 +1312,84 @@ function buildLineDiff(leftTree: string, rightTree: string): StructureDiffResult
 
   appendDiffBlock(rows, leftLines.slice(leftCursor), rightLines.slice(rightCursor))
 
-  const allRows = rows.map((row, index) => ({
+  const alignedRows = reconcileMovedSameLevelRows(rows, leftLines, rightLines)
+  const allRows = alignedRows.map((row, index) => ({
     ...row,
     alignedLineNumber: index + 1,
   }))
+  const positionHints = buildPositionHintsFromRows(allRows, leftLines, rightLines)
 
   return { rows: allRows, positionHints }
+}
+
+function reconcileMovedSameLevelRows(rows: DiffRow[], leftLines: ParsedTreeLine[], rightLines: ParsedTreeLine[]) {
+  const rightOnlyRows: Array<{ rowIndex: number; line: ParsedTreeLine }> = []
+  rows.forEach((row, rowIndex) => {
+    if (row.kind !== 'right' || !row.rightLineNumber) return
+    const line = rightLines[row.rightLineNumber - 1]
+    if (line) {
+      rightOnlyRows.push({ rowIndex, line })
+    }
+  })
+
+  if (rightOnlyRows.length === 0) return rows
+
+  const rightByFamilyKey = groupRightOnlyRows(rightOnlyRows, line => line.familyKey)
+  const rightByLooseFamilyKey = groupRightOnlyRows(rightOnlyRows, line => line.looseFamilyKey)
+  const usedRightRows = new Set<number>()
+  const removeRows = new Set<number>()
+
+  const nextRows = rows.map(row => ({ ...row }))
+  rows.forEach((row, rowIndex) => {
+    if (row.kind !== 'left' || !row.leftLineNumber) return
+    const left = leftLines[row.leftLineNumber - 1]
+    if (!left) return
+
+    const right = takeRightOnlyMatch(rightByFamilyKey.get(left.familyKey), usedRightRows)
+      || takeRightOnlyMatch(rightByLooseFamilyKey.get(left.looseFamilyKey), usedRightRows)
+    if (!right) return
+
+    usedRightRows.add(right.rowIndex)
+    removeRows.add(right.rowIndex)
+    nextRows[rowIndex] = buildChangedRow(left.line, right.line.line, left.index + 1, right.line.index + 1)
+  })
+
+  if (removeRows.size === 0) return rows
+  return nextRows.filter((_row, rowIndex) => !removeRows.has(rowIndex))
+}
+
+function groupRightOnlyRows(rows: Array<{ rowIndex: number; line: ParsedTreeLine }>, keyFn: (line: ParsedTreeLine) => string) {
+  const grouped = new Map<string, Array<{ rowIndex: number; line: ParsedTreeLine }>>()
+  for (const row of rows) {
+    const key = keyFn(row.line)
+    if (key === '') continue
+    const group = grouped.get(key)
+    if (group) {
+      group.push(row)
+    } else {
+      grouped.set(key, [row])
+    }
+  }
+  return grouped
+}
+
+function takeRightOnlyMatch(candidates: Array<{ rowIndex: number; line: ParsedTreeLine }> | undefined, usedRightRows: Set<number>) {
+  if (!candidates) return null
+  return candidates.find(candidate => !usedRightRows.has(candidate.rowIndex)) || null
+}
+
+function buildPositionHintsFromRows(rows: DiffRow[], leftLines: ParsedTreeLine[], rightLines: ParsedTreeLine[]) {
+  const hints: PositionHint[] = []
+  rows.forEach((row, index) => {
+    if (!row.leftLineNumber || !row.rightLineNumber) return
+    const left = leftLines[row.leftLineNumber - 1]
+    const right = rightLines[row.rightLineNumber - 1]
+    if (!left || !right) return
+    if (shouldShowPositionHint(left, right)) {
+      hints.push(buildPositionHint(left, right, index + 1))
+    }
+  })
+  return hints
 }
 
 function buildLcsMatchPairs(leftLines: ParsedTreeLine[], rightLines: ParsedTreeLine[]) {
@@ -1229,7 +1399,7 @@ function buildLcsMatchPairs(leftLines: ParsedTreeLine[], rightLines: ParsedTreeL
   for (let leftIndex = leftLines.length - 1; leftIndex >= 0; leftIndex -= 1) {
     for (let rightIndex = rightLines.length - 1; rightIndex >= 0; rightIndex -= 1) {
       const offset = leftIndex * width + rightIndex
-      if (leftLines[leftIndex].key === rightLines[rightIndex].key) {
+      if (linesMatchForAnchor(leftLines[leftIndex], rightLines[rightIndex])) {
         dp[offset] = dp[(leftIndex + 1) * width + rightIndex + 1] + 1
       } else {
         dp[offset] = Math.max(dp[(leftIndex + 1) * width + rightIndex], dp[leftIndex * width + rightIndex + 1])
@@ -1241,7 +1411,7 @@ function buildLcsMatchPairs(leftLines: ParsedTreeLine[], rightLines: ParsedTreeL
   let leftIndex = 0
   let rightIndex = 0
   while (leftIndex < leftLines.length && rightIndex < rightLines.length) {
-    if (leftLines[leftIndex].key === rightLines[rightIndex].key) {
+    if (linesMatchForAnchor(leftLines[leftIndex], rightLines[rightIndex])) {
       pairs.push({ leftIndex, rightIndex })
       leftIndex += 1
       rightIndex += 1
@@ -1254,14 +1424,18 @@ function buildLcsMatchPairs(leftLines: ParsedTreeLine[], rightLines: ParsedTreeL
   return pairs
 }
 
+function linesMatchForAnchor(left: ParsedTreeLine, right: ParsedTreeLine) {
+  return left.anchorKey !== '' && left.anchorKey === right.anchorKey
+}
+
 function appendDiffBlock(rows: DiffRow[], leftBlock: ParsedTreeLine[], rightBlock: ParsedTreeLine[]) {
   if (leftBlock.length === 0 && rightBlock.length === 0) return
 
-  const rightByFamily = groupTreeLinesByKey(rightBlock, line => line.familyKey)
+  const rightByFamily = groupTreeLinesByKey(rightBlock, line => line.looseFamilyKey)
   const matchedRight = new Set<number>()
 
   for (const left of leftBlock) {
-    const right = rightByFamily.get(left.familyKey)?.shift()
+    const right = rightByFamily.get(left.looseFamilyKey)?.shift()
     if (right) {
       matchedRight.add(right.index)
       rows.push(buildChangedRow(left.line, right.line, left.index + 1, right.index + 1))
@@ -1289,11 +1463,22 @@ function parseTreeLines(tree: string): ParsedTreeLine[] {
     const parentPath = stack.map(item => item.key).join('>')
     const key = `${indent}|${parentPath}>${content}`
     const familyKey = `${indent}|${parentPath}>${family}`
+    const looseFamilyKey = `${indent}|${family}`
+    const anchorKey = structureAnchorKey(line, content, family, indent)
     if (content !== '') {
       stack.push({ indent, key: content })
     }
-    return { line, key, familyKey, index }
+    return { line, key, familyKey, looseFamilyKey, anchorKey, index }
   })
+}
+
+function structureAnchorKey(line: string, content: string, family: string, indent: number) {
+  const trimmed = line.trim()
+  if (content === '' || family === '') return ''
+  if (trimmed.includes(' = ')) return ''
+  if (/^(IE Length|Length|Flags?|Spare|Sequence Number|SEID|IPv4|IPv6|Rule ID|PDR ID|FAR ID|QER ID|URR ID)\b/i.test(content)) return ''
+  if (/^(?:\.*[01]\.*\s*)+[=:]/.test(trimmed)) return ''
+  return `${indent}|${family}`
 }
 
 function groupTreeLinesByKey(lines: ParsedTreeLine[], keyFn: (line: ParsedTreeLine) => string = line => line.key) {
@@ -1396,6 +1581,9 @@ function normalizeStructureContent(content: string) {
 }
 
 function buildChangedRow(left: string, right: string, leftLineNumber?: number, rightLineNumber?: number): DiffRow {
+  if (normalizedStructureContentFromLine(left) === normalizedStructureContentFromLine(right)) {
+    return { kind: 'same', left, right, leftLineNumber, rightLineNumber }
+  }
   const [leftSegments, rightSegments] = buildInlineDiff(left, right)
   return { kind: 'changed', left, right, leftLineNumber, rightLineNumber, leftSegments, rightSegments }
 }
