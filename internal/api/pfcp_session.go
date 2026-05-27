@@ -36,7 +36,7 @@ func (h *Handler) GetPFCPSessions(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	timeoutSeconds := req.TimeoutSeconds
-	value, err := h.analysis.getOrCompute(ctx, fmt.Sprintf("%s|pfcp-transaction-v8|timeout=%d", id, timeoutSeconds), func(ctx context.Context) (any, error) {
+	value, err := h.analysis.getOrCompute(ctx, fmt.Sprintf("%s|pfcp-transaction-v10|timeout=%d", id, timeoutSeconds), func(ctx context.Context) (any, error) {
 		analyzer := pfcpsession.NewAnalyzer()
 		if timeoutSeconds > 0 {
 			analyzer.SetTimeout(time.Duration(timeoutSeconds) * time.Second)
@@ -84,7 +84,7 @@ func (h *Handler) StreamPFCPSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	timeoutSeconds := req.TimeoutSeconds
-	cacheKey := fmt.Sprintf("%s|pfcp-transaction-v9-stream|timeout=%d", id, timeoutSeconds)
+	cacheKey := fmt.Sprintf("%s|pfcp-transaction-v10-stream|timeout=%d", id, timeoutSeconds)
 	if value, ok := h.analysis.get(cacheKey); ok {
 		if result, ok := value.(*pfcpsession.AnalysisResult); ok {
 			sendSSEEvent(w, flusher, "done", map[string]any{

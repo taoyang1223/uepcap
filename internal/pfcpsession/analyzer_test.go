@@ -189,6 +189,118 @@ func TestAnalyzeDoesNotTreatSameSequenceDifferentSEIDAsRetransmit(t *testing.T) 
 	}
 }
 
+func TestAnalyzeDoesNotCollapseSameSequenceDifferentEstablishmentSEIDs(t *testing.T) {
+	base := time.Unix(250, 0)
+	messages := []*Message{
+		{
+			FrameNumber:     1,
+			Timestamp:       base,
+			SourceIP:        "10.0.0.1",
+			DestinationIP:   "10.0.0.2",
+			MessageTypeCode: 50,
+			FSEID:           100,
+			SequenceNumber:  7,
+		},
+		{
+			FrameNumber:     2,
+			Timestamp:       base.Add(time.Millisecond),
+			SourceIP:        "10.0.0.2",
+			DestinationIP:   "10.0.0.1",
+			MessageTypeCode: 51,
+			HeaderSEID:      100,
+			FSEID:           200,
+			SequenceNumber:  7,
+			Cause:           ptrUint8(CauseRequestAccepted),
+		},
+		{
+			FrameNumber:     3,
+			Timestamp:       base.Add(2 * time.Millisecond),
+			SourceIP:        "10.0.0.1",
+			DestinationIP:   "10.0.0.2",
+			MessageTypeCode: 50,
+			FSEID:           101,
+			SequenceNumber:  7,
+		},
+	}
+
+	analyzer := NewAnalyzer()
+	result := analyzer.analyze("sample.pcap", messages)
+
+	if result.Statistics.TotalTransactions != 2 {
+		t.Fatalf("total transactions = %d, want 2", result.Statistics.TotalTransactions)
+	}
+	if result.Statistics.Success != 1 {
+		t.Fatalf("success = %d, want 1", result.Statistics.Success)
+	}
+	if result.Statistics.NoResponse != 1 {
+		t.Fatalf("no response = %d, want 1", result.Statistics.NoResponse)
+	}
+}
+
+func TestAnalyzeMatchesSessionMessagesByAssociatedSEIDs(t *testing.T) {
+	base := time.Unix(275, 0)
+	messages := []*Message{
+		{
+			FrameNumber:     1,
+			Timestamp:       base,
+			SourceIP:        "10.0.0.2",
+			DestinationIP:   "10.0.0.1",
+			MessageTypeCode: 51,
+			HeaderSEID:      100,
+			FSEID:           200,
+			SequenceNumber:  6,
+			Cause:           ptrUint8(CauseRequestAccepted),
+		},
+		{
+			FrameNumber:     2,
+			Timestamp:       base.Add(time.Millisecond),
+			SourceIP:        "10.0.0.1",
+			DestinationIP:   "10.0.0.2",
+			MessageTypeCode: 52,
+			HeaderSEID:      200,
+			SequenceNumber:  8,
+		},
+		{
+			FrameNumber:     3,
+			Timestamp:       base.Add(2 * time.Millisecond),
+			SourceIP:        "10.0.0.2",
+			DestinationIP:   "10.0.0.1",
+			MessageTypeCode: 53,
+			HeaderSEID:      100,
+			SequenceNumber:  8,
+			Cause:           ptrUint8(CauseRequestAccepted),
+		},
+		{
+			FrameNumber:     4,
+			Timestamp:       base.Add(3 * time.Millisecond),
+			SourceIP:        "10.0.0.1",
+			DestinationIP:   "10.0.0.2",
+			MessageTypeCode: 52,
+			HeaderSEID:      201,
+			SequenceNumber:  8,
+		},
+	}
+
+	analyzer := NewAnalyzer()
+	result := analyzer.analyze("sample.pcap", messages)
+
+	if result.Statistics.TotalTransactions != 2 {
+		t.Fatalf("total transactions = %d, want 2", result.Statistics.TotalTransactions)
+	}
+	if result.Statistics.Success != 1 {
+		t.Fatalf("success = %d, want 1", result.Statistics.Success)
+	}
+	if result.Statistics.NoResponse != 1 {
+		t.Fatalf("no response = %d, want 1", result.Statistics.NoResponse)
+	}
+	if result.Transactions[0].Status != StatusSuccess {
+		t.Fatalf("first transaction status = %s, want %s", result.Transactions[0].Status, StatusSuccess)
+	}
+	if result.Transactions[1].Status != StatusNoResponse {
+		t.Fatalf("second transaction status = %s, want %s", result.Transactions[1].Status, StatusNoResponse)
+	}
+}
+
 func TestAnalyzeIncludesSessionReportTransactions(t *testing.T) {
 	base := time.Unix(300, 0)
 	messages := []*Message{

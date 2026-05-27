@@ -163,9 +163,10 @@ func (a *Analyzer) analyze(filename string, messages []*Message) *AnalysisResult
 		TotalPackets: len(messages),
 	}
 	sessionEstablishmentResponseSEIDs := collectSessionEstablishmentResponseSEIDsByHeader(messages)
+	sessionPeerSEIDs := collectSessionPeerSEIDs(messages)
 
 	requests := make(map[string][]*Message)
-	responses := make(map[string]*Message)
+	responses := make(map[string][]*Message)
 	requestCounts := make(map[string][]int)
 
 	for _, msg := range messages {
@@ -182,9 +183,7 @@ func (a *Analyzer) analyze(filename string, messages []*Message) *AnalysisResult
 		}
 		if isResponse(msg.MessageTypeCode) {
 			reverseKey := makeReverseKey(msg)
-			if _, exists := responses[reverseKey]; !exists {
-				responses[reverseKey] = msg
-			}
+			responses[reverseKey] = append(responses[reverseKey], msg)
 		}
 	}
 
@@ -194,45 +193,16 @@ func (a *Analyzer) analyze(filename string, messages []*Message) *AnalysisResult
 		if len(reqs) == 0 {
 			continue
 		}
-		if resp, ok := responses[key]; ok {
-			req := reqs[0]
-			txID++
-			tx := newTransaction(txID, req, sessionEstablishmentResponseSEIDs)
-			if frames := requestCounts[makeRetransmitKey(req)]; len(frames) > 1 {
-				tx.RetransmitCount = len(frames) - 1
-				tx.RetransmitFrames = append([]int(nil), frames[1:]...)
-			}
-			tx.ResponseSEID = resp.HeaderSEID
-			tx.ResponseFSEID = resp.FSEID
-			tx.ResponseTime = &resp.Timestamp
-			tx.ResponseFrame = &resp.FrameNumber
-			tx.SEIDFilter = transactionSEIDFilter(sessionEstablishmentResponseSEIDs, req, resp)
-
-			responseTimeMs := resp.Timestamp.Sub(req.Timestamp).Seconds() * 1000
-			tx.ResponseTimeMs = &responseTimeMs
-
-			if resp.Cause != nil {
-				tx.Cause = resp.Cause
-				tx.CauseName = CauseName(*resp.Cause)
-				if *resp.Cause == CauseRequestAccepted {
-					if resp.Timestamp.Sub(req.Timestamp) > a.timeout {
-						tx.Status = StatusTimeout
-					} else {
-						tx.Status = StatusSuccess
-					}
-				} else {
-					tx.Status = StatusFailed
-				}
-			} else {
-				tx.Status = StatusSuccess
-			}
-			transactions = append(transactions, tx)
-			continue
-		}
-
+		resps := responses[key]
+		usedResponses := make([]bool, len(resps))
 		seenRetries := make(map[string]int)
 		for _, req := range reqs {
 			txID++
+			if respIndex := findMatchingResponse(req, resps, usedResponses, sessionPeerSEIDs); respIndex >= 0 {
+				usedResponses[respIndex] = true
+				transactions = append(transactions, newCompletedTransaction(txID, req, resps[respIndex], sessionEstablishmentResponseSEIDs, requestCounts, a.timeout))
+				continue
+			}
 			tx := newTransaction(txID, req, sessionEstablishmentResponseSEIDs)
 			tx.Status = StatusNoResponse
 			retransmitKey := makeRetransmitKey(req)
@@ -262,8 +232,9 @@ type streamState struct {
 	totalPackets                      int
 	sessionEstablishmentResponseSEIDs map[uint64][]uint64
 	sessionEstablishmentSeen          map[uint64]map[uint64]bool
+	sessionPeerSEIDs                  map[uint64]map[uint64]bool
 	pendingRequests                   map[string][]*Message
-	orphanResponses                   map[string]*Message
+	orphanResponses                   map[string][]*Message
 	requestCounts                     map[string][]int
 	completed                         []*Transaction
 }
@@ -274,8 +245,9 @@ func newStreamState(filename string, timeout time.Duration) *streamState {
 		timeout:                           timeout,
 		sessionEstablishmentResponseSEIDs: make(map[uint64][]uint64),
 		sessionEstablishmentSeen:          make(map[uint64]map[uint64]bool),
+		sessionPeerSEIDs:                  make(map[uint64]map[uint64]bool),
 		pendingRequests:                   make(map[string][]*Message),
-		orphanResponses:                   make(map[string]*Message),
+		orphanResponses:                   make(map[string][]*Message),
 		requestCounts:                     make(map[string][]int),
 	}
 }
@@ -291,21 +263,24 @@ func (s *streamState) add(msg *Message) {
 		s.requestCounts[retransmitKey] = append(s.requestCounts[retransmitKey], msg.FrameNumber)
 		key := makeKey(msg)
 		s.pendingRequests[key] = append(s.pendingRequests[key], msg)
-		if resp, ok := s.orphanResponses[key]; ok {
-			s.complete(key, resp)
-			delete(s.orphanResponses, key)
+		reqIndex := len(s.pendingRequests[key]) - 1
+		if respIndex := s.findOrphanResponseIndex(key, msg); respIndex >= 0 {
+			resp := s.orphanResponses[key][respIndex]
+			s.orphanResponses[key] = removeMessageAt(s.orphanResponses[key], respIndex)
+			if len(s.orphanResponses[key]) == 0 {
+				delete(s.orphanResponses, key)
+			}
+			s.completeAt(key, reqIndex, resp)
 		}
 		return
 	}
 	if isResponse(msg.MessageTypeCode) {
 		key := makeReverseKey(msg)
-		if len(s.pendingRequests[key]) > 0 {
-			s.complete(key, msg)
+		if reqIndex := s.findPendingRequestIndex(key, msg); reqIndex >= 0 {
+			s.completeAt(key, reqIndex, msg)
 			return
 		}
-		if _, exists := s.orphanResponses[key]; !exists {
-			s.orphanResponses[key] = msg
-		}
+		s.orphanResponses[key] = append(s.orphanResponses[key], msg)
 	}
 }
 
@@ -321,45 +296,32 @@ func (s *streamState) collectSessionEstablishmentResponseSEIDs(msg *Message) {
 	seids := s.sessionEstablishmentResponseSEIDs[msg.HeaderSEID]
 	addUniqueSEIDs(&seids, seen, msg.HeaderSEID, msg.FSEID)
 	s.sessionEstablishmentResponseSEIDs[msg.HeaderSEID] = seids
+	addSEIDPeer(s.sessionPeerSEIDs, msg.HeaderSEID, msg.FSEID)
 }
 
-func (s *streamState) complete(key string, resp *Message) {
+func (s *streamState) findPendingRequestIndex(key string, resp *Message) int {
 	reqs := s.pendingRequests[key]
-	if len(reqs) == 0 {
+	used := make([]bool, 0)
+	return findMatchingResponseRequest(resp, reqs, used, s.sessionPeerSEIDs)
+}
+
+func (s *streamState) findOrphanResponseIndex(key string, req *Message) int {
+	resps := s.orphanResponses[key]
+	used := make([]bool, len(resps))
+	return findMatchingResponse(req, resps, used, s.sessionPeerSEIDs)
+}
+
+func (s *streamState) completeAt(key string, reqIndex int, resp *Message) {
+	reqs := s.pendingRequests[key]
+	if reqIndex < 0 || reqIndex >= len(reqs) {
 		return
 	}
-	req := reqs[0]
-	tx := newTransaction(0, req, s.sessionEstablishmentResponseSEIDs)
-	if frames := s.requestCounts[makeRetransmitKey(req)]; len(frames) > 1 {
-		tx.RetransmitCount = len(frames) - 1
-		tx.RetransmitFrames = append([]int(nil), frames[1:]...)
+	req := reqs[reqIndex]
+	s.completed = append(s.completed, newCompletedTransaction(0, req, resp, s.sessionEstablishmentResponseSEIDs, s.requestCounts, s.timeout))
+	s.pendingRequests[key] = removeMessageAt(reqs, reqIndex)
+	if len(s.pendingRequests[key]) == 0 {
+		delete(s.pendingRequests, key)
 	}
-	tx.ResponseSEID = resp.HeaderSEID
-	tx.ResponseFSEID = resp.FSEID
-	tx.ResponseTime = &resp.Timestamp
-	tx.ResponseFrame = &resp.FrameNumber
-	tx.SEIDFilter = transactionSEIDFilter(s.sessionEstablishmentResponseSEIDs, req, resp)
-
-	responseTimeMs := resp.Timestamp.Sub(req.Timestamp).Seconds() * 1000
-	tx.ResponseTimeMs = &responseTimeMs
-
-	if resp.Cause != nil {
-		tx.Cause = resp.Cause
-		tx.CauseName = CauseName(*resp.Cause)
-		if *resp.Cause == CauseRequestAccepted {
-			if resp.Timestamp.Sub(req.Timestamp) > s.timeout {
-				tx.Status = StatusTimeout
-			} else {
-				tx.Status = StatusSuccess
-			}
-		} else {
-			tx.Status = StatusFailed
-		}
-	} else {
-		tx.Status = StatusSuccess
-	}
-	s.completed = append(s.completed, tx)
-	delete(s.pendingRequests, key)
 }
 
 func (s *streamState) result(final bool) *AnalysisResult {
@@ -396,6 +358,154 @@ func (s *streamState) result(final bool) *AnalysisResult {
 		Statistics:   calculateStatistics(transactions),
 		Transactions: transactions,
 	}
+}
+
+func newCompletedTransaction(id int, req, resp *Message, establishmentResponseSEIDs map[uint64][]uint64, requestCounts map[string][]int, timeout time.Duration) *Transaction {
+	tx := newTransaction(id, req, establishmentResponseSEIDs)
+	if frames := requestCounts[makeRetransmitKey(req)]; len(frames) > 1 {
+		tx.RetransmitCount = len(frames) - 1
+		tx.RetransmitFrames = append([]int(nil), frames[1:]...)
+	}
+	tx.ResponseSEID = resp.HeaderSEID
+	tx.ResponseFSEID = resp.FSEID
+	tx.ResponseTime = &resp.Timestamp
+	tx.ResponseFrame = &resp.FrameNumber
+	tx.SEIDFilter = transactionSEIDFilter(establishmentResponseSEIDs, req, resp)
+
+	responseTimeMs := resp.Timestamp.Sub(req.Timestamp).Seconds() * 1000
+	tx.ResponseTimeMs = &responseTimeMs
+
+	if resp.Cause != nil {
+		tx.Cause = resp.Cause
+		tx.CauseName = CauseName(*resp.Cause)
+		if *resp.Cause == CauseRequestAccepted {
+			if resp.Timestamp.Sub(req.Timestamp) > timeout {
+				tx.Status = StatusTimeout
+			} else {
+				tx.Status = StatusSuccess
+			}
+		} else {
+			tx.Status = StatusFailed
+		}
+	} else {
+		tx.Status = StatusSuccess
+	}
+	return tx
+}
+
+func findMatchingResponse(req *Message, responses []*Message, used []bool, peers map[uint64]map[uint64]bool) int {
+	for i, resp := range responses {
+		if i < len(used) && used[i] {
+			continue
+		}
+		if messagesCanMatch(req, resp, peers) {
+			return i
+		}
+	}
+	return -1
+}
+
+func findMatchingResponseRequest(resp *Message, requests []*Message, used []bool, peers map[uint64]map[uint64]bool) int {
+	for i, req := range requests {
+		if i < len(used) && used[i] {
+			continue
+		}
+		if messagesCanMatch(req, resp, peers) {
+			return i
+		}
+	}
+	return -1
+}
+
+func messagesCanMatch(req, resp *Message, peers map[uint64]map[uint64]bool) bool {
+	if req == nil || resp == nil {
+		return false
+	}
+	if !isRequest(req.MessageTypeCode) || !isResponse(resp.MessageTypeCode) {
+		return false
+	}
+	if messageTypeCategory(req.MessageTypeCode) != messageTypeCategory(resp.MessageTypeCode) {
+		return false
+	}
+	if req.SequenceNumber != resp.SequenceNumber {
+		return false
+	}
+	if req.SourceIP != resp.DestinationIP || req.DestinationIP != resp.SourceIP {
+		return false
+	}
+	if !resp.Timestamp.IsZero() && !req.Timestamp.IsZero() && resp.Timestamp.Before(req.Timestamp) {
+		return false
+	}
+	if !requiresSessionSEIDMatch(req.MessageTypeCode) {
+		return true
+	}
+
+	reqSEIDs := transactionMatchSEIDs(req)
+	respSEIDs := transactionMatchSEIDs(resp)
+	if len(reqSEIDs) == 0 || len(respSEIDs) == 0 {
+		return true
+	}
+	for _, reqSEID := range reqSEIDs {
+		for _, respSEID := range respSEIDs {
+			if seidsCompatible(reqSEID, respSEID, peers) {
+				return true
+			}
+		}
+	}
+	if hasAnySEIDPeer(reqSEIDs, peers) || hasAnySEIDPeer(respSEIDs, peers) {
+		return false
+	}
+	return true
+}
+
+func requiresSessionSEIDMatch(msgType uint8) bool {
+	switch msgType {
+	case 50, 51, 52, 53, 54, 55, 56, 57:
+		return true
+	default:
+		return false
+	}
+}
+
+func transactionMatchSEIDs(msg *Message) []uint64 {
+	if msg == nil {
+		return nil
+	}
+	values := make([]uint64, 0, 2)
+	seen := make(map[uint64]bool, 2)
+	if msg.MessageTypeCode == 50 && msg.FSEID != 0 {
+		addUniqueSEIDs(&values, seen, msg.FSEID)
+		return values
+	}
+	addUniqueSEIDs(&values, seen, msg.HeaderSEID, msg.FSEID)
+	return values
+}
+
+func seidsCompatible(left, right uint64, peers map[uint64]map[uint64]bool) bool {
+	if left == 0 || right == 0 {
+		return false
+	}
+	if left == right {
+		return true
+	}
+	return peers[left][right] || peers[right][left]
+}
+
+func hasAnySEIDPeer(values []uint64, peers map[uint64]map[uint64]bool) bool {
+	for _, value := range values {
+		if len(peers[value]) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func removeMessageAt(messages []*Message, index int) []*Message {
+	if index < 0 || index >= len(messages) {
+		return messages
+	}
+	copy(messages[index:], messages[index+1:])
+	return messages[:len(messages)-1]
 }
 
 func newTransaction(id int, req *Message, establishmentResponseSEIDs map[uint64][]uint64) *Transaction {
@@ -509,6 +619,31 @@ func collectSessionEstablishmentResponseSEIDsByHeader(messages []*Message) map[u
 		seidsByHeader[msg.HeaderSEID] = seids
 	}
 	return seidsByHeader
+}
+
+func collectSessionPeerSEIDs(messages []*Message) map[uint64]map[uint64]bool {
+	peers := make(map[uint64]map[uint64]bool)
+	for _, msg := range messages {
+		if msg == nil || msg.MessageTypeCode != 51 {
+			continue
+		}
+		addSEIDPeer(peers, msg.HeaderSEID, msg.FSEID)
+	}
+	return peers
+}
+
+func addSEIDPeer(peers map[uint64]map[uint64]bool, left, right uint64) {
+	if left == 0 || right == 0 || left == right {
+		return
+	}
+	if peers[left] == nil {
+		peers[left] = make(map[uint64]bool)
+	}
+	if peers[right] == nil {
+		peers[right] = make(map[uint64]bool)
+	}
+	peers[left][right] = true
+	peers[right][left] = true
 }
 
 func transactionSEIDFilter(establishmentResponseSEIDs map[uint64][]uint64, messages ...*Message) string {
