@@ -31,7 +31,7 @@ func (h *Handler) GetS1APMessages(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	value, err := h.analysis.getOrCompute(ctx, id+"|s1ap", func(ctx context.Context) (any, error) {
+	value, err := h.analysis.getOrCompute(ctx, id+"|s1ap-v2", func(ctx context.Context) (any, error) {
 		result, err := s1apanalyzer.NewAnalyzer().AnalyzeFile(ctx, job.MergedPcap)
 		if err != nil {
 			return nil, err

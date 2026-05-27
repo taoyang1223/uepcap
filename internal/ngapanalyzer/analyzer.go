@@ -354,7 +354,14 @@ func calculateProcedureStats(messages []*Message) []ProcedureCount {
 
 func transactionKey(msg *Message) string {
 	id := firstNonEmpty(msg.AMFUENGAPID, msg.RANUENGAPID)
-	return msg.ProcedureCode + ":" + id
+	return msg.ProcedureCode + ":" + endpointPair(msg.SourceIP, msg.DestinationIP) + ":" + id
+}
+
+func endpointPair(left, right string) string {
+	if left > right {
+		left, right = right, left
+	}
+	return left + "<->" + right
 }
 
 func isNASTransportProcedure(code string) bool {

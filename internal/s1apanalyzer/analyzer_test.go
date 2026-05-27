@@ -1,6 +1,9 @@
 package s1apanalyzer
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestParseFieldRows(t *testing.T) {
 	output := "10\t1710000000.100\t10.0.0.1\t10.0.0.2\t\t\t12\t0\t100\t200\t0x41\t\t\t\t\t\n" +
@@ -69,5 +72,58 @@ func TestParseFieldRowsExpandsBundledS1APPDUs(t *testing.T) {
 		if messages[i].PDUType != wantPDUs[i] {
 			t.Fatalf("message[%d] pdu = %q, want %q", i, messages[i].PDUType, wantPDUs[i])
 		}
+	}
+}
+
+func TestTransactionsDoNotCrossPeerPairs(t *testing.T) {
+	base := time.Unix(100, 0)
+	messages := []*Message{
+		{
+			FrameNumber:     1,
+			Timestamp:       base,
+			SourceIP:        "10.0.0.11",
+			DestinationIP:   "10.0.0.1",
+			ProcedureCode:   "17",
+			ProcedureName:   ProcedureName("17"),
+			PDUType:         PDUInitiating,
+			MMEUES1APID:     "99",
+			ENBUES1APID:     "7",
+			WiresharkFilter: "frame.number == 1",
+		},
+		{
+			FrameNumber:     2,
+			Timestamp:       base.Add(time.Millisecond),
+			SourceIP:        "10.0.0.10",
+			DestinationIP:   "10.0.0.1",
+			ProcedureCode:   "17",
+			ProcedureName:   ProcedureName("17"),
+			PDUType:         PDUInitiating,
+			MMEUES1APID:     "99",
+			ENBUES1APID:     "7",
+			WiresharkFilter: "frame.number == 2",
+		},
+		{
+			FrameNumber:     3,
+			Timestamp:       base.Add(2 * time.Millisecond),
+			SourceIP:        "10.0.0.1",
+			DestinationIP:   "10.0.0.10",
+			ProcedureCode:   "17",
+			ProcedureName:   ProcedureName("17"),
+			PDUType:         PDUSuccessfulOutcome,
+			MMEUES1APID:     "99",
+			ENBUES1APID:     "7",
+			WiresharkFilter: "frame.number == 3",
+		},
+	}
+
+	result := analyze("sample.pcap", messages)
+	if result.Statistics.SuccessfulTransactions != 1 || result.Statistics.InProgressTransactions != 1 {
+		t.Fatalf("success/in-progress = %d/%d, want 1/1", result.Statistics.SuccessfulTransactions, result.Statistics.InProgressTransactions)
+	}
+	if result.Transactions[0].Status != TransactionInProgress {
+		t.Fatalf("first transaction status = %s, want in_progress", result.Transactions[0].Status)
+	}
+	if result.Transactions[1].Status != TransactionSuccess {
+		t.Fatalf("second transaction status = %s, want success", result.Transactions[1].Status)
 	}
 }
