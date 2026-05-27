@@ -2,6 +2,7 @@ package s1apanalyzer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"gitee.com/yangdadayyds/uepcap/internal/analysislimit"
 	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
 
@@ -38,15 +40,47 @@ func NewAnalyzer() *Analyzer {
 }
 
 func (a *Analyzer) AnalyzeFile(ctx context.Context, pcapFile string) (*AnalysisResult, error) {
-	result, err := tshark.TsharkFields(ctx, pcapFile, "s1ap", tsharkS1APFields)
+	messages, truncated, err := readMessages(ctx, pcapFile)
 	if err != nil {
 		return nil, err
 	}
-	if result.ExitCode != 0 {
-		return nil, fmt.Errorf("tshark S1AP analysis failed: %s", strings.TrimSpace(result.Stderr))
+	result := analyze(pcapFile, messages)
+	result.Truncated = truncated
+	if truncated {
+		result.MessageLimit = analysislimit.MaxRows("UEPCAP_S1AP_ANALYSIS_MAX_MESSAGES")
 	}
-	messages := parseFieldRows(result.Stdout)
-	return analyze(pcapFile, messages), nil
+	return result, nil
+}
+
+var errS1APMessageLimitReached = errors.New("S1AP message limit reached")
+
+func readMessages(ctx context.Context, pcapFile string) ([]*Message, bool, error) {
+	limit := analysislimit.MaxRows("UEPCAP_S1AP_ANALYSIS_MAX_MESSAGES")
+	messages := make([]*Message, 0, 4096)
+	truncated := false
+	result, err := tshark.TsharkFieldsStream(ctx, pcapFile, "s1ap", tsharkS1APFields, func(line string) error {
+		rowMessages := parseFieldRow(line)
+		if limit > 0 && len(messages)+len(rowMessages) > limit {
+			remaining := limit - len(messages)
+			if remaining > 0 {
+				messages = append(messages, rowMessages[:remaining]...)
+			}
+			truncated = true
+			return errS1APMessageLimitReached
+		}
+		messages = append(messages, rowMessages...)
+		return nil
+	})
+	if errors.Is(err, errS1APMessageLimitReached) {
+		return messages, truncated, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if result.ExitCode != 0 {
+		return nil, false, fmt.Errorf("tshark S1AP analysis failed: %s", strings.TrimSpace(result.Stderr))
+	}
+	return messages, truncated, nil
 }
 
 func analyze(filename string, messages []*Message) *AnalysisResult {
@@ -74,56 +108,62 @@ func parseFieldRows(output string) []*Message {
 	lines := strings.Split(strings.TrimRight(output, "\r\n"), "\n")
 	messages := make([]*Message, 0, len(lines))
 	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
+		messages = append(messages, parseFieldRow(line)...)
+	}
+	return messages
+}
+
+func parseFieldRow(line string) []*Message {
+	if strings.TrimSpace(line) == "" {
+		return nil
+	}
+	cols := strings.Split(line, "\t")
+	for len(cols) < len(tsharkS1APFields) {
+		cols = append(cols, "")
+	}
+
+	procedureCodes := splitValues(cols[6])
+	pduCodes := splitValues(cols[7])
+	sourceIP := firstNonEmpty(cols[2], cols[4])
+	destinationIP := firstNonEmpty(cols[3], cols[5])
+	if len(procedureCodes) == 0 || net.ParseIP(sourceIP) == nil || net.ParseIP(destinationIP) == nil {
+		return nil
+	}
+
+	mmeIDs := splitValues(cols[8])
+	enbIDs := splitValues(cols[9])
+	emmTypes := splitValues(cols[10])
+	esmTypes := splitValues(cols[11])
+	gtpTEIDs := append(append(splitValues(cols[12]), splitValues(cols[13])...), splitValues(cols[14])...)
+	erabIDs := splitValues(cols[15])
+	messageCount := max(len(procedureCodes), len(pduCodes))
+	messages := make([]*Message, 0, messageCount)
+	for i := 0; i < messageCount; i++ {
+		procedureCode := indexedValue(procedureCodes, i)
+		if procedureCode == "" {
 			continue
 		}
-		cols := strings.Split(line, "\t")
-		for len(cols) < len(tsharkS1APFields) {
-			cols = append(cols, "")
+		pduCode := indexedValue(pduCodes, i)
+		pduType := PDUTypeFromCode(pduCode)
+		msg := &Message{
+			FrameNumber:        parseInt(cols[0]),
+			Timestamp:          parseEpoch(cols[1]),
+			SourceIP:           sourceIP,
+			DestinationIP:      destinationIP,
+			Direction:          inferDirection(procedureCode, pduType),
+			ProcedureCode:      procedureCode,
+			ProcedureName:      ProcedureName(procedureCode),
+			PDUCode:            pduCode,
+			PDUType:            pduType,
+			MMEUES1APID:        indexedValue(mmeIDs, i),
+			ENBUES1APID:        indexedValue(enbIDs, i),
+			HasNAS:             strictIndexedValue(emmTypes, i) != "" || strictIndexedValue(esmTypes, i) != "",
+			GTPTEID:            indexedValue(gtpTEIDs, i),
+			ERABID:             indexedValue(erabIDs, i),
+			TransactionCapable: isTransactionProcedure(procedureCode),
 		}
-
-		procedureCodes := splitValues(cols[6])
-		pduCodes := splitValues(cols[7])
-		sourceIP := firstNonEmpty(cols[2], cols[4])
-		destinationIP := firstNonEmpty(cols[3], cols[5])
-		if len(procedureCodes) == 0 || net.ParseIP(sourceIP) == nil || net.ParseIP(destinationIP) == nil {
-			continue
-		}
-
-		mmeIDs := splitValues(cols[8])
-		enbIDs := splitValues(cols[9])
-		emmTypes := splitValues(cols[10])
-		esmTypes := splitValues(cols[11])
-		gtpTEIDs := append(append(splitValues(cols[12]), splitValues(cols[13])...), splitValues(cols[14])...)
-		erabIDs := splitValues(cols[15])
-		messageCount := max(len(procedureCodes), len(pduCodes))
-		for i := 0; i < messageCount; i++ {
-			procedureCode := indexedValue(procedureCodes, i)
-			if procedureCode == "" {
-				continue
-			}
-			pduCode := indexedValue(pduCodes, i)
-			pduType := PDUTypeFromCode(pduCode)
-			msg := &Message{
-				FrameNumber:        parseInt(cols[0]),
-				Timestamp:          parseEpoch(cols[1]),
-				SourceIP:           sourceIP,
-				DestinationIP:      destinationIP,
-				Direction:          inferDirection(procedureCode, pduType),
-				ProcedureCode:      procedureCode,
-				ProcedureName:      ProcedureName(procedureCode),
-				PDUCode:            pduCode,
-				PDUType:            pduType,
-				MMEUES1APID:        indexedValue(mmeIDs, i),
-				ENBUES1APID:        indexedValue(enbIDs, i),
-				HasNAS:             strictIndexedValue(emmTypes, i) != "" || strictIndexedValue(esmTypes, i) != "",
-				GTPTEID:            indexedValue(gtpTEIDs, i),
-				ERABID:             indexedValue(erabIDs, i),
-				TransactionCapable: isTransactionProcedure(procedureCode),
-			}
-			msg.WiresharkFilter = messageFilter(msg)
-			messages = append(messages, msg)
-		}
+		msg.WiresharkFilter = messageFilter(msg)
+		messages = append(messages, msg)
 	}
 	return messages
 }

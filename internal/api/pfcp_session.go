@@ -35,7 +35,7 @@ func (h *Handler) GetPFCPSessions(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	timeoutSeconds := req.TimeoutSeconds
-	value, err := h.analysis.getOrCompute(ctx, fmt.Sprintf("%s|pfcp-transaction-v7|timeout=%d", id, timeoutSeconds), func(ctx context.Context) (any, error) {
+	value, err := h.analysis.getOrCompute(ctx, fmt.Sprintf("%s|pfcp-transaction-v8|timeout=%d", id, timeoutSeconds), func(ctx context.Context) (any, error) {
 		analyzer := pfcpsession.NewAnalyzer()
 		if timeoutSeconds > 0 {
 			analyzer.SetTimeout(time.Duration(timeoutSeconds) * time.Second)

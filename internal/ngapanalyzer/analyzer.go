@@ -2,6 +2,7 @@ package ngapanalyzer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"gitee.com/yangdadayyds/uepcap/internal/analysislimit"
 	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
 
@@ -35,15 +37,46 @@ func NewAnalyzer() *Analyzer {
 }
 
 func (a *Analyzer) AnalyzeFile(ctx context.Context, pcapFile string) (*AnalysisResult, error) {
-	result, err := tshark.TsharkFields(ctx, pcapFile, "ngap", tsharkNGAPFields)
+	messages, truncated, err := readMessages(ctx, pcapFile)
 	if err != nil {
 		return nil, err
 	}
-	if result.ExitCode != 0 {
-		return nil, fmt.Errorf("tshark NGAP analysis failed: %s", strings.TrimSpace(result.Stderr))
+	result := analyze(pcapFile, messages)
+	result.Truncated = truncated
+	if truncated {
+		result.MessageLimit = analysislimit.MaxRows("UEPCAP_NGAP_ANALYSIS_MAX_MESSAGES")
 	}
-	messages := parseFieldRows(result.Stdout)
-	return analyze(pcapFile, messages), nil
+	return result, nil
+}
+
+var errNGAPMessageLimitReached = errors.New("NGAP message limit reached")
+
+func readMessages(ctx context.Context, pcapFile string) ([]*Message, bool, error) {
+	limit := analysislimit.MaxRows("UEPCAP_NGAP_ANALYSIS_MAX_MESSAGES")
+	messages := make([]*Message, 0, 4096)
+	truncated := false
+	result, err := tshark.TsharkFieldsStream(ctx, pcapFile, "ngap", tsharkNGAPFields, func(line string) error {
+		msg := parseFieldRow(line)
+		if msg == nil {
+			return nil
+		}
+		if limit > 0 && len(messages) >= limit {
+			truncated = true
+			return errNGAPMessageLimitReached
+		}
+		messages = append(messages, msg)
+		return nil
+	})
+	if errors.Is(err, errNGAPMessageLimitReached) {
+		return messages, truncated, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if result.ExitCode != 0 {
+		return nil, false, fmt.Errorf("tshark NGAP analysis failed: %s", strings.TrimSpace(result.Stderr))
+	}
+	return messages, truncated, nil
 }
 
 func analyze(filename string, messages []*Message) *AnalysisResult {
@@ -71,42 +104,48 @@ func parseFieldRows(output string) []*Message {
 	lines := strings.Split(strings.TrimRight(output, "\r\n"), "\n")
 	messages := make([]*Message, 0, len(lines))
 	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			continue
+		if msg := parseFieldRow(line); msg != nil {
+			messages = append(messages, msg)
 		}
-		cols := strings.Split(line, "\t")
-		for len(cols) < len(tsharkNGAPFields) {
-			cols = append(cols, "")
-		}
-
-		procedureCode := firstValue(cols[6])
-		pduCode := firstValue(cols[7])
-		sourceIP := firstNonEmpty(cols[2], cols[4])
-		destinationIP := firstNonEmpty(cols[3], cols[5])
-		if procedureCode == "" || net.ParseIP(sourceIP) == nil || net.ParseIP(destinationIP) == nil {
-			continue
-		}
-
-		msg := &Message{
-			FrameNumber:        parseInt(cols[0]),
-			Timestamp:          parseEpoch(cols[1]),
-			SourceIP:           sourceIP,
-			DestinationIP:      destinationIP,
-			Direction:          inferDirection(procedureCode),
-			ProcedureCode:      procedureCode,
-			ProcedureName:      ProcedureName(procedureCode),
-			PDUCode:            pduCode,
-			PDUType:            PDUTypeFromCode(pduCode),
-			AMFUENGAPID:        firstValue(cols[8]),
-			RANUENGAPID:        firstValue(cols[9]),
-			HasNAS:             firstValue(cols[10]) != "" || firstValue(cols[11]) != "",
-			GTPTEID:            firstValue(cols[12]),
-			TransactionCapable: isTransactionProcedure(procedureCode),
-		}
-		msg.WiresharkFilter = messageFilter(msg)
-		messages = append(messages, msg)
 	}
 	return messages
+}
+
+func parseFieldRow(line string) *Message {
+	if strings.TrimSpace(line) == "" {
+		return nil
+	}
+	cols := strings.Split(line, "\t")
+	for len(cols) < len(tsharkNGAPFields) {
+		cols = append(cols, "")
+	}
+
+	procedureCode := firstValue(cols[6])
+	pduCode := firstValue(cols[7])
+	sourceIP := firstNonEmpty(cols[2], cols[4])
+	destinationIP := firstNonEmpty(cols[3], cols[5])
+	if procedureCode == "" || net.ParseIP(sourceIP) == nil || net.ParseIP(destinationIP) == nil {
+		return nil
+	}
+
+	msg := &Message{
+		FrameNumber:        parseInt(cols[0]),
+		Timestamp:          parseEpoch(cols[1]),
+		SourceIP:           sourceIP,
+		DestinationIP:      destinationIP,
+		Direction:          inferDirection(procedureCode),
+		ProcedureCode:      procedureCode,
+		ProcedureName:      ProcedureName(procedureCode),
+		PDUCode:            pduCode,
+		PDUType:            PDUTypeFromCode(pduCode),
+		AMFUENGAPID:        firstValue(cols[8]),
+		RANUENGAPID:        firstValue(cols[9]),
+		HasNAS:             firstValue(cols[10]) != "" || firstValue(cols[11]) != "",
+		GTPTEID:            firstValue(cols[12]),
+		TransactionCapable: isTransactionProcedure(procedureCode),
+	}
+	msg.WiresharkFilter = messageFilter(msg)
+	return msg
 }
 
 func inferDirection(procedureCode string) Direction {

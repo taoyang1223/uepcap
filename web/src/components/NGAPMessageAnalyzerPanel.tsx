@@ -90,6 +90,8 @@ interface NGAPAnalysisResult {
   filename: string
   analyzed_at: string
   total_packets: number
+  truncated?: boolean
+  message_limit?: number
   statistics: NGAPStatistics
   messages: NGAPMessage[]
   procedure_stats: ProcedureCount[]
@@ -374,6 +376,12 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
                   </div>
                 </div>
               </div>
+
+              {result.truncated && (
+                <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+                  NGAP 消息数量过大，已分析前 {formatCount(result.message_limit || result.total_packets)} 条匹配消息并停止继续读取，避免环境卡死。
+                </div>
+              )}
 
               {!hasNGAPMessages ? (
                 <EmptyNGAPState />
@@ -775,6 +783,10 @@ function shortFilename(filename?: string) {
   if (!filename) return '当前上传抓包'
   const parts = filename.split(/[\\/]/)
   return parts[parts.length - 1] || filename
+}
+
+function formatCount(value: number) {
+  return new Intl.NumberFormat('zh-CN').format(value)
 }
 
 function paginate<T>(items: T[], page: number) {

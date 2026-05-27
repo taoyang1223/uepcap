@@ -2,31 +2,33 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
 
+const (
+	maxUploadBytes  int64 = 2 << 30 // 2 GiB total request body
+	maxUploadMemory int64 = 8 << 20 // 8 MiB form field buffer; files are streamed to disk
+)
+
 // CreateJob handles POST /api/jobs - upload pcap files and create a job
 func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
-	// Parse multipart form (max 500MB)
-	if err := r.ParseMultipartForm(500 << 20); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to parse form: %v", err))
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	reader, err := r.MultipartReader()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to read multipart upload: %v", err))
 		return
 	}
 
-	files := r.MultipartForm.File["files"]
-	if len(files) == 0 {
-		writeError(w, http.StatusBadRequest, "no files uploaded")
-		return
-	}
-
-	// Create job
 	job, err := h.jobMgr.CreateJob()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to create job: %v", err))
@@ -35,37 +37,75 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 
 	jobDir := h.jobMgr.GetJobDir(job.ID)
 	var savedFiles []string
+	var fileCount int
 
-	// Save uploaded files
-	for _, fileHeader := range files {
-		file, err := fileHeader.Open()
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to open uploaded file: %v", err))
+			h.jobMgr.DeleteJob(job.ID)
+			if isMaxBytesError(err) {
+				writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("upload is too large; maximum total size is %s", formatBytes(maxUploadBytes)))
+				return
+			}
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to read uploaded file: %v", err))
 			return
 		}
-		defer file.Close()
+		defer part.Close()
 
-		// Save to job directory
-		destPath := filepath.Join(jobDir, fileHeader.Filename)
-		destFile, err := os.Create(destPath)
+		if part.FormName() != "files" || part.FileName() == "" {
+			if _, err := io.Copy(io.Discard, io.LimitReader(part, maxUploadMemory)); err != nil {
+				h.jobMgr.DeleteJob(job.ID)
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("failed to discard form field: %v", err))
+				return
+			}
+			continue
+		}
+
+		filename, err := safeUploadFilename(part.FileName())
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to create file: %v", err))
+			h.jobMgr.DeleteJob(job.ID)
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 
-		if _, err := io.Copy(destFile, file); err != nil {
-			destFile.Close()
+		destPath := filepath.Join(jobDir, uniqueUploadFilename(savedFiles, filename))
+		if err := saveUploadedPart(destPath, part); err != nil {
+			h.jobMgr.DeleteJob(job.ID)
+			if isMaxBytesError(err) {
+				writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("upload is too large; maximum total size is %s", formatBytes(maxUploadBytes)))
+				return
+			}
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save file: %v", err))
 			return
 		}
-		destFile.Close()
+
+		if info, err := os.Stat(destPath); err != nil {
+			h.jobMgr.DeleteJob(job.ID)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to inspect saved file: %v", err))
+			return
+		} else if info.Size() == 0 {
+			h.jobMgr.DeleteJob(job.ID)
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("uploaded file %q is empty", filename))
+			return
+		}
+
 		savedFiles = append(savedFiles, destPath)
+		fileCount++
+	}
+
+	if len(savedFiles) == 0 {
+		h.jobMgr.DeleteJob(job.ID)
+		writeError(w, http.StatusBadRequest, "no files uploaded")
+		return
 	}
 
 	// Merge pcap files if multiple, or just use the single file
 	mergedPath := filepath.Join(jobDir, "merged.pcap")
 	if len(savedFiles) > 1 {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), mergeTimeoutForFiles(savedFiles))
 		defer cancel()
 		if err := tshark.Mergecap(ctx, mergedPath, savedFiles...); err != nil {
 			h.jobMgr.UpdateJobStatus(job.ID, "error", err)
@@ -90,9 +130,75 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 
 	writeSuccess(w, map[string]interface{}{
 		"job_id":      job.ID,
-		"file_count":  len(files),
+		"file_count":  fileCount,
 		"merged_pcap": mergedPath,
 	})
+}
+
+func saveUploadedPart(destPath string, part *multipart.Part) error {
+	destFile, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		return err
+	}
+	defer destFile.Close()
+	_, err = io.CopyBuffer(destFile, part, make([]byte, 1024*1024))
+	return err
+}
+
+func safeUploadFilename(filename string) (string, error) {
+	base := filepath.Base(strings.TrimSpace(filename))
+	if base == "." || base == string(filepath.Separator) || base == "" {
+		return "", fmt.Errorf("invalid upload filename")
+	}
+	ext := strings.ToLower(filepath.Ext(base))
+	if ext != ".pcap" && ext != ".pcapng" && ext != ".cap" && !strings.HasPrefix(ext, ".pcap") {
+		return "", fmt.Errorf("unsupported file type %q; please upload .pcap, .pcap1, .pcapng or .cap files", ext)
+	}
+	return base, nil
+}
+
+func uniqueUploadFilename(existing []string, filename string) string {
+	used := make(map[string]bool, len(existing))
+	for _, path := range existing {
+		used[filepath.Base(path)] = true
+	}
+	if !used[filename] {
+		return filename
+	}
+	ext := filepath.Ext(filename)
+	stem := strings.TrimSuffix(filename, ext)
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s_%d%s", stem, i, ext)
+		if !used[candidate] {
+			return candidate
+		}
+	}
+}
+
+func mergeTimeoutForFiles(paths []string) time.Duration {
+	var total int64
+	for _, path := range paths {
+		if info, err := os.Stat(path); err == nil {
+			total += info.Size()
+		}
+	}
+	timeout := 2*time.Minute + time.Duration(total/(100<<20))*time.Minute
+	if timeout > 30*time.Minute {
+		return 30 * time.Minute
+	}
+	return timeout
+}
+
+func isMaxBytesError(err error) bool {
+	var maxBytesErr *http.MaxBytesError
+	return errors.As(err, &maxBytesErr)
+}
+
+func formatBytes(bytes int64) string {
+	if bytes >= 1<<30 {
+		return fmt.Sprintf("%.1f GB", float64(bytes)/(1<<30))
+	}
+	return fmt.Sprintf("%.0f MB", float64(bytes)/(1<<20))
 }
 
 // ListJobs handles GET /api/jobs

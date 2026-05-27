@@ -27,6 +27,8 @@ interface StatsModule {
 
 interface MessageStatsResult {
   scope_filter?: string
+  truncated?: boolean
+  row_limit?: number
   modules: StatsModule[]
 }
 
@@ -185,6 +187,12 @@ export function MessageStatsPanel({ jobId, selectedIMSIs: _selectedIMSIs }: Mess
       {error && (
         <div className="mb-5 p-3 bg-red-50 rounded-lg text-red-700 text-sm font-medium">
           {error}
+        </div>
+      )}
+
+      {result?.truncated && (
+        <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+          抓包消息数量过大，已统计前 {formatCount(result.row_limit || 0)} 行匹配数据并停止继续读取，避免环境卡死。
         </div>
       )}
 
@@ -595,4 +603,8 @@ function formatTimestamp(date: Date): string {
     pad(date.getMinutes()),
     pad(date.getSeconds()),
   ].join('')
+}
+
+function formatCount(value: number): string {
+  return new Intl.NumberFormat('zh-CN').format(value)
 }

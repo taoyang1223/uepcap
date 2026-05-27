@@ -2,6 +2,7 @@ package nasanalyzer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"gitee.com/yangdadayyds/uepcap/internal/analysislimit"
 	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
 
@@ -39,16 +41,16 @@ func NewAnalyzer() *Analyzer {
 }
 
 func (a *Analyzer) AnalyzeFile(ctx context.Context, pcapFile string) (*AnalysisResult, error) {
-	result, err := tshark.TsharkFields(ctx, pcapFile, "nas-5gs", tsharkNASFields)
+	messages, truncated, err := readMessages(ctx, pcapFile)
 	if err != nil {
 		return nil, err
 	}
-	if result.ExitCode != 0 {
-		return nil, fmt.Errorf("tshark NAS analysis failed: %s", strings.TrimSpace(result.Stderr))
+	result := analyze(pcapFile, messages)
+	result.Truncated = truncated
+	if truncated {
+		result.MessageLimit = analysislimit.MaxRows("UEPCAP_NAS_ANALYSIS_MAX_MESSAGES")
 	}
-
-	messages := parseFieldRows(result.Stdout)
-	return analyze(pcapFile, messages), nil
+	return result, nil
 }
 
 func (a *Analyzer) AnalyzeSMFile(ctx context.Context, pcapFile string) (*AnalysisResult, error) {
@@ -90,6 +92,8 @@ func FilterMMResult(result *AnalysisResult) *AnalysisResult {
 		Filename:     result.Filename,
 		AnalyzedAt:   result.AnalyzedAt,
 		TotalPackets: len(messages),
+		Truncated:    result.Truncated,
+		MessageLimit: result.MessageLimit,
 		Messages:     messages,
 		TypeStats:    calculateTypeStats(messages),
 		Flows:        flows,
@@ -121,6 +125,8 @@ func FilterSMResult(result *AnalysisResult) *AnalysisResult {
 		Filename:     result.Filename,
 		AnalyzedAt:   result.AnalyzedAt,
 		TotalPackets: len(messages),
+		Truncated:    result.Truncated,
+		MessageLimit: result.MessageLimit,
 		Messages:     messages,
 		TypeStats:    calculateTypeStats(messages),
 		Flows:        flows,
@@ -149,67 +155,105 @@ func analyze(filename string, messages []*Message) *AnalysisResult {
 	return result
 }
 
+var errNASMessageLimitReached = errors.New("NAS message limit reached")
+
+func readMessages(ctx context.Context, pcapFile string) ([]*Message, bool, error) {
+	limit := analysislimit.MaxRows("UEPCAP_NAS_ANALYSIS_MAX_MESSAGES")
+	messages := make([]*Message, 0, 4096)
+	truncated := false
+	result, err := tshark.TsharkFieldsStream(ctx, pcapFile, "nas-5gs", tsharkNASFields, func(line string) error {
+		rowMessages := parseFieldRow(line)
+		if limit > 0 && len(messages)+len(rowMessages) > limit {
+			remaining := limit - len(messages)
+			if remaining > 0 {
+				messages = append(messages, rowMessages[:remaining]...)
+			}
+			truncated = true
+			return errNASMessageLimitReached
+		}
+		messages = append(messages, rowMessages...)
+		return nil
+	})
+	if errors.Is(err, errNASMessageLimitReached) {
+		return messages, truncated, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if result.ExitCode != 0 {
+		return nil, false, fmt.Errorf("tshark NAS analysis failed: %s", strings.TrimSpace(result.Stderr))
+	}
+	return messages, truncated, nil
+}
+
 func parseFieldRows(output string) []*Message {
 	lines := strings.Split(strings.TrimRight(output, "\r\n"), "\n")
 	messages := make([]*Message, 0, len(lines))
 
 	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		cols := strings.Split(line, "\t")
-		for len(cols) < len(tsharkNASFields) {
-			cols = append(cols, "")
-		}
-
-		mmType := normalizeHex(firstValue(cols[8]))
-		smType := normalizeHex(firstValue(cols[9]))
-		if mmType == "" && smType == "" {
-			continue
-		}
-
-		sourceIP := firstNonEmpty(cols[2], cols[4])
-		destinationIP := firstNonEmpty(cols[3], cols[5])
-		if net.ParseIP(sourceIP) == nil || net.ParseIP(destinationIP) == nil {
-			continue
-		}
-
-		securityHeader := firstValue(cols[10])
-		base := Message{
-			FrameNumber:        parseInt(cols[0]),
-			Timestamp:          parseEpoch(cols[1]),
-			SourceIP:           sourceIP,
-			DestinationIP:      destinationIP,
-			Direction:          directionFromNGAP(firstValue(cols[6]), mmType),
-			SecurityHeaderType: securityHeader,
-			SecurityHeaderName: SecurityHeaderName(securityHeader),
-			SequenceNumber:     firstValue(cols[11]),
-			NGAPProcedureCode:  firstValue(cols[6]),
-			NGAPPDU:            firstValue(cols[7]),
-			ElementIDs:         splitValues(cols[12]),
-			ProcTransID:        firstValue(cols[13]),
-			PDUSessionID:       firstValue(cols[14]),
-			AMFUENGAPID:        firstValue(cols[15]),
-			RANUENGAPID:        firstValue(cols[16]),
-		}
-		if mmType != "" {
-			msg := base
-			msg.Category = CategoryMM
-			msg.MessageTypeCode = mmType
-			msg.MessageType = MMMessageTypeName(mmType)
-			msg.WiresharkFilter = messageFilter(&msg)
-			messages = append(messages, &msg)
-		}
-		if smType != "" {
-			msg := base
-			msg.Category = CategorySM
-			msg.MessageTypeCode = smType
-			msg.MessageType = SMMessageTypeName(smType)
-			msg.WiresharkFilter = messageFilter(&msg)
-			messages = append(messages, &msg)
-		}
+		messages = append(messages, parseFieldRow(line)...)
 	}
 
+	return messages
+}
+
+func parseFieldRow(line string) []*Message {
+	if strings.TrimSpace(line) == "" {
+		return nil
+	}
+	cols := strings.Split(line, "\t")
+	for len(cols) < len(tsharkNASFields) {
+		cols = append(cols, "")
+	}
+
+	mmType := normalizeHex(firstValue(cols[8]))
+	smType := normalizeHex(firstValue(cols[9]))
+	if mmType == "" && smType == "" {
+		return nil
+	}
+
+	sourceIP := firstNonEmpty(cols[2], cols[4])
+	destinationIP := firstNonEmpty(cols[3], cols[5])
+	if net.ParseIP(sourceIP) == nil || net.ParseIP(destinationIP) == nil {
+		return nil
+	}
+
+	securityHeader := firstValue(cols[10])
+	base := Message{
+		FrameNumber:        parseInt(cols[0]),
+		Timestamp:          parseEpoch(cols[1]),
+		SourceIP:           sourceIP,
+		DestinationIP:      destinationIP,
+		Direction:          directionFromNGAP(firstValue(cols[6]), mmType),
+		SecurityHeaderType: securityHeader,
+		SecurityHeaderName: SecurityHeaderName(securityHeader),
+		SequenceNumber:     firstValue(cols[11]),
+		NGAPProcedureCode:  firstValue(cols[6]),
+		NGAPPDU:            firstValue(cols[7]),
+		ElementIDs:         splitValues(cols[12]),
+		ProcTransID:        firstValue(cols[13]),
+		PDUSessionID:       firstValue(cols[14]),
+		AMFUENGAPID:        firstValue(cols[15]),
+		RANUENGAPID:        firstValue(cols[16]),
+	}
+
+	messages := make([]*Message, 0, 2)
+	if mmType != "" {
+		msg := base
+		msg.Category = CategoryMM
+		msg.MessageTypeCode = mmType
+		msg.MessageType = MMMessageTypeName(mmType)
+		msg.WiresharkFilter = messageFilter(&msg)
+		messages = append(messages, &msg)
+	}
+	if smType != "" {
+		msg := base
+		msg.Category = CategorySM
+		msg.MessageTypeCode = smType
+		msg.MessageType = SMMessageTypeName(smType)
+		msg.WiresharkFilter = messageFilter(&msg)
+		messages = append(messages, &msg)
+	}
 	return messages
 }
 

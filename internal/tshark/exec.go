@@ -1,9 +1,11 @@
 package tshark
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gitee.com/yangdadayyds/uepcap/internal/analysislimit"
 )
 
 // DefaultTimeout is the default command timeout
@@ -23,6 +27,40 @@ type ExecResult struct {
 	Stdout   string
 	Stderr   string
 	ExitCode int
+}
+
+var ErrOutputLimitExceeded = fmt.Errorf("tshark output exceeded limit")
+
+type cappedBuffer struct {
+	buf      bytes.Buffer
+	limit    int64
+	written  int64
+	exceeded bool
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	if b.limit <= 0 {
+		return b.buf.Write(p)
+	}
+	remaining := b.limit - b.written
+	if remaining <= 0 {
+		b.exceeded = true
+		b.written += int64(len(p))
+		return len(p), nil
+	}
+	if int64(len(p)) > remaining {
+		b.exceeded = true
+		_, _ = b.buf.Write(p[:remaining])
+		b.written += int64(len(p))
+		return len(p), nil
+	}
+	n, err := b.buf.Write(p)
+	b.written += int64(n)
+	return n, err
+}
+
+func (b *cappedBuffer) String() string {
+	return b.buf.String()
 }
 
 var processLimiter = newLimiter(defaultMaxConcurrentProcesses())
@@ -93,6 +131,10 @@ func CheckInstalled(name string) error {
 
 // Exec runs a command with context and timeout
 func Exec(ctx context.Context, name string, args ...string) (*ExecResult, error) {
+	return ExecWithOutputLimit(ctx, 0, name, args...)
+}
+
+func ExecWithOutputLimit(ctx context.Context, stdoutLimit int64, name string, args ...string) (*ExecResult, error) {
 	var release func()
 	if shouldLimitProcess(name) {
 		var err error
@@ -104,7 +146,9 @@ func Exec(ctx context.Context, name string, args ...string) (*ExecResult, error)
 	}
 
 	cmd := exec.CommandContext(ctx, name, args...)
-	var stdout, stderr bytes.Buffer
+	var stdout cappedBuffer
+	stdout.limit = stdoutLimit
+	var stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
@@ -113,6 +157,10 @@ func Exec(ctx context.Context, name string, args ...string) (*ExecResult, error)
 		Stdout:   stdout.String(),
 		Stderr:   stderr.String(),
 		ExitCode: 0,
+	}
+
+	if stdout.exceeded {
+		return result, fmt.Errorf("%w: max %s", ErrOutputLimitExceeded, formatBytes(stdoutLimit))
 	}
 
 	if err != nil {
@@ -124,6 +172,16 @@ func Exec(ctx context.Context, name string, args ...string) (*ExecResult, error)
 	}
 
 	return result, nil
+}
+
+func formatBytes(bytes int64) string {
+	if bytes >= 1<<30 {
+		return fmt.Sprintf("%.1f GB", float64(bytes)/(1<<30))
+	}
+	if bytes >= 1<<20 {
+		return fmt.Sprintf("%.0f MB", float64(bytes)/(1<<20))
+	}
+	return fmt.Sprintf("%d bytes", bytes)
 }
 
 func shouldLimitProcess(name string) bool {
@@ -193,6 +251,82 @@ func TsharkFields(ctx context.Context, pcapFile string, filter string, fields []
 	result, err := Exec(ctx, "tshark", args...)
 	tolerateTsharkNonFatalWarnings(result)
 	return result, err
+}
+
+// TsharkFieldsStream runs tshark with -T fields output and streams each output row to handleLine.
+// Use this for high-volume analyses where buffering all stdout would be too expensive.
+func TsharkFieldsStream(ctx context.Context, pcapFile string, filter string, fields []string, handleLine func(string) error) (*ExecResult, error) {
+	args := []string{"-r", pcapFile, "-T", "fields"}
+	for _, f := range fields {
+		args = append(args, "-e", f)
+	}
+	if filter != "" {
+		args = append(args, "-Y", filter)
+	}
+	args = appendNASDecryptPrefs(args, filter, nil)
+	result, err := ExecStreamLines(ctx, "tshark", args, handleLine)
+	tolerateTsharkNonFatalWarnings(result)
+	return result, err
+}
+
+// ExecStreamLines runs a command and streams stdout by line without retaining it in memory.
+func ExecStreamLines(ctx context.Context, name string, args []string, handleLine func(string) error) (*ExecResult, error) {
+	var release func()
+	if shouldLimitProcess(name) {
+		var err error
+		release, err = processLimiter.acquire(ctx)
+		if err != nil {
+			return &ExecResult{ExitCode: -1}, err
+		}
+		defer release()
+	}
+
+	cmd := exec.CommandContext(ctx, name, args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return &ExecResult{ExitCode: -1}, fmt.Errorf("failed to open stdout pipe: %w", err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		return &ExecResult{ExitCode: -1}, fmt.Errorf("command start failed: %w", err)
+	}
+
+	scanErr := scanLines(stdout, handleLine)
+	if scanErr != nil {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	}
+
+	waitErr := cmd.Wait()
+	result := &ExecResult{
+		Stderr:   stderr.String(),
+		ExitCode: 0,
+	}
+	if waitErr != nil {
+		if exitErr, ok := waitErr.(*exec.ExitError); ok {
+			result.ExitCode = exitErr.ExitCode()
+		} else if scanErr == nil {
+			return result, fmt.Errorf("command execution failed: %w", waitErr)
+		}
+	}
+	if scanErr != nil {
+		return result, scanErr
+	}
+	return result, nil
+}
+
+func scanLines(stdout io.Reader, handleLine func(string) error) error {
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		if err := handleLine(scanner.Text()); err != nil {
+			return err
+		}
+	}
+	return scanner.Err()
 }
 
 // TsharkJSON runs tshark with JSON output
@@ -366,7 +500,8 @@ func TsharkCompactJSON(ctx context.Context, pcapFile string, filter string, prot
 
 	// 添加 NAS 解密偏好设置
 	args = appendNASDecryptPrefs(args, filter, protocols)
-	result, err := Exec(ctx, "tshark", args...)
+	limit := analysislimit.MaxBytes("UEPCAP_TSHARK_JSON_MAX_BYTES", analysislimit.DefaultMaxJSONBytes)
+	result, err := ExecWithOutputLimit(ctx, limit, "tshark", args...)
 	tolerateTsharkNonFatalWarnings(result)
 	return result, err
 }

@@ -79,6 +79,8 @@ type AnalysisResult struct {
 	Filename       string           `json:"filename"`
 	AnalyzedAt     time.Time        `json:"analyzed_at"`
 	TotalPackets   int              `json:"total_packets"`
+	Truncated      bool             `json:"truncated,omitempty"`
+	MessageLimit   int              `json:"message_limit,omitempty"`
 	Statistics     Statistics       `json:"statistics"`
 	Messages       []*Message       `json:"messages"`
 	ProcedureStats []ProcedureCount `json:"procedure_stats"`

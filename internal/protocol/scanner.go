@@ -3,6 +3,7 @@ package protocol
 import (
 	"context"
 	"log"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -34,6 +35,8 @@ var (
 	imsiFields     []string
 )
 
+const largeCaptureScanThreshold int64 = 300 << 20
+
 // NewIMSIScanner creates a new IMSI scanner
 func NewIMSIScanner() *IMSIScanner {
 	return &IMSIScanner{
@@ -44,6 +47,11 @@ func NewIMSIScanner() *IMSIScanner {
 // ScanIMSIs scans a pcap file for all unique IMSI values
 // Optimized: uses single tshark call with comprehensive field extraction
 func (s *IMSIScanner) ScanIMSIs(ctx context.Context, pcapFile string) ([]string, error) {
+	if isLargeCapture(pcapFile) {
+		results := s.scanByFieldsFast(ctx, pcapFile)
+		return sortedIMSISet(preferredIMSISet(results.primary, results.fallback)), nil
+	}
+
 	var mu sync.Mutex
 	primarySet := make(map[string]bool)
 	fallbackSet := make(map[string]bool)
@@ -166,6 +174,18 @@ func (s *IMSIScanner) scanVerboseCombined(ctx context.Context, pcapFile string) 
 func (s *IMSIScanner) ScanIMSIsStream(ctx context.Context, pcapFile string, imsiChan chan<- string) error {
 	defer close(imsiChan)
 
+	if isLargeCapture(pcapFile) {
+		results := s.scanByFieldsFast(ctx, pcapFile)
+		for _, imsi := range sortedIMSISet(preferredIMSISet(results.primary, results.fallback)) {
+			select {
+			case imsiChan <- imsi:
+			case <-ctx.Done():
+				return nil
+			}
+		}
+		return nil
+	}
+
 	var mu sync.Mutex
 	primarySet := make(map[string]bool)
 	fallbackSet := make(map[string]bool)
@@ -202,6 +222,14 @@ func (s *IMSIScanner) ScanIMSIsStream(ctx context.Context, pcapFile string, imsi
 		}
 	}
 	return nil
+}
+
+func isLargeCapture(pcapFile string) bool {
+	info, err := os.Stat(pcapFile)
+	if err != nil {
+		return false
+	}
+	return info.Size() >= largeCaptureScanThreshold
 }
 
 // scanByFieldsStream extracts IMSI using field extraction and streams results

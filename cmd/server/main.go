@@ -65,11 +65,12 @@ func main() {
 
 	// Create server
 	server := &http.Server{
-		Addr:         fmt.Sprintf(":%d", *port),
-		Handler:      mux,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 10 * time.Minute, // Long timeout for large file exports
-		IdleTimeout:  120 * time.Second,
+		Addr:              fmt.Sprintf(":%d", *port),
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Minute, // Allow large PCAP uploads over slower links.
+		WriteTimeout:      30 * time.Minute, // Long timeout for large scans/exports.
+		IdleTimeout:       120 * time.Second,
 	}
 
 	// Graceful shutdown

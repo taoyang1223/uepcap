@@ -71,6 +71,8 @@ interface PFCPSessionResult {
   filename: string
   analyzed_at: string
   total_packets: number
+  truncated?: boolean
+  message_limit?: number
   statistics: PFCPSessionStatistics
   transactions: PFCPSessionTransaction[]
 }
@@ -239,7 +241,7 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
         <div className="p-6">
         {loading && !result && (
           <div className="rounded-xl border border-cyan-100 bg-cyan-50 px-5 py-4 text-sm font-semibold text-cyan-700">
-            正在分析 PFCP 会话/节点事务...
+            正在分析 PFCP 会话/节点事务，大抓包可能需要几分钟...
           </div>
         )}
 
@@ -267,6 +269,12 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
                 </div>
               </div>
             </div>
+
+            {result.truncated && (
+              <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-semibold text-amber-800">
+                PFCP 消息数量过大，已分析前 {formatCount(result.message_limit || result.total_packets)} 条匹配消息并停止继续读取，避免环境卡死。
+              </div>
+            )}
 
             <div className="mb-6">
               <p className="mb-3 text-sm font-bold text-slate-600">按状态统计</p>
@@ -729,6 +737,10 @@ function formatMs(value?: number): string {
   if (value == null) return '0 ms'
   if (value >= 1000) return `${(value / 1000).toFixed(2)} s`
   return `${value.toFixed(value >= 10 ? 1 : 2)} ms`
+}
+
+function formatCount(value: number): string {
+  return new Intl.NumberFormat('zh-CN').format(value)
 }
 
 function sameResponseTime(value: number | undefined, target: number): boolean {

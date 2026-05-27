@@ -6,6 +6,8 @@ interface FileUploadProps {
 }
 
 const pcapFilenamePattern = /\.(pcap\d*|pcapng|cap)$/i
+const largeUploadThreshold = 300 * 1024 * 1024
+const maxUploadBytes = 2 * 1024 * 1024 * 1024
 
 export function FileUpload({ onUploadComplete }: FileUploadProps) {
   const [files, setFiles] = useState<File[]>([])
@@ -24,10 +26,17 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
       setError('请选择 .pcap、.pcap1、.pcapng 或 .cap 文件')
       return
     }
+
+    const nextFiles = [...files, ...pcapFiles]
+    const totalSize = nextFiles.reduce((sum, file) => sum + file.size, 0)
+    if (totalSize > maxUploadBytes) {
+      setError(`文件总大小 ${formatSize(totalSize)} 超过上限 ${formatSize(maxUploadBytes)}`)
+      return
+    }
     
-    setFiles(prev => [...prev, ...pcapFiles])
+    setFiles(nextFiles)
     setError(null)
-  }, [])
+  }, [files])
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -59,15 +68,22 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
       }
 
       xhr.onload = () => {
+        let data: any = null
+        try {
+          data = xhr.responseText ? JSON.parse(xhr.responseText) : null
+        } catch {
+          data = null
+        }
         if (xhr.status === 200) {
-          const data = JSON.parse(xhr.responseText)
           if (data.success) {
             onUploadComplete(data.data.job_id, data.data.file_count)
           } else {
             setError(data.error || '上传失败')
           }
+        } else if (xhr.status === 413) {
+          setError(data?.error || `上传失败：文件总大小超过 ${formatSize(maxUploadBytes)}`)
         } else {
-          setError('上传失败: HTTP ' + xhr.status)
+          setError(data?.error || '上传失败: HTTP ' + xhr.status)
         }
         setUploading(false)
       }
@@ -85,11 +101,8 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
     }
   }, [files, onUploadComplete])
 
-  const formatSize = (bytes: number) => {
-    if (bytes < 1024) return bytes + ' B'
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
-  }
+  const totalSize = files.reduce((sum, file) => sum + file.size, 0)
+  const hasLargeUpload = totalSize >= largeUploadThreshold
 
   return (
     <div className="bg-white rounded-2xl shadow-xl shadow-slate-900/5 p-8">
@@ -137,7 +150,12 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
       {/* File List */}
       {files.length > 0 && (
         <div className="mt-8 space-y-3 animate-fade-in">
-          <p className="text-sm font-medium text-slate-500 mb-3 px-1">已选择 {files.length} 个文件：</p>
+          <p className="text-sm font-medium text-slate-500 mb-3 px-1">已选择 {files.length} 个文件，总大小 {formatSize(totalSize)}：</p>
+          {hasLargeUpload && (
+            <div className="rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              大文件会使用流式上传并直接写入磁盘，上传后扫描 IMSI 可能需要几分钟，请保持页面打开。
+            </div>
+          )}
           <div className="max-h-60 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
             {files.map((file, index) => (
               <div
@@ -180,7 +198,7 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
               </div>
               <p className="text-sm text-slate-500 text-center flex items-center justify-center gap-2 font-medium">
                 <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
-                正在上传并合并... <span className="text-slate-900">{progress}%</span>
+                {hasLargeUpload ? '正在流式上传大文件...' : '正在上传并合并...'} <span className="text-slate-900">{progress}%</span>
               </p>
             </div>
           ) : (
@@ -195,4 +213,11 @@ export function FileUpload({ onUploadComplete }: FileUploadProps) {
       )}
     </div>
   )
+}
+
+function formatSize(bytes: number) {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+  return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB'
 }

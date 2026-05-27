@@ -2,6 +2,7 @@ package pfcpsession
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -9,11 +10,13 @@ import (
 	"strings"
 	"time"
 
+	"gitee.com/yangdadayyds/uepcap/internal/analysislimit"
 	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
 
 const (
-	DefaultTimeout = 3 * time.Second
+	DefaultTimeout      = 3 * time.Second
+	DefaultMessageLimit = analysislimit.DefaultMaxRows
 
 	pfcpTransactionDisplayFilter = "(pfcp.msg_type == 1 || pfcp.msg_type == 2 || pfcp.msg_type == 5 || pfcp.msg_type == 6 || pfcp.msg_type == 7 || pfcp.msg_type == 8 || pfcp.msg_type == 9 || pfcp.msg_type == 10 || pfcp.msg_type == 12 || pfcp.msg_type == 13 || (pfcp.msg_type >= 50 && pfcp.msg_type <= 57))"
 )
@@ -36,11 +39,12 @@ var tsharkSessionFields = []string{
 }
 
 type Analyzer struct {
-	timeout time.Duration
+	timeout      time.Duration
+	messageLimit int
 }
 
 func NewAnalyzer() *Analyzer {
-	return &Analyzer{timeout: DefaultTimeout}
+	return &Analyzer{timeout: DefaultTimeout, messageLimit: defaultMessageLimit()}
 }
 
 func (a *Analyzer) SetTimeout(timeout time.Duration) {
@@ -49,17 +53,53 @@ func (a *Analyzer) SetTimeout(timeout time.Duration) {
 	}
 }
 
+func (a *Analyzer) SetMessageLimit(limit int) {
+	if limit > 0 {
+		a.messageLimit = limit
+	}
+}
+
 func (a *Analyzer) AnalyzeFile(ctx context.Context, pcapFile string) (*AnalysisResult, error) {
-	result, err := tshark.TsharkFields(ctx, pcapFile, pfcpTransactionDisplayFilter, tsharkSessionFields)
+	messages, truncated, err := a.readMessages(ctx, pcapFile)
 	if err != nil {
 		return nil, err
 	}
-	if result.ExitCode != 0 {
-		return nil, fmt.Errorf("tshark PFCP transaction analysis failed: %s", strings.TrimSpace(result.Stderr))
-	}
 
-	messages := parseFieldRows(result.Stdout)
-	return a.analyze(pcapFile, messages), nil
+	result := a.analyze(pcapFile, messages)
+	result.Truncated = truncated
+	if truncated {
+		result.MessageLimit = a.messageLimit
+	}
+	return result, nil
+}
+
+var errPFCPMessageLimitReached = errors.New("PFCP message limit reached")
+
+func (a *Analyzer) readMessages(ctx context.Context, pcapFile string) ([]*Message, bool, error) {
+	messages := make([]*Message, 0, 4096)
+	truncated := false
+	result, err := tshark.TsharkFieldsStream(ctx, pcapFile, pfcpTransactionDisplayFilter, tsharkSessionFields, func(line string) error {
+		msg := parseFieldRow(line)
+		if msg == nil {
+			return nil
+		}
+		if a.messageLimit > 0 && len(messages) >= a.messageLimit {
+			truncated = true
+			return errPFCPMessageLimitReached
+		}
+		messages = append(messages, msg)
+		return nil
+	})
+	if errors.Is(err, errPFCPMessageLimitReached) {
+		return messages, truncated, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if result.ExitCode != 0 {
+		return nil, false, fmt.Errorf("tshark PFCP transaction analysis failed: %s", strings.TrimSpace(result.Stderr))
+	}
+	return messages, truncated, nil
 }
 
 func (a *Analyzer) analyze(filename string, messages []*Message) *AnalysisResult {
@@ -184,43 +224,54 @@ func parseFieldRows(output string) []*Message {
 	messages := make([]*Message, 0, len(lines))
 
 	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		cols := strings.Split(line, "\t")
-		for len(cols) < len(tsharkSessionFields) {
-			cols = append(cols, "")
-		}
-
-		msg := &Message{
-			FrameNumber:     parseInt(cols[0]),
-			Timestamp:       parseEpoch(cols[1]),
-			SourceIP:        firstNonEmpty(cols[2], cols[4]),
-			DestinationIP:   firstNonEmpty(cols[3], cols[5]),
-			SourcePort:      uint16(parseInt(cols[6])),
-			DestinationPort: uint16(parseInt(cols[7])),
-			MessageTypeCode: uint8(parseInt(firstValue(cols[8]))),
-			SequenceNumber:  uint32(parseInt(firstValue(cols[10]))),
-			FSEIDIPv4:       firstValue(cols[12]),
-			FSEIDIPv6:       firstValue(cols[13]),
-		}
-
-		seids := parseUintValues(cols[9])
-		if len(seids) > 0 {
-			msg.HeaderSEID = seids[0]
-			msg.FSEID = seids[len(seids)-1]
-		}
-		if cause := firstValue(cols[11]); cause != "" {
-			causeVal := uint8(parseInt(cause))
-			msg.Cause = &causeVal
-		}
-
-		if msg.MessageTypeCode != 0 && net.ParseIP(msg.SourceIP) != nil && net.ParseIP(msg.DestinationIP) != nil {
+		if msg := parseFieldRow(line); msg != nil {
 			messages = append(messages, msg)
 		}
 	}
 
 	return messages
+}
+
+func parseFieldRow(line string) *Message {
+	if strings.TrimSpace(line) == "" {
+		return nil
+	}
+	cols := strings.Split(line, "\t")
+	for len(cols) < len(tsharkSessionFields) {
+		cols = append(cols, "")
+	}
+
+	msg := &Message{
+		FrameNumber:     parseInt(cols[0]),
+		Timestamp:       parseEpoch(cols[1]),
+		SourceIP:        firstNonEmpty(cols[2], cols[4]),
+		DestinationIP:   firstNonEmpty(cols[3], cols[5]),
+		SourcePort:      uint16(parseInt(cols[6])),
+		DestinationPort: uint16(parseInt(cols[7])),
+		MessageTypeCode: uint8(parseInt(firstValue(cols[8]))),
+		SequenceNumber:  uint32(parseInt(firstValue(cols[10]))),
+		FSEIDIPv4:       firstValue(cols[12]),
+		FSEIDIPv6:       firstValue(cols[13]),
+	}
+
+	seids := parseUintValues(cols[9])
+	if len(seids) > 0 {
+		msg.HeaderSEID = seids[0]
+		msg.FSEID = seids[len(seids)-1]
+	}
+	if cause := firstValue(cols[11]); cause != "" {
+		causeVal := uint8(parseInt(cause))
+		msg.Cause = &causeVal
+	}
+
+	if msg.MessageTypeCode == 0 || net.ParseIP(msg.SourceIP) == nil || net.ParseIP(msg.DestinationIP) == nil {
+		return nil
+	}
+	return msg
+}
+
+func defaultMessageLimit() int {
+	return analysislimit.MaxRows("UEPCAP_PFCP_ANALYSIS_MAX_MESSAGES")
 }
 
 func makeKey(msg *Message) string {

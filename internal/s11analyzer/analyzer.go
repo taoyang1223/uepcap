@@ -2,6 +2,7 @@ package s11analyzer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"gitee.com/yangdadayyds/uepcap/internal/analysislimit"
 	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
 
@@ -46,15 +48,46 @@ func (a *Analyzer) SetTimeout(timeout time.Duration) {
 }
 
 func (a *Analyzer) AnalyzeFile(ctx context.Context, pcapFile string) (*AnalysisResult, error) {
-	result, err := tshark.TsharkFields(ctx, pcapFile, "gtpv2", tsharkS11Fields)
+	messages, truncated, err := readMessages(ctx, pcapFile)
 	if err != nil {
 		return nil, err
 	}
-	if result.ExitCode != 0 {
-		return nil, fmt.Errorf("tshark S11 analysis failed: %s", strings.TrimSpace(result.Stderr))
+	result := a.analyze(pcapFile, messages)
+	result.Truncated = truncated
+	if truncated {
+		result.MessageLimit = analysislimit.MaxRows("UEPCAP_S11_ANALYSIS_MAX_MESSAGES")
 	}
-	messages := parseFieldRows(result.Stdout)
-	return a.analyze(pcapFile, messages), nil
+	return result, nil
+}
+
+var errS11MessageLimitReached = errors.New("S11 message limit reached")
+
+func readMessages(ctx context.Context, pcapFile string) ([]*Message, bool, error) {
+	limit := analysislimit.MaxRows("UEPCAP_S11_ANALYSIS_MAX_MESSAGES")
+	messages := make([]*Message, 0, 4096)
+	truncated := false
+	result, err := tshark.TsharkFieldsStream(ctx, pcapFile, "gtpv2", tsharkS11Fields, func(line string) error {
+		msg := parseFieldRow(line)
+		if msg == nil {
+			return nil
+		}
+		if limit > 0 && len(messages) >= limit {
+			truncated = true
+			return errS11MessageLimitReached
+		}
+		messages = append(messages, msg)
+		return nil
+	})
+	if errors.Is(err, errS11MessageLimitReached) {
+		return messages, truncated, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if result.ExitCode != 0 {
+		return nil, false, fmt.Errorf("tshark S11 analysis failed: %s", strings.TrimSpace(result.Stderr))
+	}
+	return messages, truncated, nil
 }
 
 func (a *Analyzer) analyze(filename string, messages []*Message) *AnalysisResult {
@@ -79,39 +112,45 @@ func parseFieldRows(output string) []*Message {
 	lines := strings.Split(strings.TrimRight(output, "\r\n"), "\n")
 	messages := make([]*Message, 0, len(lines))
 	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			continue
+		if msg := parseFieldRow(line); msg != nil {
+			messages = append(messages, msg)
 		}
-		cols := strings.Split(line, "\t")
-		for len(cols) < len(tsharkS11Fields) {
-			cols = append(cols, "")
-		}
-		sourceIP := firstNonEmpty(cols[2], cols[4])
-		destinationIP := firstNonEmpty(cols[3], cols[5])
-		msgType := parseInt(firstValue(cols[6]))
-		if msgType == 0 || net.ParseIP(sourceIP) == nil || net.ParseIP(destinationIP) == nil {
-			continue
-		}
-		cause := firstValue(cols[10])
-		msg := &Message{
-			FrameNumber:     parseInt(cols[0]),
-			Timestamp:       parseEpoch(cols[1]),
-			SourceIP:        sourceIP,
-			DestinationIP:   destinationIP,
-			MessageTypeCode: msgType,
-			MessageType:     MessageTypeName(msgType),
-			SequenceNumber:  parseInt(firstNonEmpty(cols[7], cols[8])),
-			TEID:            firstValue(cols[9]),
-			Cause:           cause,
-			CauseName:       CauseName(cause),
-			APN:             firstValue(cols[11]),
-			FTEIDIPv4:       firstValue(cols[12]),
-			FTEIDIPv6:       firstValue(cols[13]),
-		}
-		msg.WiresharkFilter = messageFilter(msg)
-		messages = append(messages, msg)
 	}
 	return messages
+}
+
+func parseFieldRow(line string) *Message {
+	if strings.TrimSpace(line) == "" {
+		return nil
+	}
+	cols := strings.Split(line, "\t")
+	for len(cols) < len(tsharkS11Fields) {
+		cols = append(cols, "")
+	}
+	sourceIP := firstNonEmpty(cols[2], cols[4])
+	destinationIP := firstNonEmpty(cols[3], cols[5])
+	msgType := parseInt(firstValue(cols[6]))
+	if msgType == 0 || net.ParseIP(sourceIP) == nil || net.ParseIP(destinationIP) == nil {
+		return nil
+	}
+	cause := firstValue(cols[10])
+	msg := &Message{
+		FrameNumber:     parseInt(cols[0]),
+		Timestamp:       parseEpoch(cols[1]),
+		SourceIP:        sourceIP,
+		DestinationIP:   destinationIP,
+		MessageTypeCode: msgType,
+		MessageType:     MessageTypeName(msgType),
+		SequenceNumber:  parseInt(firstNonEmpty(cols[7], cols[8])),
+		TEID:            firstValue(cols[9]),
+		Cause:           cause,
+		CauseName:       CauseName(cause),
+		APN:             firstValue(cols[11]),
+		FTEIDIPv4:       firstValue(cols[12]),
+		FTEIDIPv6:       firstValue(cols[13]),
+	}
+	msg.WiresharkFilter = messageFilter(msg)
+	return msg
 }
 
 func (a *Analyzer) analyzeTransactions(messages []*Message) []*Transaction {

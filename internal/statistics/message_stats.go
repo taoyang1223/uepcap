@@ -2,11 +2,13 @@ package statistics
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 
+	"gitee.com/yangdadayyds/uepcap/internal/analysislimit"
 	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
 
@@ -50,6 +52,8 @@ const (
 // Result is the full message statistics response.
 type Result struct {
 	ScopeFilter string   `json:"scope_filter,omitempty"`
+	Truncated   bool     `json:"truncated,omitempty"`
+	RowLimit    int      `json:"row_limit,omitempty"`
 	Modules     []Module `json:"modules"`
 }
 
@@ -389,7 +393,29 @@ func Count(ctx context.Context, pcapFile, scopeFilter string) (*Result, error) {
 		queryFilter = fmt.Sprintf("(%s) && (%s)", scopeFilter, statsProtocolFilter)
 	}
 
-	tsharkResult, err := tshark.TsharkFields(ctx, pcapFile, queryFilter, tsharkFields)
+	limit := analysislimit.MaxRows("UEPCAP_STATS_ANALYSIS_MAX_ROWS")
+	result, itemsByKey, index := newCountResult()
+	rowCount := 0
+	truncated := false
+	tsharkResult, err := tshark.TsharkFieldsStream(ctx, pcapFile, queryFilter, tsharkFields, func(line string) error {
+		if strings.TrimSpace(line) == "" {
+			return nil
+		}
+		if limit > 0 && rowCount >= limit {
+			truncated = true
+			return errStatsRowLimitReached
+		}
+		countFieldLine(line, itemsByKey, index)
+		rowCount++
+		return nil
+	})
+	if errors.Is(err, errStatsRowLimitReached) {
+		finalizeCountResult(result)
+		result.ScopeFilter = scopeFilter
+		result.Truncated = true
+		result.RowLimit = limit
+		return result, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -397,12 +423,30 @@ func Count(ctx context.Context, pcapFile, scopeFilter string) (*Result, error) {
 		return nil, fmt.Errorf("tshark statistics failed: %s", strings.TrimSpace(tsharkResult.Stderr))
 	}
 
-	result := countFieldRows(tsharkResult.Stdout)
+	finalizeCountResult(result)
 	result.ScopeFilter = scopeFilter
+	if truncated {
+		result.Truncated = true
+		result.RowLimit = limit
+	}
 	return result, nil
 }
 
+var errStatsRowLimitReached = errors.New("statistics row limit reached")
+
 func countFieldRows(output string) *Result {
+	result, itemsByKey, index := newCountResult()
+	for _, line := range strings.Split(strings.TrimRight(output, "\r\n"), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		countFieldLine(line, itemsByKey, index)
+	}
+	finalizeCountResult(result)
+	return result
+}
+
+func newCountResult() (*Result, map[string]*Item, *definitionIndex) {
 	itemsByKey := make(map[string]*Item)
 	index := newDefinitionIndex()
 	result := &Result{
@@ -428,53 +472,53 @@ func countFieldRows(output string) *Result {
 		}
 		result.Modules = append(result.Modules, module)
 	}
+	return result, itemsByKey, index
+}
 
-	for _, line := range strings.Split(strings.TrimRight(output, "\r\n"), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
+func countFieldLine(line string, itemsByKey map[string]*Item, index *definitionIndex) {
+	row := parseFieldRow(line)
+	matched := make(map[string]bool)
+	inc := func(def messageDefinition, dedupe bool) {
+		key := definitionItemKey(def)
+		if dedupe && matched[key] {
+			return
 		}
-		row := parseFieldRow(line)
-		matched := make(map[string]bool)
-		inc := func(def messageDefinition, dedupe bool) {
-			key := definitionItemKey(def)
-			if dedupe && matched[key] {
-				return
-			}
-			matched[key] = true
-			itemsByKey[key].RawCount++
-		}
-		for _, value := range row.nasMMMessageTypes {
-			for _, def := range index.nasMM[value] {
-				inc(def, true)
-			}
-		}
-		for _, value := range row.nasSMMessageTypes {
-			for _, def := range index.nasSM[value] {
-				inc(def, true)
-			}
-		}
-		for _, pair := range procedurePDUPairs(row.ngapProcedures, row.ngapPDUs) {
-			for _, def := range index.ngap[compoundKey(pair.procedure, pair.pdu)] {
-				inc(def, false)
-			}
-		}
-		for _, pair := range procedurePDUPairs(row.s1apProcedures, row.s1apPDUs) {
-			for _, def := range index.s1ap[compoundKey(pair.procedure, pair.pdu)] {
-				inc(def, false)
-			}
-		}
-		for _, value := range row.gtpv2MessageTypes {
-			for _, def := range index.gtpv2[value] {
-				inc(def, true)
-			}
-		}
-		for _, value := range row.pfcpMessageTypes {
-			for _, def := range index.pfcp[value] {
-				inc(def, true)
-			}
+		matched[key] = true
+		itemsByKey[key].RawCount++
+	}
+	for _, value := range row.nasMMMessageTypes {
+		for _, def := range index.nasMM[value] {
+			inc(def, true)
 		}
 	}
+	for _, value := range row.nasSMMessageTypes {
+		for _, def := range index.nasSM[value] {
+			inc(def, true)
+		}
+	}
+	for _, pair := range procedurePDUPairs(row.ngapProcedures, row.ngapPDUs) {
+		for _, def := range index.ngap[compoundKey(pair.procedure, pair.pdu)] {
+			inc(def, false)
+		}
+	}
+	for _, pair := range procedurePDUPairs(row.s1apProcedures, row.s1apPDUs) {
+		for _, def := range index.s1ap[compoundKey(pair.procedure, pair.pdu)] {
+			inc(def, false)
+		}
+	}
+	for _, value := range row.gtpv2MessageTypes {
+		for _, def := range index.gtpv2[value] {
+			inc(def, true)
+		}
+	}
+	for _, value := range row.pfcpMessageTypes {
+		for _, def := range index.pfcp[value] {
+			inc(def, true)
+		}
+	}
+}
 
+func finalizeCountResult(result *Result) {
 	for i := range result.Modules {
 		moduleKey := result.Modules[i].Key
 		sort.SliceStable(result.Modules[i].Items, func(a, b int) bool {
@@ -492,8 +536,6 @@ func countFieldRows(output string) *Result {
 			result.Modules[i].FinalTotal += item.Count
 		}
 	}
-
-	return result
 }
 
 func definitionItemKey(def messageDefinition) string {
