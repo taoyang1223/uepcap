@@ -1,5 +1,5 @@
-import { startTransition, useCallback, useEffect, useMemo, useState } from 'react'
-import { BarChart3, ChevronDown, Download, Loader2, RefreshCw, Sigma } from 'lucide-react'
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { BarChart3, ChevronDown, Download, Loader2, Pause, Play, RefreshCw, Sigma } from 'lucide-react'
 import { readEventStream } from '../utils/eventStream'
 
 interface MessageStatsPanelProps {
@@ -54,16 +54,28 @@ export function MessageStatsPanel({ jobId, selectedIMSIs: _selectedIMSIs }: Mess
   const [activeModuleKey, setActiveModuleKey] = useState<string>('')
   const [error, setError] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
+  const [paused, setPaused] = useState(false)
+  const abortControllerRef = useRef<AbortController | null>(null)
+  const pausedRef = useRef(false)
 
   useEffect(() => {
+    abortControllerRef.current?.abort()
+    pausedRef.current = false
     setResult(null)
     setProgress(null)
     setActiveModuleKey('')
     setError(null)
+    setLoading(false)
+    setPaused(false)
   }, [jobId])
 
   const handleLoadStats = useCallback(async () => {
-    if (loading) return
+    if (loading && !paused) return
+    abortControllerRef.current?.abort()
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+    pausedRef.current = false
+    setPaused(false)
     setLoading(true)
     setError(null)
     setProgress(null)
@@ -72,6 +84,7 @@ export function MessageStatsPanel({ jobId, selectedIMSIs: _selectedIMSIs }: Mess
       const response = await fetch(`/api/jobs/${jobId}/message-stats/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({ batch_rows: 5000 }),
       })
       await readEventStream<StreamPayload<MessageStatsResult> | string>(response, ({ event, data }) => {
@@ -93,13 +106,30 @@ export function MessageStatsPanel({ jobId, selectedIMSIs: _selectedIMSIs }: Mess
             })
           }
         }
-      })
+      }, { isPaused: () => pausedRef.current, signal: controller.signal })
     } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        return
+      }
       setError('消息统计失败: ' + (err as Error).message)
     } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null
+      }
       setLoading(false)
     }
-  }, [jobId, loading])
+  }, [jobId, loading, paused])
+
+  const handlePauseToggle = useCallback(() => {
+    setPaused(value => {
+      pausedRef.current = !value
+      return !value
+    })
+  }, [])
+
+  useEffect(() => {
+    return () => abortControllerRef.current?.abort()
+  }, [])
 
   const activeModule = useMemo(() => {
     if (!result) return null
@@ -149,12 +179,22 @@ export function MessageStatsPanel({ jobId, selectedIMSIs: _selectedIMSIs }: Mess
         <div className="flex items-center gap-2">
           <button
             onClick={handleLoadStats}
-            disabled={loading}
+            disabled={loading && !paused}
             className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg transition-all active:scale-[0.98]"
           >
-            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : result ? <RefreshCw className="w-4 h-4" /> : <Sigma className="w-4 h-4" />}
-            <span>{loading ? '统计中...' : result ? '重新统计' : '开始统计'}</span>
+            {loading ? (paused ? <RefreshCw className="w-4 h-4" /> : <Loader2 className="w-4 h-4 animate-spin" />) : result ? <RefreshCw className="w-4 h-4" /> : <Sigma className="w-4 h-4" />}
+            <span>{loading ? (paused ? '重新统计' : '统计中...') : result ? '重新统计' : '开始统计'}</span>
           </button>
+
+          {loading && (
+            <button
+              onClick={handlePauseToggle}
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-amber-50 px-3 py-2.5 text-sm font-semibold text-amber-700 transition-all hover:bg-amber-100 active:scale-[0.98]"
+            >
+              {paused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+              <span>{paused ? '继续' : '暂停'}</span>
+            </button>
+          )}
 
           <button
             onClick={handleDownloadExcel}
@@ -185,7 +225,7 @@ export function MessageStatsPanel({ jobId, selectedIMSIs: _selectedIMSIs }: Mess
         <>
 
       {loading && (
-        <StreamProgressBar progress={progress} label="正在流式统计" unit="行" />
+        <StreamProgressBar progress={progress} label={paused ? '已暂停流式统计' : '正在流式统计'} unit="行" />
       )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
