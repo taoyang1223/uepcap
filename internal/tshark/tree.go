@@ -44,7 +44,7 @@ func DefaultProtocolTreeConfig() *ProtocolTreeConfig {
 			"pfcp":     {"Packet Forwarding Control Protocol"},
 			"gtpv2":    {"GPRS Tunneling Protocol V2"},
 			"gtp":      {"GPRS Tunneling Protocol"},
-			"nas-5gs":  {"Non-Access-Stratum 5GS (NAS)5GS", "NAS-5GS"},
+			"nas-5gs":  {"Non-Access-Stratum 5GS (NAS)5GS", "Non-Access-Stratum 5GS (NAS)PDU", "NAS-5GS"},
 			"nas-eps":  {"Non-Access-Stratum (NAS)PDU", "NAS-EPS"},
 			"diameter": {"Diameter Protocol"},
 			"sctp":     {"Stream Control Transmission Protocol"},
@@ -103,7 +103,7 @@ func TsharkProtocolTree(ctx context.Context, pcapFile string, frameNumber int, p
 	args := []string{
 		"-r", pcapFile,
 		"-Y", filter,
-		"-O", protocol,
+		"-O", protocolTreeOutputProtocol(protocol),
 	}
 
 	// Add NAS decryption preferences
@@ -285,7 +285,7 @@ func TsharkProtocolTreeBatch(ctx context.Context, pcapFile string, frameNumbers 
 	args := []string{
 		"-r", pcapFile,
 		"-Y", filter,
-		"-O", protocol,
+		"-O", protocolTreeOutputProtocol(protocol),
 	}
 
 	// Add NAS decryption preferences
@@ -312,6 +312,17 @@ func TsharkProtocolTreeBatch(ctx context.Context, pcapFile string, frameNumbers 
 
 	// Split output by frame boundaries and extract protocol trees
 	return splitAndExtractTrees(stdout, protocol)
+}
+
+func protocolTreeOutputProtocol(protocol string) string {
+	switch protocol {
+	case "nas-5gs":
+		return "ngap,nas-5gs"
+	case "nas-eps":
+		return "s1ap,nas-eps"
+	default:
+		return protocol
+	}
 }
 
 // splitAndExtractTrees splits tshark -O output containing multiple frames

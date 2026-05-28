@@ -104,9 +104,12 @@ interface ParsedTreeLine {
   line: string
   key: string
   familyKey: string
-  looseFamilyKey: string
+  moveBlockKey: string
   anchorKey: string
   index: number
+  indent: number
+  blockEnd: number
+  containingBlockEnd: number
 }
 
 interface PositionHint {
@@ -198,8 +201,10 @@ const protocolConfigs: ProtocolConfig[] = [
   },
 ]
 
+const defaultProtocolSelection = protocolConfigs.map(item => item.key)
+
 export function PacketCompare({ onBack }: PacketCompareProps) {
-  const [protocol, setProtocol] = useState<ProtocolKey>('ngap')
+  const [protocols, setProtocols] = useState<ProtocolKey[]>(defaultProtocolSelection)
   const [captures, setCaptures] = useState<Record<CaptureSide, CaptureState>>({
     left: { ...emptyCaptureState },
     right: { ...emptyCaptureState },
@@ -211,7 +216,8 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
   const [pasteDrafts, setPasteDrafts] = useState<Record<CaptureSide, string>>({ left: '', right: '' })
   const [pasteCompareError, setPasteCompareError] = useState<string | null>(null)
 
-  const config = useMemo(() => protocolConfigs.find(item => item.key === protocol) || protocolConfigs[0], [protocol])
+  const selectedConfigs = useMemo(() => protocolConfigs.filter(item => protocols.includes(item.key)), [protocols])
+  const protocolLabel = useMemo(() => formatProtocolSelectionLabel(selectedConfigs), [selectedConfigs])
   const leftSelected = useMemo(() => selectedMessage(captures.left), [captures.left])
   const rightSelected = useMemo(() => selectedMessage(captures.right), [captures.right])
   const selectedTypeMismatch = !!leftSelected && !!rightSelected && leftSelected.typeKey !== rightSelected.typeKey
@@ -224,8 +230,15 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
     }))
   }, [])
 
-  const handleProtocolChange = useCallback((nextProtocol: ProtocolKey) => {
-    setProtocol(nextProtocol)
+  const handleProtocolToggle = useCallback((nextProtocol: ProtocolKey) => {
+    const nextProtocols = protocols.includes(nextProtocol)
+      ? protocols.filter(item => item !== nextProtocol)
+      : protocolConfigs
+        .map(item => item.key)
+        .filter(item => item === nextProtocol || protocols.includes(item))
+    if (nextProtocols.length === 0) return
+
+    setProtocols(nextProtocols)
     setComparison(null)
     setCompareError(null)
     setPasteInputOpen(false)
@@ -234,7 +247,7 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
       left: resetCaptureAnalysis(previous.left),
       right: resetCaptureAnalysis(previous.right),
     }))
-  }, [])
+  }, [protocols])
 
   const handleUploaded = useCallback((side: CaptureSide, job: UploadedJob) => {
     updateCapture(side, previous => ({
@@ -274,30 +287,28 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
     setPasteCompareError(null)
 
     try {
-      const response = await fetch(`/api/jobs/${capture.job.id}/${config.endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config.requestBody),
-      })
-      const data = (await response.json()) as APIResponse<any>
-      if (!data.success || !data.data) {
-        throw new Error(data.error || `${config.label} 消息分析失败`)
+      const results = await Promise.allSettled(selectedConfigs.map(item => fetchMessagesForProtocol(capture.job!.id, item)))
+      const messages = results
+        .flatMap(result => result.status === 'fulfilled' ? result.value.messages : [])
+        .sort((left, right) => left.frameNumber - right.frameNumber || left.protocol.localeCompare(right.protocol))
+      const failures = results.flatMap(result => result.status === 'rejected' ? [(result.reason as Error).message] : [])
+      if (messages.length === 0 && failures.length > 0) {
+        throw new Error(failures.join('；'))
       }
-      const messages = config.normalize(data.data).sort((left, right) => left.frameNumber - right.frameNumber)
       updateCapture(side, previous => ({
         ...previous,
         loading: false,
         messages,
-        error: null,
+        error: failures.length > 0 ? `部分协议分析失败: ${failures.join('；')}` : null,
       }))
     } catch (err) {
       updateCapture(side, previous => ({
         ...previous,
         loading: false,
-        error: `${config.label} 消息分析失败: ${(err as Error).message}`,
+        error: `${protocolLabel} 消息分析失败: ${(err as Error).message}`,
       }))
     }
-  }, [captures, config, updateCapture])
+  }, [captures, protocolLabel, selectedConfigs, updateCapture])
 
   const loadBothMessages = useCallback(async () => {
     await Promise.all([
@@ -398,31 +409,31 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
   const structureDiffCount = diffStats.changed + diffStats.left + diffStats.right
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/90 backdrop-blur-md">
-        <div className="mx-auto flex h-16 max-w-[1720px] items-center justify-between px-4 sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-[#eef3f8] text-slate-900">
+      <header className="sticky top-0 z-40 border-b border-slate-200 bg-white shadow-sm backdrop-blur-md">
+        <div className="mx-auto flex h-[72px] max-w-[1720px] items-center justify-between px-4 sm:px-6 lg:px-8">
           <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={onBack}
-              className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900"
               aria-label="返回"
             >
               <ArrowLeft className="h-5 w-5" />
             </button>
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-teal-100 bg-teal-50 text-teal-700">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-teal-200 bg-teal-50 text-teal-700 shadow-sm">
               <FileDiff className="h-5 w-5" />
             </div>
             <div>
-              <h1 className="text-lg font-black tracking-tight text-slate-900">双抓包消息对比</h1>
-              <p className="text-xs font-semibold text-slate-500">左右导入抓包，选择相同类型消息后查看字段差异</p>
+              <h1 className="text-xl font-black text-slate-950">双抓包消息对比</h1>
+              <p className="text-xs font-bold text-slate-500">左右导入抓包，选择相同类型消息后查看字段差异</p>
             </div>
           </div>
           <button
             type="button"
             onClick={loadBothMessages}
             disabled={!captures.left.job || !captures.right.job || captures.left.loading || captures.right.loading}
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 py-2.5 text-sm font-black text-white shadow-sm shadow-slate-950/15 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
           >
             {captures.left.loading || captures.right.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
             <span>分析左右消息</span>
@@ -431,29 +442,37 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
       </header>
 
       <main className="mx-auto max-w-[1720px] px-4 py-8 sm:px-6 lg:px-8">
-        <section className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <section className="mb-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm shadow-slate-200/70">
+          <div className="h-1 bg-slate-950" />
+          <div className="p-4">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <p className="text-sm font-black text-slate-900">选择消息协议</p>
-              <p className="mt-1 text-sm text-slate-500">切换协议会清空当前消息列表和对比结果</p>
+            <div className="min-w-[260px]">
+              <p className="text-sm font-black text-slate-950">选择消息协议</p>
+              <p className="mt-1 text-sm font-semibold text-slate-500">可多选，调整协议会清空当前消息列表和对比结果</p>
             </div>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-              {protocolConfigs.map(item => (
+              {protocolConfigs.map(item => {
+                const selected = protocols.includes(item.key)
+                return (
                 <button
                   key={item.key}
                   type="button"
-                  onClick={() => handleProtocolChange(item.key)}
-                  className={`rounded-lg border px-3 py-2 text-left transition ${
-                    protocol === item.key
-                      ? 'border-teal-300 bg-teal-50 text-teal-800 ring-2 ring-teal-100'
-                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                  onClick={() => handleProtocolToggle(item.key)}
+                  className={`group relative min-h-[58px] rounded-lg border px-3 py-2 text-left transition ${
+                    selected
+                      ? 'border-teal-600 bg-teal-600 text-white shadow-sm shadow-teal-600/20'
+                      : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
                   }`}
                 >
-                  <span className="block text-sm font-black">{item.label}</span>
-                  <span className="mt-0.5 block truncate text-xs font-semibold opacity-75">{item.detail}</span>
+                  <span className="flex items-center justify-between gap-2 text-sm font-black">
+                    {item.label}
+                    {selected && <CheckCircle2 className="h-4 w-4 shrink-0 text-white" />}
+                  </span>
+                  <span className="mt-0.5 block truncate text-xs font-bold opacity-75">{item.detail}</span>
                 </button>
-              ))}
+              )})}
             </div>
+          </div>
           </div>
         </section>
 
@@ -461,7 +480,7 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
           <CaptureColumn
             side="left"
             title="左侧抓包"
-            protocolLabel={config.label}
+            protocolLabel={protocolLabel}
             capture={captures.left}
             counterpartTypeKey={rightSelected?.typeKey || null}
             onUploaded={job => handleUploaded('left', job)}
@@ -475,7 +494,7 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
           <CaptureColumn
             side="right"
             title="右侧抓包"
-            protocolLabel={config.label}
+            protocolLabel={protocolLabel}
             capture={captures.right}
             counterpartTypeKey={leftSelected?.typeKey || null}
             onUploaded={job => handleUploaded('right', job)}
@@ -488,7 +507,7 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
           />
         </section>
 
-        <section className="mb-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <section className="mb-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-200/70">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <SelectionSummary left={leftSelected} right={rightSelected} mismatch={selectedTypeMismatch} />
             <div className="flex flex-wrap items-center gap-3">
@@ -510,7 +529,7 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
               <button
                 type="button"
                 onClick={handleOpenPasteInput}
-                className="inline-flex items-center justify-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm font-black text-blue-700 transition hover:border-blue-300 hover:bg-white"
+                className="inline-flex items-center justify-center gap-2 rounded-lg border border-sky-200 bg-sky-50 px-4 py-2.5 text-sm font-black text-sky-700 transition hover:border-sky-300 hover:bg-white"
               >
                 <ClipboardPaste className="h-4 w-4" />
                 <span>粘贴内容对比</span>
@@ -520,8 +539,8 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
         </section>
 
         {comparison && (
-          <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-            <div className="border-b border-slate-200 bg-slate-50 px-5 py-4">
+          <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm shadow-slate-200/70">
+            <div className="border-b border-slate-200 bg-white px-5 py-4">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                 <div>
                   <p className="text-base font-black text-slate-900">{comparison.title}</p>
@@ -591,18 +610,19 @@ function CaptureColumn({
   const pagedMessages = useMemo(() => paginate(filteredMessages, capture.page), [filteredMessages, capture.page])
 
   return (
-    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-      <div className={`border-b px-5 py-4 ${side === 'left' ? 'border-cyan-100 bg-cyan-50/50' : 'border-indigo-100 bg-indigo-50/50'}`}>
+    <div className={`overflow-hidden rounded-xl border bg-white shadow-sm shadow-slate-200/70 ${side === 'left' ? 'border-teal-200' : 'border-sky-200'}`}>
+      <div className={`h-1 ${side === 'left' ? 'bg-teal-500' : 'bg-sky-500'}`} />
+      <div className={`border-b px-5 py-4 ${side === 'left' ? 'border-teal-100 bg-teal-50/80' : 'border-sky-100 bg-sky-50/80'}`}>
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-base font-black text-slate-900">{title}</p>
-            <p className="mt-1 text-sm font-semibold text-slate-500">{protocolLabel} 消息列表</p>
+            <p className="text-base font-black text-slate-950">{title}</p>
+            <p className="mt-1 text-sm font-bold text-slate-500">{protocolLabel} 消息列表</p>
           </div>
           {capture.job && (
             <button
               type="button"
               onClick={onClearJob}
-              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-black text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-black text-slate-500 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-800"
             >
               重新导入
             </button>
@@ -620,7 +640,7 @@ function CaptureColumn({
                 type="button"
                 onClick={onAnalyze}
                 disabled={capture.loading}
-                className="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-black text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 py-2.5 text-sm font-black text-white shadow-sm shadow-slate-950/15 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
               >
                 {capture.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
                 <span>{capture.messages.length > 0 ? '重新分析消息' : '分析消息'}</span>
@@ -644,14 +664,14 @@ function CaptureColumn({
                     <input
                       value={capture.query}
                       onChange={event => onQueryChange(event.target.value)}
-                      className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pl-9 pr-3 text-sm font-semibold text-slate-700 outline-none focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                      className="w-full rounded-lg border border-slate-200 bg-white py-2 pl-9 pr-3 text-sm font-semibold text-slate-700 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
                       placeholder="搜索帧号 / IP / 类型"
                     />
                   </label>
                   <select
                     value={capture.typeFilter}
                     onChange={event => onTypeFilterChange(event.target.value)}
-                    className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-600 outline-none focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-600 outline-none transition focus:border-teal-400 focus:ring-2 focus:ring-teal-100"
                   >
                     <option value="all">全部类型</option>
                     {typeOptions.map(option => (
@@ -660,7 +680,7 @@ function CaptureColumn({
                   </select>
                 </div>
 
-                <div className="overflow-hidden rounded-xl border border-slate-200">
+                <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
                   <div className="max-h-[520px] overflow-y-auto bg-white">
                     {pagedMessages.map(message => {
                       const selected = capture.selectedId === message.id
@@ -670,12 +690,12 @@ function CaptureColumn({
                           key={message.id}
                           type="button"
                           onClick={() => onSelect(message)}
-                          className={`flex w-full items-start gap-3 border-b border-slate-100 px-4 py-3 text-left last:border-b-0 transition ${
+                          className={`flex w-full items-start gap-3 border-b border-l-4 px-4 py-3 text-left last:border-b-0 transition ${
                             selected
-                              ? 'bg-teal-50 ring-1 ring-inset ring-teal-200'
+                              ? 'border-b-teal-100 border-l-teal-500 bg-teal-50 ring-1 ring-inset ring-teal-300'
                               : compatible
-                                ? 'hover:bg-slate-50'
-                                : 'bg-slate-50/60 opacity-60 hover:opacity-100'
+                                ? 'border-b-slate-100 border-l-transparent hover:bg-slate-50/80'
+                                : 'border-b-slate-100 border-l-transparent bg-slate-50/60 opacity-60 hover:opacity-100'
                           }`}
                         >
                           <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${selected ? 'border-teal-500 bg-teal-500 text-white' : 'border-slate-300 bg-white text-transparent'}`}>
@@ -683,7 +703,8 @@ function CaptureColumn({
                           </span>
                           <span className="min-w-0 flex-1">
                             <span className="flex flex-wrap items-center gap-2">
-                              <span className="font-black text-slate-900">{message.typeLabel}</span>
+                              <Badge className="border-blue-200 bg-blue-50 text-blue-700">{displayProtocolLabel(message.protocol)}</Badge>
+                              <span className="font-black text-slate-950">{message.typeLabel}</span>
                               {message.typeCode && <Badge>{message.typeCode}</Badge>}
                               {message.directionLabel && <Badge>{message.directionLabel}</Badge>}
                               {!compatible && <Badge className="border-amber-200 bg-amber-50 text-amber-700">类型不同</Badge>}
@@ -759,13 +780,13 @@ function UploadSlot({ side, job, onUploaded }: { side: CaptureSide; job: Uploade
 
   if (job) {
     return (
-      <div className={`rounded-xl border px-4 py-3 ${side === 'left' ? 'border-cyan-200 bg-cyan-50' : 'border-indigo-200 bg-indigo-50'}`}>
+      <div className={`rounded-xl border px-4 py-3 shadow-sm ${side === 'left' ? 'border-teal-200 bg-teal-50' : 'border-sky-200 bg-sky-50'}`}>
         <div className="flex items-start gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-white text-slate-700 shadow-sm">
             <FileArchive className="h-5 w-5" />
           </div>
           <div className="min-w-0">
-            <p className="truncate text-sm font-black text-slate-900" title={job.filename}>{job.filename}</p>
+            <p className="truncate text-sm font-black text-slate-950" title={job.filename}>{job.filename}</p>
             <p className="mt-1 text-xs font-bold text-slate-500">Job {job.id.slice(0, 8)} · {job.fileCount} 个文件</p>
           </div>
         </div>
@@ -781,19 +802,19 @@ function UploadSlot({ side, job, onUploaded }: { side: CaptureSide; job: Uploade
         onDragLeave={() => setDragOver(false)}
         onDrop={event => { event.preventDefault(); setDragOver(false); handleFiles(event.dataTransfer.files) }}
         className={`cursor-pointer rounded-xl border-2 border-dashed px-5 py-8 text-center transition ${
-          dragOver ? 'border-teal-400 bg-teal-50' : 'border-slate-200 bg-slate-50 hover:border-teal-300 hover:bg-white'
+          dragOver ? 'border-teal-400 bg-teal-50' : 'border-slate-200 bg-white hover:border-teal-300 hover:bg-teal-50/40'
         }`}
       >
         <input ref={inputRef} type="file" multiple className="hidden" onChange={event => handleFiles(event.target.files)} />
         <UploadCloud className="mx-auto h-8 w-8 text-teal-600" />
-        <p className="mt-3 text-sm font-black text-slate-900">导入{side === 'left' ? '左侧' : '右侧'}抓包</p>
+        <p className="mt-3 text-sm font-black text-slate-950">导入{side === 'left' ? '左侧' : '右侧'}抓包</p>
         <p className="mt-1 text-xs font-semibold text-slate-500">支持多文件，会按任务合并处理</p>
       </div>
 
       {files.length > 0 && (
         <div className="mt-3 space-y-2">
           {files.map((file, index) => (
-            <div key={`${file.name}:${index}`} className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 px-3 py-2 text-sm">
+            <div key={`${file.name}:${index}`} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm">
               <span className="min-w-0 truncate font-bold text-slate-700">{file.name}</span>
               {!uploading && (
                 <button type="button" onClick={() => setFiles(previous => previous.filter((_, i) => i !== index))} className="rounded-md p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600">
@@ -810,7 +831,7 @@ function UploadSlot({ side, job, onUploaded }: { side: CaptureSide; job: Uploade
               <p className="mt-2 text-center text-xs font-black text-slate-500">上传中 {progress}%</p>
             </div>
           ) : (
-            <button type="button" onClick={handleUpload} className="w-full rounded-lg bg-teal-600 px-4 py-2.5 text-sm font-black text-white hover:bg-teal-700">
+            <button type="button" onClick={handleUpload} className="w-full rounded-lg bg-teal-600 px-4 py-2.5 text-sm font-black text-white shadow-sm shadow-teal-600/20 hover:bg-teal-700">
               上传并创建任务
             </button>
           )}
@@ -825,7 +846,7 @@ function UploadSlot({ side, job, onUploaded }: { side: CaptureSide; job: Uploade
 function SelectionSummary({ left, right, mismatch }: { left: ComparableMessage | null; right: ComparableMessage | null; mismatch: boolean }) {
   return (
     <div className="min-w-0 flex-1">
-      <p className="text-sm font-black text-slate-900">当前选择</p>
+      <p className="text-sm font-black text-slate-950">当前选择</p>
       <div className="mt-2 grid grid-cols-1 gap-2 text-sm lg:grid-cols-2">
         <SelectedMessagePill label="左侧" message={left} />
         <SelectedMessagePill label="右侧" message={right} />
@@ -837,10 +858,10 @@ function SelectionSummary({ left, right, mismatch }: { left: ComparableMessage |
 
 function SelectedMessagePill({ label, message }: { label: string; message: ComparableMessage | null }) {
   return (
-    <div className="min-w-0 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+    <div className="min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm">
       <span className="text-xs font-black text-slate-500">{label}</span>
       {message ? (
-        <span className="ml-2 font-black text-slate-900">Frame {message.frameNumber} · {message.typeLabel}</span>
+        <span className="ml-2 font-black text-slate-950">Frame {message.frameNumber} · {message.typeLabel}</span>
       ) : (
         <span className="ml-2 font-bold text-slate-400">未选择</span>
       )}
@@ -1000,7 +1021,7 @@ function FourPaneDiffViewer({
   }, [leftOriginalHidden, rightOriginalHidden, alignedExpanded, scheduleConnectorUpdate])
 
   return (
-    <div ref={rootRef} className="relative h-[720px] overflow-hidden bg-slate-100">
+    <div ref={rootRef} className="relative h-[720px] overflow-hidden bg-slate-200/70">
       <div className="grid h-full min-h-0 gap-x-3" style={{ gridTemplateColumns }}>
         <OriginalTreePane
           title="左侧原始位置"
@@ -1065,7 +1086,7 @@ function FourPaneDiffViewer({
 }
 
 function PaneFrame({ title, tone = 'plain', className = '', actions, scrollRef, onScroll, children }: { title: string; tone?: 'plain' | 'align'; className?: string; actions?: ReactNode; scrollRef?: Ref<HTMLDivElement>; onScroll: (event: UIEvent<HTMLDivElement>) => void; children: ReactNode }) {
-  const headerClass = tone === 'align' ? 'bg-blue-50 text-blue-800' : 'bg-white text-slate-500'
+  const headerClass = tone === 'align' ? 'bg-sky-50 text-sky-800' : 'bg-white text-slate-600'
   return (
     <div className={`flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-white ${className}`}>
       <div className={`flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 px-4 py-3 text-xs font-black ${headerClass}`}>
@@ -1085,7 +1106,7 @@ function PaneIconButton({ title, onClick, children }: { title: string; onClick: 
       type="button"
       title={title}
       onClick={onClick}
-      className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 shadow-sm hover:bg-slate-50 hover:text-slate-900"
+      className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900"
     >
       {children}
     </button>
@@ -1098,7 +1119,7 @@ function PaneTextButton({ title, onClick, children }: { title: string; onClick: 
       type="button"
       title={title}
       onClick={onClick}
-      className="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-black text-slate-600 shadow-sm hover:bg-slate-50 hover:text-slate-900"
+      className="inline-flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-black text-slate-600 shadow-sm transition hover:border-slate-300 hover:bg-slate-50 hover:text-slate-900"
     >
       {children}
     </button>
@@ -1107,7 +1128,7 @@ function PaneTextButton({ title, onClick, children }: { title: string; onClick: 
 
 function CollapsedPane({ title, side, className = '', onExpand }: { title: string; side: CaptureSide; className?: string; onExpand: () => void }) {
   return (
-    <div className={`flex h-full min-h-0 min-w-0 flex-col items-center overflow-hidden bg-white ${className}`}>
+    <div className={`flex h-full min-h-0 min-w-0 flex-col items-center overflow-hidden bg-white px-2 py-2 ${className}`}>
       <PaneIconButton title={`展开${title}`} onClick={onExpand}>
         {side === 'left' ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
       </PaneIconButton>
@@ -1457,6 +1478,32 @@ function buildTypeOptions(messages: ComparableMessage[]) {
   })
 }
 
+function formatProtocolSelectionLabel(configs: ProtocolConfig[]) {
+  if (configs.length === protocolConfigs.length) return '全部协议'
+  if (configs.length <= 3) return configs.map(item => item.label).join(' / ')
+  return `${configs.slice(0, 3).map(item => item.label).join(' / ')} 等 ${configs.length} 个协议`
+}
+
+function displayProtocolLabel(protocol: ProtocolKey) {
+  return protocolConfigs.find(item => item.key === protocol)?.label || protocol.toUpperCase()
+}
+
+async function fetchMessagesForProtocol(jobId: string, config: ProtocolConfig): Promise<{ config: ProtocolConfig; messages: ComparableMessage[] }> {
+  const response = await fetch(`/api/jobs/${jobId}/${config.endpoint}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config.requestBody),
+  })
+  const data = (await response.json()) as APIResponse<any>
+  if (!data.success || !data.data) {
+    throw new Error(data.error || `${config.label} 消息分析失败`)
+  }
+  return {
+    config,
+    messages: config.normalize(data.data),
+  }
+}
+
 async function uploadJob(formData: FormData, onProgress: (progress: number) => void): Promise<{ job_id: string; file_count: number }> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
@@ -1627,59 +1674,135 @@ function buildLineDiff(leftTree: string, rightTree: string): StructureDiffResult
 }
 
 function reconcileMovedSameLevelRows(rows: DiffRow[], leftLines: ParsedTreeLine[], rightLines: ParsedTreeLine[]) {
-  const rightOnlyRows: Array<{ rowIndex: number; line: ParsedTreeLine }> = []
+  const rightBlocksByMoveKey = new Map<string, SideOnlyBlock[]>()
   rows.forEach((row, rowIndex) => {
     if (row.kind !== 'right' || !row.rightLineNumber) return
     const line = rightLines[row.rightLineNumber - 1]
-    if (line) {
-      rightOnlyRows.push({ rowIndex, line })
+    if (!line || !canReconcileMovedStructureLine(line)) return
+    const block = collectSideOnlyBlockRows(rows, rowIndex, rightLines, 'right')
+    if (block) {
+      appendSideOnlyBlock(rightBlocksByMoveKey, line.moveBlockKey, block)
     }
   })
 
-  if (rightOnlyRows.length === 0) return rows
+  if (rightBlocksByMoveKey.size === 0) return rows
 
-  const rightByFamilyKey = groupRightOnlyRows(rightOnlyRows, line => line.familyKey)
-  const rightByLooseFamilyKey = groupRightOnlyRows(rightOnlyRows, line => line.looseFamilyKey)
+  const replacements = new Map<number, DiffRow[]>()
+  const usedLeftRows = new Set<number>()
   const usedRightRows = new Set<number>()
   const removeRows = new Set<number>()
 
-  const nextRows = rows.map(row => ({ ...row }))
   rows.forEach((row, rowIndex) => {
-    if (row.kind !== 'left' || !row.leftLineNumber) return
+    if (row.kind !== 'left' || !row.leftLineNumber || usedLeftRows.has(rowIndex)) return
     const left = leftLines[row.leftLineNumber - 1]
     if (!left) return
 
-    const right = takeRightOnlyMatch(rightByFamilyKey.get(left.familyKey), usedRightRows)
-      || takeRightOnlyMatch(rightByLooseFamilyKey.get(left.looseFamilyKey), usedRightRows)
-    if (!right) return
+    if (!canReconcileMovedStructureLine(left)) return
+    const leftBlock = collectSideOnlyBlockRows(rows, rowIndex, leftLines, 'left')
+    if (!leftBlock || leftBlock.rowIndexes.some(index => usedLeftRows.has(index))) return
 
-    usedRightRows.add(right.rowIndex)
-    removeRows.add(right.rowIndex)
-    nextRows[rowIndex] = buildChangedRow(left.line, right.line.line, left.index + 1, right.line.index + 1)
+    const rightBlock = takeSideOnlyBlock(rightBlocksByMoveKey.get(left.moveBlockKey), usedRightRows)
+    if (!rightBlock) return
+
+    leftBlock.rowIndexes.forEach(index => {
+      usedLeftRows.add(index)
+      removeRows.add(index)
+    })
+    rightBlock.rowIndexes.forEach(index => {
+      usedRightRows.add(index)
+      removeRows.add(index)
+    })
+    replacements.set(leftBlock.startRowIndex, buildAlignedBlockRows(leftBlock.lines, rightBlock.lines))
   })
 
-  if (removeRows.size === 0) return rows
-  return nextRows.filter((_row, rowIndex) => !removeRows.has(rowIndex))
+  if (replacements.size === 0) return rows
+
+  const alignedRows: DiffRow[] = []
+  rows.forEach((row, rowIndex) => {
+    const replacement = replacements.get(rowIndex)
+    if (replacement) {
+      alignedRows.push(...replacement)
+    }
+    if (!removeRows.has(rowIndex)) {
+      alignedRows.push(row)
+    }
+  })
+  return alignedRows
 }
 
-function groupRightOnlyRows(rows: Array<{ rowIndex: number; line: ParsedTreeLine }>, keyFn: (line: ParsedTreeLine) => string) {
-  const grouped = new Map<string, Array<{ rowIndex: number; line: ParsedTreeLine }>>()
-  for (const row of rows) {
-    const key = keyFn(row.line)
-    if (key === '') continue
-    const group = grouped.get(key)
-    if (group) {
-      group.push(row)
-    } else {
-      grouped.set(key, [row])
+interface SideOnlyBlock {
+  startRowIndex: number
+  rowIndexes: number[]
+  lines: ParsedTreeLine[]
+}
+
+function appendSideOnlyBlock(grouped: Map<string, SideOnlyBlock[]>, key: string, block: SideOnlyBlock) {
+  if (key === '') return
+  const blocks = grouped.get(key)
+  if (blocks) {
+    blocks.push(block)
+  } else {
+    grouped.set(key, [block])
+  }
+}
+
+function canReconcileMovedStructureLine(line: ParsedTreeLine) {
+  const label = structureHintLabel(line.line)
+  return line.blockEnd > line.index
+    && isPositionHintStructureLine(line.line)
+    && label !== ''
+    && !isScalarStructureLabel(label)
+}
+
+function collectSideOnlyBlockRows(
+  rows: DiffRow[],
+  startRowIndex: number,
+  lines: ParsedTreeLine[],
+  side: 'left' | 'right',
+): SideOnlyBlock | null {
+  const lineNumberKey = side === 'left' ? 'leftLineNumber' : 'rightLineNumber'
+  const startLineNumber = rows[startRowIndex][lineNumberKey]
+  if (!startLineNumber) return null
+
+  const startLine = lines[startLineNumber - 1]
+  if (!startLine) return null
+
+  const blockLines: ParsedTreeLine[] = []
+  const rowIndexes: number[] = []
+  const endLineNumber = startLine.blockEnd + 1
+  for (let lineNumber = startLineNumber; lineNumber <= endLineNumber; lineNumber += 1) {
+    const rowIndex = startRowIndex + lineNumber - startLineNumber
+    const row = rows[rowIndex]
+    const line = lines[lineNumber - 1]
+    if (!row || row.kind !== side || row[lineNumberKey] !== lineNumber || !line) {
+      return null
+    }
+    rowIndexes.push(rowIndex)
+    blockLines.push(line)
+  }
+  return { startRowIndex, rowIndexes, lines: blockLines }
+}
+
+function takeSideOnlyBlock(candidates: SideOnlyBlock[] | undefined, usedRightRows: Set<number>) {
+  if (!candidates) return null
+  return candidates.find(candidate => !candidate.rowIndexes.some(rowIndex => usedRightRows.has(rowIndex))) || null
+}
+
+function buildAlignedBlockRows(leftBlock: ParsedTreeLine[], rightBlock: ParsedTreeLine[]) {
+  const rows: DiffRow[] = []
+  const rowCount = Math.max(leftBlock.length, rightBlock.length)
+  for (let index = 0; index < rowCount; index += 1) {
+    const left = leftBlock[index]
+    const right = rightBlock[index]
+    if (left && right) {
+      rows.push(buildChangedRow(left.line, right.line, left.index + 1, right.index + 1))
+    } else if (left) {
+      rows.push({ kind: 'left', left: left.line, leftLineNumber: left.index + 1 })
+    } else if (right) {
+      rows.push({ kind: 'right', right: right.line, rightLineNumber: right.index + 1 })
     }
   }
-  return grouped
-}
-
-function takeRightOnlyMatch(candidates: Array<{ rowIndex: number; line: ParsedTreeLine }> | undefined, usedRightRows: Set<number>) {
-  if (!candidates) return null
-  return candidates.find(candidate => !usedRightRows.has(candidate.rowIndex)) || null
+  return rows
 }
 
 function buildPositionHintsFromRows(rows: DiffRow[], leftLines: ParsedTreeLine[], rightLines: ParsedTreeLine[]) {
@@ -1735,29 +1858,60 @@ function linesMatchForAnchor(left: ParsedTreeLine, right: ParsedTreeLine) {
 function appendDiffBlock(rows: DiffRow[], leftBlock: ParsedTreeLine[], rightBlock: ParsedTreeLine[]) {
   if (leftBlock.length === 0 && rightBlock.length === 0) return
 
-  const rightByFamily = groupTreeLinesByKey(rightBlock, line => line.looseFamilyKey)
-  const matchedRight = new Set<number>()
+  const rightByFamily = groupTreeLinesByKey(rightBlock, line => line.familyKey)
+  const initialMatches = leftBlock.map(left => ({
+    left,
+    right: rightByFamily.get(left.familyKey)?.shift(),
+  }))
+  let lastAcceptedRightIndex = -1
+  const matches = initialMatches.map(match => {
+    if (!match.right) return match
+    if (match.right.index < lastAcceptedRightIndex) {
+      return { ...match, right: undefined }
+    }
+    lastAcceptedRightIndex = Math.max(lastAcceptedRightIndex, match.right.index)
+    return match
+  })
+  const matchedRight = new Set(matches.flatMap(match => match.right ? [match.right.index] : []))
+  let rightCursor = 0
 
-  for (const left of leftBlock) {
-    const right = rightByFamily.get(left.looseFamilyKey)?.shift()
+  const appendUnmatchedRightBefore = (rightIndex: number) => {
+    while (rightCursor < rightBlock.length && rightBlock[rightCursor].index < rightIndex) {
+      const right = rightBlock[rightCursor]
+      if (!matchedRight.has(right.index)) {
+        rows.push({ kind: 'right', right: right.line, rightLineNumber: right.index + 1 })
+      }
+      rightCursor += 1
+    }
+  }
+  const advanceRightCursorThrough = (rightIndex: number) => {
+    while (rightCursor < rightBlock.length && rightBlock[rightCursor].index <= rightIndex) {
+      rightCursor += 1
+    }
+  }
+
+  matches.forEach(({ left, right }, matchIndex) => {
     if (right) {
-      matchedRight.add(right.index)
+      appendUnmatchedRightBefore(right.index)
       rows.push(buildChangedRow(left.line, right.line, left.index + 1, right.index + 1))
+      advanceRightCursorThrough(right.index)
+
+      const nextRight = matches.slice(matchIndex + 1).find(match => match.right)?.right
+      const activeBlockEnd = Math.max(right.blockEnd, right.containingBlockEnd)
+      if (activeBlockEnd > right.index && (!nextRight || nextRight.index < right.index || nextRight.index > activeBlockEnd)) {
+        appendUnmatchedRightBefore(activeBlockEnd + 1)
+      }
     } else {
       rows.push({ kind: 'left', left: left.line, leftLineNumber: left.index + 1 })
     }
-  }
+  })
 
-  for (const right of rightBlock) {
-    if (!matchedRight.has(right.index)) {
-      rows.push({ kind: 'right', right: right.line, rightLineNumber: right.index + 1 })
-    }
-  }
+  appendUnmatchedRightBefore(Number.POSITIVE_INFINITY)
 }
 
 function parseTreeLines(tree: string): ParsedTreeLine[] {
   const stack: Array<{ indent: number; key: string }> = []
-  return splitTreeLines(tree).map((line, index) => {
+  const lines = splitTreeLines(tree).map((line, index) => {
     const indent = indentWidth(line)
     const content = normalizedStructureContentFromLine(line)
     const family = structureFamilyContent(content)
@@ -1767,13 +1921,34 @@ function parseTreeLines(tree: string): ParsedTreeLine[] {
     const parentPath = stack.map(item => item.key).join('>')
     const key = `${indent}|${parentPath}>${content}`
     const familyKey = `${indent}|${parentPath}>${family}`
-    const looseFamilyKey = `${indent}|${family}`
+    const moveBlockKey = structureMoveBlockKey(line, family, indent)
     const anchorKey = structureAnchorKey(line, content, family, indent, parentPath)
     if (content !== '') {
       stack.push({ indent, key: content })
     }
-    return { line, key, familyKey, looseFamilyKey, anchorKey, index }
+    return { line, key, familyKey, moveBlockKey, anchorKey, index, indent, blockEnd: index, containingBlockEnd: index }
   })
+
+  lines.forEach((line, index) => {
+    let endIndex = index
+    while (endIndex + 1 < lines.length && lines[endIndex + 1].indent > line.indent) {
+      endIndex += 1
+    }
+    line.blockEnd = endIndex
+  })
+
+  const blockStack: Array<{ indent: number; blockEnd: number }> = []
+  lines.forEach(line => {
+    while (blockStack.length > 0 && (blockStack[blockStack.length - 1].indent >= line.indent || blockStack[blockStack.length - 1].blockEnd < line.index)) {
+      blockStack.pop()
+    }
+    line.containingBlockEnd = blockStack[blockStack.length - 1]?.blockEnd ?? line.index
+    if (line.blockEnd > line.index) {
+      blockStack.push({ indent: line.indent, blockEnd: line.blockEnd })
+    }
+  })
+
+  return lines
 }
 
 function structureAnchorKey(line: string, content: string, family: string, indent: number, parentPath: string) {
@@ -1783,6 +1958,12 @@ function structureAnchorKey(line: string, content: string, family: string, inden
   if (isScalarStructureLabel(family) || isScalarStructureLabel(content)) return ''
   if (/^(?:\.*[01]\.*\s*)+[=:]/.test(trimmed)) return ''
   return `${indent}|${parentPath}>${family}`
+}
+
+function structureMoveBlockKey(line: string, family: string, indent: number) {
+  const label = structureHintLabel(line)
+  if (family === '' || label === '' || isScalarStructureLabel(label) || isScalarStructureLabel(family)) return ''
+  return `${indent}|${family}`
 }
 
 function groupTreeLinesByKey(lines: ParsedTreeLine[], keyFn: (line: ParsedTreeLine) => string = line => line.key) {
@@ -1873,6 +2054,9 @@ function structureFamilyContent(content: string) {
 }
 
 function canonicalStructureContent(content: string) {
+  const firstToken = content.split(/[,:]/, 1)[0]?.trim().toLowerCase()
+  if (firstToken === 'flag' || firstToken === 'flags') return 'Flags'
+
   const colonIndex = content.indexOf(':')
   if (colonIndex <= 0) return content
 
