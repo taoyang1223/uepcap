@@ -1,6 +1,6 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { CheckCircle2, ChevronDown, Clock3, Copy, Layers3, Loader2, Network, RefreshCw, Search, Upload, X, XCircle } from 'lucide-react'
+import { CheckCircle2, ChevronDown, Clock3, Copy, Layers3, Loader2, Network, Pause, Play, RefreshCw, Search, Upload, X, XCircle } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
 import { readEventStream } from '../utils/eventStream'
 import { PaginationControls } from './PaginationControls'
@@ -252,8 +252,16 @@ export function S1APMessageAnalyzerPanel({ jobId }: S1APMessageAnalyzerPanelProp
   const [selectedTransaction, setSelectedTransaction] = useState<S1APTransaction | null>(null)
   const [selectedMessage, setSelectedMessage] = useState<S1APMessage | null>(null)
   const [copiedId, setCopiedId] = useState<string | null>(null)
+  const [paused, setPaused] = useState(false)
+  const abortControllerRef = useRef<AbortController | null>(null)
+  const pausedRef = useRef(false)
 
   const fetchAnalysis = useCallback(async (nextProcedureFilter: string) => {
+    abortControllerRef.current?.abort()
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+    pausedRef.current = false
+    setPaused(false)
     setLoading(true)
     setError(null)
     setProgress(null)
@@ -263,6 +271,7 @@ export function S1APMessageAnalyzerPanel({ jobId }: S1APMessageAnalyzerPanelProp
       const response = await fetch(`/api/jobs/${jobId}/s1ap-messages/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify(requestBody),
       })
       await readEventStream<StreamPayload<S1APAnalysisResult> | string>(response, ({ event, data }) => {
@@ -278,17 +287,34 @@ export function S1APMessageAnalyzerPanel({ jobId }: S1APMessageAnalyzerPanelProp
           if (payload.progress) setProgress(payload.progress)
           if (payload.result) setResult(payload.result)
         }
-      })
+      }, { isPaused: () => pausedRef.current, signal: controller.signal })
       setSelectedTransaction(null)
       setSelectedMessage(null)
       return true
     } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        return false
+      }
       setError('S1AP消息分析失败: ' + (err as Error).message)
       return false
     } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null
+      }
       setLoading(false)
     }
   }, [jobId])
+
+  const handlePauseToggle = useCallback(() => {
+    setPaused(value => {
+      pausedRef.current = !value
+      return !value
+    })
+  }, [])
+
+  useEffect(() => {
+    return () => abortControllerRef.current?.abort()
+  }, [])
 
   const handleAnalyze = useCallback(async () => {
     const ok = await fetchAnalysis('all')
@@ -449,6 +475,15 @@ export function S1APMessageAnalyzerPanel({ jobId }: S1APMessageAnalyzerPanelProp
               {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : result ? <RefreshCw className="w-4 h-4" /> : <Upload className="w-4 h-4" />}
               <span>{loading ? '分析中...' : result ? '重新分析' : '开始分析'}</span>
             </button>
+            {loading && (
+              <button
+                onClick={handlePauseToggle}
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-amber-50 px-3 py-2.5 text-sm font-semibold text-amber-700 transition-all hover:bg-amber-100 active:scale-[0.98]"
+              >
+                {paused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+                <span>{paused ? '继续' : '暂停'}</span>
+              </button>
+            )}
             <button
               onClick={() => setCollapsed(value => !value)}
               className="inline-flex items-center justify-center gap-2 px-3 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold rounded-lg transition-all active:scale-[0.98]"

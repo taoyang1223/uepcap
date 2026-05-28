@@ -3,7 +3,12 @@ export interface StreamEvent<T = unknown> {
   data: T
 }
 
-export async function readEventStream<T = unknown>(response: Response, onEvent: (event: StreamEvent<T>) => void) {
+interface ReadEventStreamOptions {
+  isPaused?: () => boolean
+  signal?: AbortSignal
+}
+
+export async function readEventStream<T = unknown>(response: Response, onEvent: (event: StreamEvent<T>) => void, options: ReadEventStreamOptions = {}) {
   if (!response.ok) {
     const text = await response.text().catch(() => '')
     throw new Error(text || `HTTP ${response.status}`)
@@ -17,6 +22,7 @@ export async function readEventStream<T = unknown>(response: Response, onEvent: 
   let buffer = ''
 
   while (true) {
+    await waitWhilePaused(options)
     const { value, done } = await reader.read()
     if (done) break
     buffer += decoder.decode(value, { stream: true })
@@ -30,9 +36,19 @@ export async function readEventStream<T = unknown>(response: Response, onEvent: 
     }
   }
 
+  await waitWhilePaused(options)
   buffer += decoder.decode()
   if (buffer.trim()) {
     emitEvent(buffer, onEvent)
+  }
+}
+
+async function waitWhilePaused(options: ReadEventStreamOptions) {
+  while (options.isPaused?.()) {
+    if (options.signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError')
+    }
+    await new Promise(resolve => window.setTimeout(resolve, 100))
   }
 }
 

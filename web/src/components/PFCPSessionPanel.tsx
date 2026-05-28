@@ -1,6 +1,6 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { Activity, AlertTriangle, CheckCircle2, ChevronDown, Clock3, Copy, FileText, Loader2, RefreshCw, Search, Upload, X, XCircle, Zap } from 'lucide-react'
+import { Activity, AlertTriangle, CheckCircle2, ChevronDown, Clock3, Copy, FileText, Loader2, Pause, Play, RefreshCw, Search, Upload, X, XCircle, Zap } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
 import { readEventStream } from '../utils/eventStream'
 import { PaginationControls } from './PaginationControls'
@@ -135,8 +135,16 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [selectedTransaction, setSelectedTransaction] = useState<PFCPSessionTransaction | null>(null)
   const [collapsed, setCollapsed] = useState(false)
+  const [paused, setPaused] = useState(false)
+  const abortControllerRef = useRef<AbortController | null>(null)
+  const pausedRef = useRef(false)
 
   const handleAnalyze = useCallback(async () => {
+    abortControllerRef.current?.abort()
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+    pausedRef.current = false
+    setPaused(false)
     setLoading(true)
     setError(null)
     setProgress(null)
@@ -151,6 +159,7 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
       const response = await fetch(`/api/jobs/${jobId}/pfcp-sessions/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({ timeout_seconds: 3, limit: 20000, batch_rows: 5000 }),
       })
       await readEventStream<StreamPayload<PFCPSessionResult> | string>(response, ({ event, data }) => {
@@ -168,13 +177,30 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
             setResult(payload.result)
           }
         }
-      })
+      }, { isPaused: () => pausedRef.current, signal: controller.signal })
     } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        return
+      }
       setError('PFCP事务分析失败: ' + (err as Error).message)
     } finally {
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null
+      }
       setLoading(false)
     }
   }, [jobId])
+
+  const handlePauseToggle = useCallback(() => {
+    setPaused(value => {
+      pausedRef.current = !value
+      return !value
+    })
+  }, [])
+
+  useEffect(() => {
+    return () => abortControllerRef.current?.abort()
+  }, [])
 
   const filteredTransactions = useMemo(() => {
     if (!result) return []
@@ -247,6 +273,16 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
               {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : result ? <RefreshCw className="w-4 h-4" /> : <Upload className="w-4 h-4" />}
               <span>{loading ? '分析中...' : result ? '重新分析' : '开始分析'}</span>
             </button>
+
+            {loading && (
+              <button
+                onClick={handlePauseToggle}
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-amber-50 px-3 py-2.5 text-sm font-semibold text-amber-700 transition-all hover:bg-amber-100 active:scale-[0.98]"
+              >
+                {paused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+                <span>{paused ? '继续' : '暂停'}</span>
+              </button>
+            )}
 
             <button
               onClick={() => setCollapsed(value => !value)}
