@@ -267,11 +267,11 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
           <div className="flex items-center gap-2">
             <button
               onClick={handleAnalyze}
-              disabled={loading}
+              disabled={loading && !paused}
               className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg transition-all active:scale-[0.98]"
             >
-              {loading ? (paused ? <Pause className="w-4 h-4" /> : <Loader2 className="w-4 h-4 animate-spin" />) : result ? <RefreshCw className="w-4 h-4" /> : <Upload className="w-4 h-4" />}
-              <span>{loading ? (paused ? '已暂停' : '分析中...') : result ? '重新分析' : '开始分析'}</span>
+              {loading ? (paused ? <RefreshCw className="w-4 h-4" /> : <Loader2 className="w-4 h-4 animate-spin" />) : result ? <RefreshCw className="w-4 h-4" /> : <Upload className="w-4 h-4" />}
+              <span>{loading ? (paused ? '重新分析' : '分析中...') : result ? '重新分析' : '开始分析'}</span>
             </button>
 
             {loading && (
