@@ -270,8 +270,8 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
               disabled={loading}
               className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg transition-all active:scale-[0.98]"
             >
-              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : result ? <RefreshCw className="w-4 h-4" /> : <Upload className="w-4 h-4" />}
-              <span>{loading ? '分析中...' : result ? '重新分析' : '开始分析'}</span>
+              {loading ? (paused ? <Pause className="w-4 h-4" /> : <Loader2 className="w-4 h-4 animate-spin" />) : result ? <RefreshCw className="w-4 h-4" /> : <Upload className="w-4 h-4" />}
+              <span>{loading ? (paused ? '已暂停' : '分析中...') : result ? '重新分析' : '开始分析'}</span>
             </button>
 
             {loading && (
@@ -298,7 +298,7 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
       {!collapsed && (result || error || loading) && (
         <div className="p-6">
         {loading && (
-          <StreamProgressBar progress={progress} label="正在流式分析 PFCP 会话/节点事务" />
+          <StreamProgressBar progress={progress} label={paused ? '已暂停 PFCP 会话/节点事务分析' : '正在流式分析 PFCP 会话/节点事务'} />
         )}
 
         {error && (

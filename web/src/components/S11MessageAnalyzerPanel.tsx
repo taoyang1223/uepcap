@@ -249,8 +249,8 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
           </div>
           <div className="flex items-center gap-2">
             <button onClick={handleAnalyze} disabled={loading} className="inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-slate-900 hover:bg-slate-800 disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-sm font-semibold rounded-lg transition-all active:scale-[0.98]">
-              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : result ? <RefreshCw className="w-4 h-4" /> : <Upload className="w-4 h-4" />}
-              <span>{loading ? '分析中...' : result ? '重新分析' : '开始分析'}</span>
+              {loading ? (paused ? <Pause className="w-4 h-4" /> : <Loader2 className="w-4 h-4 animate-spin" />) : result ? <RefreshCw className="w-4 h-4" /> : <Upload className="w-4 h-4" />}
+              <span>{loading ? (paused ? '已暂停' : '分析中...') : result ? '重新分析' : '开始分析'}</span>
             </button>
             {loading && (
               <button onClick={handlePauseToggle} className="inline-flex items-center justify-center gap-2 rounded-lg bg-amber-50 px-3 py-2.5 text-sm font-semibold text-amber-700 transition-all hover:bg-amber-100 active:scale-[0.98]">
@@ -268,7 +268,7 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
 
       {!collapsed && (result || error || loading) && (
         <div className="p-6">
-          {loading && <StreamProgressBar progress={progress} label="正在流式分析 S11/GTPv2-C 消息" />}
+          {loading && <StreamProgressBar progress={progress} label={paused ? '已暂停 S11/GTPv2-C 消息分析' : '正在流式分析 S11/GTPv2-C 消息'} />}
           {error && <div className="p-3 bg-red-50 rounded-lg text-red-700 text-sm font-medium">{error}</div>}
           {result && (
             <>
