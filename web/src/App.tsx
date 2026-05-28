@@ -1,6 +1,8 @@
 import { lazy, Suspense, useState, useCallback, useEffect, useRef } from 'react'
 import type { ComponentType } from 'react'
 import { FileUpload } from './components/FileUpload'
+import type { RecentImport, RecentImportFile } from './utils/recentImports'
+import { readRecentImports, upsertRecentImport, writeRecentImports } from './utils/recentImports'
 import { IMSIList } from './components/IMSIList'
 import { ProtocolSelect } from './components/ProtocolSelect'
 import { ExportPanel } from './components/ExportPanel'
@@ -40,6 +42,20 @@ interface Job {
 
 type ViewMode = 'main' | 'timeline' | 'guide' | 'flow' | 'compare'
 
+interface APIResponse<T> {
+  success: boolean
+  data?: T
+  error?: string
+}
+
+interface JobResponse {
+  id: string
+  status: string
+  original_files?: string[]
+  imsi_list?: string[]
+  imsi_scanned?: boolean
+}
+
 function App() {
   const [currentJob, setCurrentJob] = useState<Job | null>(null)
   const [imsiList, setImsiList] = useState<string[]>([])
@@ -47,6 +63,7 @@ function App() {
   const [selectedProtocols, setSelectedProtocols] = useState<string[]>(['pfcp', 'ngap', 's1ap'])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [recentImports, setRecentImports] = useState<RecentImport[]>(readRecentImports)
   
   // 视图模式和时间线数据
   const [viewMode, setViewMode] = useState<ViewMode>('main')
@@ -73,11 +90,77 @@ function App() {
     })
   }, [])
 
-  const handleUploadComplete = useCallback((jobId: string, fileCount: number) => {
+  useEffect(() => {
+    writeRecentImports(recentImports)
+  }, [recentImports])
+
+  const clearPendingIMSIState = useCallback(() => {
+    pendingIMSIs.current.clear()
+    if (imsiFlushTimer.current != null) {
+      window.clearTimeout(imsiFlushTimer.current)
+      imsiFlushTimer.current = null
+    }
+  }, [])
+
+  const handleUploadComplete = useCallback((jobId: string, fileCount: number, uploadedFiles: RecentImportFile[]) => {
     setCurrentJob({ id: jobId, status: 'ready', file_count: fileCount })
     setImsiList([])
     setSelectedIMSIs([])
     setError(null)
+    setViewMode('main')
+    setTimelinePackets([])
+    setFlowFilter('')
+    clearPendingIMSIState()
+    setRecentImports(prev => upsertRecentImport(prev, {
+      id: jobId,
+      jobId,
+      fileCount,
+      totalSize: uploadedFiles.reduce((sum, file) => sum + file.size, 0),
+      files: uploadedFiles,
+      importedAt: Date.now(),
+    }))
+  }, [clearPendingIMSIState])
+
+  const handleRecentImportSelect = useCallback(async (item: RecentImport) => {
+    setError(null)
+    try {
+      const response = await fetch(`/api/jobs/${item.jobId}`)
+      const payload = (await response.json()) as APIResponse<JobResponse>
+      if (!response.ok || !payload.success || !payload.data) {
+        setRecentImports(prev => prev.filter(record => record.id !== item.id && record.jobId !== item.jobId))
+        setError('该历史抓包任务已失效，请重新上传抓包文件')
+        return
+      }
+
+      const job = payload.data
+      setCurrentJob({
+        id: job.id,
+        status: job.status || 'ready',
+        file_count: item.fileCount || job.original_files?.length,
+      })
+      setImsiList(job.imsi_list || [])
+      setSelectedIMSIs([])
+      setError(null)
+      setViewMode('main')
+      setTimelinePackets([])
+      setFlowFilter('')
+      clearPendingIMSIState()
+      setRecentImports(prev => upsertRecentImport(prev, { ...item, importedAt: Date.now() }))
+    } catch (err) {
+      setError('导入历史抓包失败: ' + (err as Error).message)
+    }
+  }, [clearPendingIMSIState])
+
+  const handleRecentImportRemove = useCallback((id: string) => {
+    setRecentImports(prev => prev.filter(item => item.id !== id))
+  }, [])
+
+  const handleRecentImportRename = useCallback((id: string, name: string) => {
+    setRecentImports(prev => prev.map(item => item.id === id ? { ...item, displayName: name } : item))
+  }, [])
+
+  const handleRecentImportsClear = useCallback(() => {
+    setRecentImports([])
   }, [])
 
   const handleScanIMSIs = useCallback(() => {
@@ -155,12 +238,8 @@ function App() {
     setViewMode('main')
     setTimelinePackets([])
     setFlowFilter('')
-    pendingIMSIs.current.clear()
-    if (imsiFlushTimer.current != null) {
-      window.clearTimeout(imsiFlushTimer.current)
-      imsiFlushTimer.current = null
-    }
-  }, [])
+    clearPendingIMSIState()
+  }, [clearPendingIMSIState])
 
   // 从时间线返回主视图
   const handleBackFromTimeline = useCallback(() => {
@@ -199,15 +278,15 @@ function App() {
   }, [])
 
   // Auto-trigger IMSI scan when job is ready
-  const hasAutoScanned = useRef(false)
+  const lastAutoScannedJobId = useRef<string | null>(null)
   useEffect(() => {
-    if (currentJob && !hasAutoScanned.current && !loading && imsiList.length === 0) {
-      hasAutoScanned.current = true
+    if (currentJob && lastAutoScannedJobId.current !== currentJob.id && !loading && imsiList.length === 0) {
+      lastAutoScannedJobId.current = currentJob.id
       handleScanIMSIs()
     }
     // Reset flag when job changes
     if (!currentJob) {
-      hasAutoScanned.current = false
+      lastAutoScannedJobId.current = null
     }
   }, [currentJob, loading, imsiList.length, handleScanIMSIs])
 
@@ -245,7 +324,11 @@ function App() {
       {/* Packet Compare */}
       <div className={viewMode === 'compare' ? '' : 'hidden'}>
         <Suspense fallback={<PageLoading />}>
-          <PacketCompare onBack={handleBackFromCompare} />
+          <PacketCompare
+            onBack={handleBackFromCompare}
+            recentImports={recentImports}
+            onRecentImportsChange={setRecentImports}
+          />
         </Suspense>
       </div>
 
@@ -304,7 +387,7 @@ function App() {
 
             {!currentJob ? (
               /* Upload Section */
-              <div className="max-w-2xl mx-auto mt-12 animate-fade-in-up">
+              <div className={`${recentImports.length > 0 ? 'max-w-5xl' : 'max-w-2xl'} mx-auto mt-12 animate-fade-in-up`}>
                 <div className="text-center mb-10">
                   <h2 className="text-3xl font-extrabold text-slate-900 mb-4 tracking-tight">
                     上传抓包文件
@@ -313,7 +396,14 @@ function App() {
                     支持 .pcap、.pcap1、.pcapng 格式，自动合并并提取 UE 关键信息
                   </p>
                 </div>
-                <FileUpload onUploadComplete={handleUploadComplete} />
+                <FileUpload
+                  onUploadComplete={handleUploadComplete}
+                  recentImports={recentImports}
+                  onRecentImportSelect={handleRecentImportSelect}
+                  onRecentImportRemove={handleRecentImportRemove}
+                  onRecentImportRename={handleRecentImportRename}
+                  onRecentImportsClear={handleRecentImportsClear}
+                />
               </div>
             ) : (
               /* Job Processing Section */

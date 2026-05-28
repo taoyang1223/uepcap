@@ -1,26 +1,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ReactNode, Ref, UIEvent } from 'react'
+import type { Dispatch, ReactNode, Ref, SetStateAction, UIEvent } from 'react'
 import {
   AlertCircle,
   ArrowLeft,
+  Check,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
   ClipboardPaste,
   FileArchive,
   FileDiff,
+  History,
   Loader2,
   Maximize2,
   Minimize2,
+  Pencil,
   RefreshCw,
   Search,
+  Trash2,
   UploadCloud,
   X,
 } from 'lucide-react'
 import { PaginationControls } from './PaginationControls'
+import type { RecentImport, RecentImportFile } from '../utils/recentImports'
+import { formatRecentImportTime, recentImportTitle, upsertRecentImport } from '../utils/recentImports'
 
 interface PacketCompareProps {
   onBack: () => void
+  recentImports: RecentImport[]
+  onRecentImportsChange: Dispatch<SetStateAction<RecentImport[]>>
 }
 
 interface APIResponse<T> {
@@ -33,6 +41,12 @@ interface UploadedJob {
   id: string
   fileCount: number
   filename: string
+}
+
+interface JobResponse {
+  id: string
+  status: string
+  original_files?: string[]
 }
 
 type CaptureSide = 'left' | 'right'
@@ -203,7 +217,7 @@ const protocolConfigs: ProtocolConfig[] = [
 
 const defaultProtocolSelection = protocolConfigs.map(item => item.key)
 
-export function PacketCompare({ onBack }: PacketCompareProps) {
+export function PacketCompare({ onBack, recentImports, onRecentImportsChange }: PacketCompareProps) {
   const [protocols, setProtocols] = useState<ProtocolKey[]>(defaultProtocolSelection)
   const [captures, setCaptures] = useState<Record<CaptureSide, CaptureState>>({
     left: { ...emptyCaptureState },
@@ -215,6 +229,7 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
   const [pasteInputOpen, setPasteInputOpen] = useState(false)
   const [pasteDrafts, setPasteDrafts] = useState<Record<CaptureSide, string>>({ left: '', right: '' })
   const [pasteCompareError, setPasteCompareError] = useState<string | null>(null)
+  const [recentImportError, setRecentImportError] = useState<string | null>(null)
 
   const selectedConfigs = useMemo(() => protocolConfigs.filter(item => protocols.includes(item.key)), [protocols])
   const protocolLabel = useMemo(() => formatProtocolSelectionLabel(selectedConfigs), [selectedConfigs])
@@ -229,6 +244,18 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
       [side]: updater(previous[side]),
     }))
   }, [])
+
+  const setCaptureJob = useCallback((side: CaptureSide, job: UploadedJob) => {
+    updateCapture(side, previous => ({
+      ...resetCaptureAnalysis(previous),
+      job,
+    }))
+    setComparison(null)
+    setCompareError(null)
+    setPasteInputOpen(false)
+    setPasteCompareError(null)
+    setRecentImportError(null)
+  }, [updateCapture])
 
   const handleProtocolToggle = useCallback((nextProtocol: ProtocolKey) => {
     const nextProtocols = protocols.includes(nextProtocol)
@@ -249,16 +276,51 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
     }))
   }, [protocols])
 
-  const handleUploaded = useCallback((side: CaptureSide, job: UploadedJob) => {
-    updateCapture(side, previous => ({
-      ...resetCaptureAnalysis(previous),
-      job,
+  const handleUploaded = useCallback((side: CaptureSide, job: UploadedJob, uploadedFiles: RecentImportFile[]) => {
+    setCaptureJob(side, job)
+    onRecentImportsChange(previous => upsertRecentImport(previous, {
+      id: job.id,
+      jobId: job.id,
+      fileCount: job.fileCount,
+      totalSize: uploadedFiles.reduce((sum, file) => sum + file.size, 0),
+      files: uploadedFiles,
+      importedAt: Date.now(),
     }))
-    setComparison(null)
-    setCompareError(null)
-    setPasteInputOpen(false)
-    setPasteCompareError(null)
-  }, [updateCapture])
+  }, [onRecentImportsChange, setCaptureJob])
+
+  const handleRecentImportApply = useCallback(async (side: CaptureSide, item: RecentImport) => {
+    setRecentImportError(null)
+    try {
+      const response = await fetch(`/api/jobs/${item.jobId}`)
+      const payload = (await response.json()) as APIResponse<JobResponse>
+      if (!response.ok || !payload.success || !payload.data) {
+        onRecentImportsChange(previous => previous.filter(record => record.id !== item.id && record.jobId !== item.jobId))
+        setRecentImportError('该历史抓包任务已失效，请重新上传抓包文件')
+        return
+      }
+      setCaptureJob(side, {
+        id: payload.data.id,
+        fileCount: item.fileCount || payload.data.original_files?.length || 1,
+        filename: recentImportTitle(item),
+      })
+      onRecentImportsChange(previous => upsertRecentImport(previous, { ...item, importedAt: Date.now() }))
+    } catch (err) {
+      setRecentImportError('导入历史抓包失败: ' + (err as Error).message)
+    }
+  }, [onRecentImportsChange, setCaptureJob])
+
+  const handleRecentImportRemove = useCallback((id: string) => {
+    onRecentImportsChange(previous => previous.filter(item => item.id !== id))
+  }, [onRecentImportsChange])
+
+  const handleRecentImportRename = useCallback((id: string, name: string) => {
+    onRecentImportsChange(previous => previous.map(item => item.id === id ? { ...item, displayName: name } : item))
+  }, [onRecentImportsChange])
+
+  const handleRecentImportsClear = useCallback(() => {
+    onRecentImportsChange([])
+    setRecentImportError(null)
+  }, [onRecentImportsChange])
 
   const handleClearJob = useCallback((side: CaptureSide) => {
     updateCapture(side, () => ({ ...emptyCaptureState }))
@@ -266,6 +328,7 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
     setCompareError(null)
     setPasteInputOpen(false)
     setPasteCompareError(null)
+    setRecentImportError(null)
   }, [updateCapture])
 
   const loadMessages = useCallback(async (side: CaptureSide) => {
@@ -476,38 +539,51 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
           </div>
         </section>
 
-        <section className="mb-6 grid grid-cols-1 gap-6 lg:grid-cols-2">
-          <CaptureColumn
-            side="left"
-            title="左侧抓包"
-            protocolLabel={protocolLabel}
-            capture={captures.left}
-            counterpartTypeKey={rightSelected?.typeKey || null}
-            onUploaded={job => handleUploaded('left', job)}
-            onClearJob={() => handleClearJob('left')}
-            onAnalyze={() => loadMessages('left')}
-            onSelect={message => handleSelectMessage('left', message)}
-            onQueryChange={query => updateCapture('left', previous => ({ ...previous, query, page: 1 }))}
-            onTypeFilterChange={typeFilter => updateCapture('left', previous => ({ ...previous, typeFilter, page: 1 }))}
-            onPageChange={page => updateCapture('left', previous => ({ ...previous, page }))}
-          />
-          <CaptureColumn
-            side="right"
-            title="右侧抓包"
-            protocolLabel={protocolLabel}
-            capture={captures.right}
-            counterpartTypeKey={leftSelected?.typeKey || null}
-            onUploaded={job => handleUploaded('right', job)}
-            onClearJob={() => handleClearJob('right')}
-            onAnalyze={() => loadMessages('right')}
-            onSelect={message => handleSelectMessage('right', message)}
-            onQueryChange={query => updateCapture('right', previous => ({ ...previous, query, page: 1 }))}
-            onTypeFilterChange={typeFilter => updateCapture('right', previous => ({ ...previous, typeFilter, page: 1 }))}
-            onPageChange={page => updateCapture('right', previous => ({ ...previous, page }))}
-          />
-        </section>
+        <section className={`mb-6 grid grid-cols-1 gap-6 ${recentImports.length > 0 ? 'xl:grid-cols-[320px_minmax(0,1fr)]' : ''}`}>
+          {recentImports.length > 0 && (
+            <CompareRecentImportPanel
+              items={recentImports}
+              error={recentImportError}
+              disabled={captures.left.loading || captures.right.loading || comparing}
+              onImport={handleRecentImportApply}
+              onRemove={handleRecentImportRemove}
+              onRename={handleRecentImportRename}
+              onClear={handleRecentImportsClear}
+            />
+          )}
+          <div className="space-y-6">
+            <section className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+              <CaptureColumn
+                side="left"
+                title="左侧抓包"
+                protocolLabel={protocolLabel}
+                capture={captures.left}
+                counterpartTypeKey={rightSelected?.typeKey || null}
+                onUploaded={(job, uploadedFiles) => handleUploaded('left', job, uploadedFiles)}
+                onClearJob={() => handleClearJob('left')}
+                onAnalyze={() => loadMessages('left')}
+                onSelect={message => handleSelectMessage('left', message)}
+                onQueryChange={query => updateCapture('left', previous => ({ ...previous, query, page: 1 }))}
+                onTypeFilterChange={typeFilter => updateCapture('left', previous => ({ ...previous, typeFilter, page: 1 }))}
+                onPageChange={page => updateCapture('left', previous => ({ ...previous, page }))}
+              />
+              <CaptureColumn
+                side="right"
+                title="右侧抓包"
+                protocolLabel={protocolLabel}
+                capture={captures.right}
+                counterpartTypeKey={leftSelected?.typeKey || null}
+                onUploaded={(job, uploadedFiles) => handleUploaded('right', job, uploadedFiles)}
+                onClearJob={() => handleClearJob('right')}
+                onAnalyze={() => loadMessages('right')}
+                onSelect={message => handleSelectMessage('right', message)}
+                onQueryChange={query => updateCapture('right', previous => ({ ...previous, query, page: 1 }))}
+                onTypeFilterChange={typeFilter => updateCapture('right', previous => ({ ...previous, typeFilter, page: 1 }))}
+                onPageChange={page => updateCapture('right', previous => ({ ...previous, page }))}
+              />
+            </section>
 
-        <section className="mb-6 rounded-xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-200/70">
+        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-200/70">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <SelectionSummary left={leftSelected} right={rightSelected} mismatch={selectedTypeMismatch} />
             <div className="flex flex-wrap items-center gap-3">
@@ -535,6 +611,8 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
                 <span>粘贴内容对比</span>
               </button>
             </div>
+          </div>
+        </section>
           </div>
         </section>
 
@@ -578,6 +656,172 @@ export function PacketCompare({ onBack }: PacketCompareProps) {
   )
 }
 
+function CompareRecentImportPanel({
+  items,
+  error,
+  disabled,
+  onImport,
+  onRemove,
+  onRename,
+  onClear,
+}: {
+  items: RecentImport[]
+  error: string | null
+  disabled: boolean
+  onImport: (side: CaptureSide, item: RecentImport) => void
+  onRemove: (id: string) => void
+  onRename: (id: string, name: string) => void
+  onClear: () => void
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draftName, setDraftName] = useState('')
+
+  const startRename = useCallback((item: RecentImport) => {
+    setEditingId(item.id)
+    setDraftName(recentImportTitle(item))
+  }, [])
+
+  const cancelRename = useCallback(() => {
+    setEditingId(null)
+    setDraftName('')
+  }, [])
+
+  const submitRename = useCallback((id: string) => {
+    const nextName = draftName.trim()
+    if (nextName !== '') {
+      onRename(id, nextName)
+    }
+    cancelRename()
+  }, [cancelRename, draftName, onRename])
+
+  return (
+    <aside className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm shadow-slate-200/70">
+      <div className="h-1 bg-slate-950" />
+      <div className="p-5">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-sm font-black text-slate-950">
+            <History className="h-4 w-4 text-teal-600" />
+            <span>最近导入</span>
+            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-black text-slate-500">{items.length}/10</span>
+          </div>
+          <button
+            type="button"
+            onClick={onClear}
+            className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-black text-slate-500 transition-colors hover:bg-rose-50 hover:text-rose-600"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            清空
+          </button>
+        </div>
+
+        {error && (
+          <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700">
+            {error}
+          </div>
+        )}
+
+        <div className="max-h-[540px] space-y-3 overflow-y-auto pr-1 custom-scrollbar">
+          {items.map(item => (
+            <div key={item.id} className="relative rounded-xl border border-slate-200 bg-slate-50/80 p-3 transition hover:border-teal-200 hover:bg-teal-50/40">
+              {editingId !== item.id && (
+                <div className="absolute right-2 top-2 flex items-center gap-1">
+                  <button
+                    type="button"
+                    aria-label={`重命名 ${recentImportTitle(item)}`}
+                    onClick={() => startRename(item)}
+                    className="rounded-md bg-white/90 p-1 text-slate-400 shadow-sm ring-1 ring-slate-200 transition hover:bg-teal-100 hover:text-teal-600 hover:ring-teal-100"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`删除 ${recentImportTitle(item)}`}
+                    onClick={() => onRemove(item.id)}
+                    className="rounded-md bg-white/90 p-1 text-slate-400 shadow-sm ring-1 ring-slate-200 transition hover:bg-rose-100 hover:text-rose-600 hover:ring-rose-100"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
+
+              <div className={`flex items-start gap-3 ${editingId === item.id ? 'pr-0' : 'pr-12'}`}>
+                <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white text-teal-600 shadow-sm ring-1 ring-slate-200">
+                  <FileArchive className="h-4 w-4" />
+                </span>
+                {editingId === item.id ? (
+                  <div className="min-w-0 flex-1">
+                    <input
+                      value={draftName}
+                      autoFocus
+                      onChange={event => setDraftName(event.target.value)}
+                      onKeyDown={event => {
+                        if (event.key === 'Enter') submitRename(item.id)
+                        if (event.key === 'Escape') cancelRename()
+                      }}
+                      className="w-full rounded-lg border border-teal-200 bg-white px-2.5 py-1.5 text-sm font-black text-slate-950 outline-none ring-2 ring-transparent transition focus:ring-teal-500/20"
+                    />
+                    <div className="mt-2 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => submitRename(item.id)}
+                        className="inline-flex items-center gap-1 rounded-md bg-teal-600 px-2 py-1 text-xs font-black text-white hover:bg-teal-700"
+                      >
+                        <Check className="h-3.5 w-3.5" />
+                        保存
+                      </button>
+                      <button
+                        type="button"
+                        onClick={cancelRename}
+                        className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-1 text-xs font-black text-slate-500 hover:bg-slate-200 hover:text-slate-700"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-black text-slate-950" title={recentImportTitle(item)}>
+                      {recentImportTitle(item)}
+                    </span>
+                    <span className="mt-1 block truncate text-xs font-bold text-slate-500">
+                      {item.fileCount} 个文件 · {formatSize(item.totalSize)} · {formatRecentImportTime(item.importedAt)}
+                    </span>
+                    <span className="mt-2 block truncate font-mono text-[11px] font-bold text-slate-400">
+                      Job {item.jobId.slice(0, 8)}
+                    </span>
+                  </span>
+                )}
+              </div>
+
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => onImport('left', item)}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-teal-600 px-3 py-2 text-xs font-black text-white shadow-sm shadow-teal-600/20 transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                  左侧
+                </button>
+                <button
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => onImport('right', item)}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-sky-600 px-3 py-2 text-xs font-black text-white shadow-sm shadow-sky-600/20 transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:shadow-none"
+                >
+                  右侧
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </aside>
+  )
+}
+
 function CaptureColumn({
   side,
   title,
@@ -597,7 +841,7 @@ function CaptureColumn({
   protocolLabel: string
   capture: CaptureState
   counterpartTypeKey: string | null
-  onUploaded: (job: UploadedJob) => void
+  onUploaded: (job: UploadedJob, uploadedFiles: RecentImportFile[]) => void
   onClearJob: () => void
   onAnalyze: () => void
   onSelect: (message: ComparableMessage) => void
@@ -735,7 +979,7 @@ function CaptureColumn({
   )
 }
 
-function UploadSlot({ side, job, onUploaded }: { side: CaptureSide; job: UploadedJob | null; onUploaded: (job: UploadedJob) => void }) {
+function UploadSlot({ side, job, onUploaded }: { side: CaptureSide; job: UploadedJob | null; onUploaded: (job: UploadedJob, uploadedFiles: RecentImportFile[]) => void }) {
   const [files, setFiles] = useState<File[]>([])
   const [uploading, setUploading] = useState(false)
   const [progress, setProgress] = useState(0)
@@ -769,7 +1013,7 @@ function UploadSlot({ side, job, onUploaded }: { side: CaptureSide; job: Uploade
         id: data.job_id,
         fileCount: data.file_count,
         filename: files.map(file => file.name).join(', '),
-      })
+      }, files.map(file => ({ name: file.name, size: file.size })))
       setFiles([])
     } catch (err) {
       setError('上传失败: ' + (err as Error).message)
@@ -2421,6 +2665,13 @@ function nasCategoryLabel(value?: string) {
 
 function compactParts(parts: Array<string | undefined | null>) {
   return parts.filter(part => part && String(part).trim() !== '').join(' · ')
+}
+
+function formatSize(bytes: number) {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+  return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB'
 }
 
 function formatTimestamp(value?: string) {
