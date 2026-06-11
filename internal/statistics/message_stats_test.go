@@ -21,6 +21,7 @@ func TestCountFieldRowsCountsNASByAnalyzerCategory(t *testing.T) {
 		fieldLine("", "", "", "21", "1", "", ""),
 		fieldLine("", "", "", "24", "0", "", ""),
 		fieldLine("", "", "", "44", "0", "", ""),
+		fieldLine("", "", "", "7,11,12,12,13,13,25,25,49", "0,0,0,1,0,1,0,1,0", "", ""),
 		fieldLine("", "0xc1", "", "", "", "32", "1"),
 		fieldLine("", "", "", "", "", "", "50"),
 		fieldLine("", "", "", "", "", "", "", "12", "0"),
@@ -77,6 +78,51 @@ func TestCountFieldRowsCountsNASByAnalyzerCategory(t *testing.T) {
 	ueRadioCapabilityInfo := findItem(t, result, "ngap", "ue-radio-capability-info-indication")
 	if ueRadioCapabilityInfo.Count != 1 {
 		t.Fatalf("ue radio capability info indication count = %d, want 1", ueRadioCapabilityInfo.Count)
+	}
+
+	handoverRequired := findItem(t, result, "ngap", "handover-required")
+	if handoverRequired.Count != 1 {
+		t.Fatalf("handover required count = %d, want 1", handoverRequired.Count)
+	}
+
+	handoverCommand := findItem(t, result, "ngap", "handover-command")
+	if handoverCommand.Count != 1 {
+		t.Fatalf("handover command count = %d, want 1", handoverCommand.Count)
+	}
+
+	handoverRequest := findItem(t, result, "ngap", "handover-request")
+	if handoverRequest.Count != 1 {
+		t.Fatalf("handover request count = %d, want 1", handoverRequest.Count)
+	}
+
+	handoverRequestAcknowledge := findItem(t, result, "ngap", "handover-request-acknowledge")
+	if handoverRequestAcknowledge.Count != 1 {
+		t.Fatalf("handover request acknowledge count = %d, want 1", handoverRequestAcknowledge.Count)
+	}
+
+	handoverNotify := findItem(t, result, "ngap", "handover-notify")
+	if handoverNotify.Count != 1 {
+		t.Fatalf("handover notify count = %d, want 1", handoverNotify.Count)
+	}
+
+	pathSwitchRequest := findItem(t, result, "ngap", "path-switch-request")
+	if pathSwitchRequest.Count != 1 {
+		t.Fatalf("path switch request count = %d, want 1", pathSwitchRequest.Count)
+	}
+
+	pathSwitchRequestAcknowledge := findItem(t, result, "ngap", "path-switch-request-acknowledge")
+	if pathSwitchRequestAcknowledge.Count != 1 {
+		t.Fatalf("path switch request acknowledge count = %d, want 1", pathSwitchRequestAcknowledge.Count)
+	}
+
+	downlinkRANStatusTransfer := findItem(t, result, "ngap", "downlink-ran-status-transfer")
+	if downlinkRANStatusTransfer.Count != 1 {
+		t.Fatalf("downlink ran status transfer count = %d, want 1", downlinkRANStatusTransfer.Count)
+	}
+
+	uplinkRANStatusTransfer := findItem(t, result, "ngap", "uplink-ran-status-transfer")
+	if uplinkRANStatusTransfer.Count != 1 {
+		t.Fatalf("uplink ran status transfer count = %d, want 1", uplinkRANStatusTransfer.Count)
 	}
 
 	s1apInitialUE := findItem(t, result, "s1ap", "initial-ue-message")
@@ -185,6 +231,12 @@ func TestMessageDefinitionsUseTsharkValues(t *testing.T) {
 		{name: "NGAP UE radio capability info indication", module: "ngap", key: "ue-radio-capability-info-indication", want: messageDefinition{Kind: matchNGAP, Value: "44", PDU: "0"}},
 		{name: "NGAP PDU session resource setup request", module: "ngap", key: "pdu-session-resource-setup-request", want: messageDefinition{Kind: matchNGAP, Value: "29", PDU: "0"}},
 		{name: "NGAP error indication", module: "ngap", key: "error-indication", want: messageDefinition{Kind: matchNGAP, Value: "9", PDU: "0"}},
+		{name: "NGAP handover required", module: "ngap", key: "handover-required", want: messageDefinition{Kind: matchNGAP, Value: "12", PDU: "0"}},
+		{name: "NGAP handover command", module: "ngap", key: "handover-command", want: messageDefinition{Kind: matchNGAP, Value: "12", PDU: "1"}},
+		{name: "NGAP handover request", module: "ngap", key: "handover-request", want: messageDefinition{Kind: matchNGAP, Value: "13", PDU: "0"}},
+		{name: "NGAP handover request acknowledge", module: "ngap", key: "handover-request-acknowledge", want: messageDefinition{Kind: matchNGAP, Value: "13", PDU: "1"}},
+		{name: "NGAP handover notify", module: "ngap", key: "handover-notify", want: messageDefinition{Kind: matchNGAP, Value: "11", PDU: "0"}},
+		{name: "NGAP path switch request", module: "ngap", key: "path-switch-request", want: messageDefinition{Kind: matchNGAP, Value: "25", PDU: "0"}},
 		{name: "S1AP initial UE message", module: "s1ap", key: "initial-ue-message", want: messageDefinition{Kind: matchS1AP, Value: "12", PDU: "0"}},
 		{name: "S1AP downlink NAS transport", module: "s1ap", key: "downlink-nas-transport", want: messageDefinition{Kind: matchS1AP, Value: "11", PDU: "0"}},
 		{name: "S1AP initial context setup request", module: "s1ap", key: "initial-context-setup-request", want: messageDefinition{Kind: matchS1AP, Value: "9", PDU: "0"}},

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -37,6 +38,7 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 
 	jobDir := h.jobMgr.GetJobDir(job.ID)
 	var savedFiles []string
+	var usageFiles []UsageRecordFile
 	var fileCount int
 
 	for {
@@ -90,6 +92,11 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 			h.jobMgr.DeleteJob(job.ID)
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("uploaded file %q is empty", filename))
 			return
+		} else {
+			usageFiles = append(usageFiles, UsageRecordFile{
+				Name: filepath.Base(destPath),
+				Size: info.Size(),
+			})
 		}
 
 		savedFiles = append(savedFiles, destPath)
@@ -127,12 +134,31 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 
 	h.jobMgr.SetJobMergedPcap(job.ID, mergedPath, savedFiles)
 	h.jobMgr.UpdateJobStatus(job.ID, "ready", nil)
+	if h.usageRecords != nil {
+		if err := h.usageRecords.Add(UsageRecord{
+			JobID:     job.ID,
+			CreatedAt: job.CreatedAt,
+			FileCount: fileCount,
+			TotalSize: totalUsageFileSize(usageFiles),
+			Files:     usageFiles,
+		}); err != nil {
+			log.Printf("[UsageRecords] failed to write usage record for job %s: %v", job.ID, err)
+		}
+	}
 
 	writeSuccess(w, map[string]interface{}{
 		"job_id":      job.ID,
 		"file_count":  fileCount,
 		"merged_pcap": mergedPath,
 	})
+}
+
+func totalUsageFileSize(files []UsageRecordFile) int64 {
+	var total int64
+	for _, file := range files {
+		total += file.Size
+	}
+	return total
 }
 
 func saveUploadedPart(destPath string, part *multipart.Part) error {

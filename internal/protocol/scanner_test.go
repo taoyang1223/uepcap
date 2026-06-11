@@ -89,6 +89,11 @@ func TestExtractIMSIsFromFieldLineWithSUCIMSIN(t *testing.T) {
 			expected: []string{"460119000036099"},
 		},
 		{
+			name:     "Ignore reconstructed fallback when direct IMSI exists",
+			line:     "460020000000011\t\t460\t2\t0000000012",
+			expected: []string{"460020000000011"},
+		},
+		{
 			name:     "Extract IMSI from PFCP SUPI",
 			line:     "\timsi-460119000036099\t\t\t",
 			expected: []string{"460119000036099"},
@@ -110,17 +115,35 @@ func TestExtractIMSIsFromFieldLineWithSUCIMSIN(t *testing.T) {
 	}
 }
 
-func TestExtractIMSIsFromFieldLinesPrefersPrimaryOverSUCIFallback(t *testing.T) {
+func TestExtractIMSIsFromFieldLinesKeepsDistinctSUCIFallback(t *testing.T) {
 	scanner := NewIMSIScanner()
 	fields := []string{"e212.imsi", "e212.mcc", "e212.mnc", "nas_5gs.mm.suci.msin"}
 	lines := []string{
 		"\t460\t11\t9000036099",
 		"460020000000011\t460\t2\t0000000011",
+		"\t460\t2\t0000000012",
 	}
 
 	buckets := scanner.extractIMSIsFromFieldLines(fields, lines)
 	result := sortedIMSISet(preferredIMSISet(buckets.primary, buckets.fallback))
-	expected := []string{"460020000000011"}
+	expected := []string{"460020000000011", "460020000000012", "460119000036099"}
+	if !reflect.DeepEqual(result, expected) {
+		t.Errorf("preferred IMSIs = %v, expected %v", result, expected)
+	}
+}
+
+func TestPreferredIMSISetSkipsFallbackForPrimaryMSIN(t *testing.T) {
+	primary := map[string]bool{
+		"460020000000011": true,
+	}
+	fallback := map[string]bool{
+		"460020000000011": true,
+		"460990000000011": true,
+		"460020000000012": true,
+	}
+
+	result := sortedIMSISet(preferredIMSISet(primary, fallback))
+	expected := []string{"460020000000011", "460020000000012"}
 	if !reflect.DeepEqual(result, expected) {
 		t.Errorf("preferred IMSIs = %v, expected %v", result, expected)
 	}

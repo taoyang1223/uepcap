@@ -15,6 +15,7 @@ type Handler struct {
 	jobMgr       *job.Manager
 	messageStats *messageStatsCacheStore
 	analysis     *analysisCacheStore
+	usageRecords *usageRecordStore
 	imsiScans    map[string]*imsiScanCall
 	imsiScanMu   sync.Mutex
 }
@@ -31,6 +32,7 @@ func NewHandler(jobMgr *job.Manager) *Handler {
 		jobMgr:       jobMgr,
 		messageStats: newMessageStatsCacheStore(),
 		analysis:     newAnalysisCacheStore(128),
+		usageRecords: newUsageRecordStore(jobMgr.DataDir()),
 		imsiScans:    make(map[string]*imsiScanCall),
 	}
 }
@@ -42,6 +44,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/jobs", h.ListJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", h.GetJob)
 	mux.HandleFunc("DELETE /api/jobs/{id}", h.DeleteJob)
+	mux.HandleFunc("GET /api/usage-records", h.ListUsageRecords)
+	mux.HandleFunc("DELETE /api/usage-records", h.ClearUsageRecords)
+	mux.HandleFunc("DELETE /api/usage-records/{id}", h.DeleteUsageRecord)
 
 	// IMSI operations
 	mux.HandleFunc("GET /api/jobs/{id}/imsis", h.GetIMSIList)

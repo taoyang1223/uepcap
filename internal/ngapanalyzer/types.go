@@ -119,8 +119,18 @@ func ProcedureName(code string) string {
 		return "AMF Configuration Update"
 	case "4":
 		return "Downlink NAS Transport"
+	case "7":
+		return "Downlink RAN Status Transfer"
 	case "9":
 		return "Error Indication"
+	case "10":
+		return "Handover Cancel"
+	case "11":
+		return "Handover Notification"
+	case "12":
+		return "Handover Preparation"
+	case "13":
+		return "Handover Resource Allocation"
 	case "14":
 		return "Initial Context Setup"
 	case "15":
@@ -131,6 +141,8 @@ func ProcedureName(code string) string {
 		return "NG Setup"
 	case "24":
 		return "Paging"
+	case "25":
+		return "Path Switch Request"
 	case "26":
 		return "PDU Session Resource Modify"
 	case "28":
@@ -151,6 +163,8 @@ func ProcedureName(code string) string {
 		return "UE Radio Capability Info Indication"
 	case "46":
 		return "Uplink NAS Transport"
+	case "49":
+		return "Uplink RAN Status Transfer"
 	default:
 		if firstToken(code) == "" {
 			return "NGAP"

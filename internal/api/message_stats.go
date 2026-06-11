@@ -195,7 +195,7 @@ func countMessageStats(ctx context.Context, pcapFile string, imsis []string) (*s
 
 func messageStatsCacheKey(jobID string, imsis []string) string {
 	cleaned := cleanIMSIs(imsis)
-	return jobID + "|" + strings.Join(cleaned, ",")
+	return jobID + "|stats-v2|" + strings.Join(cleaned, ",")
 }
 
 func cleanIMSIs(imsis []string) []string {

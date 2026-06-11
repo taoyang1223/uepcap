@@ -9,6 +9,8 @@ import { ExportPanel } from './components/ExportPanel'
 import { JobInfo } from './components/JobInfo'
 import { MessageStatsPanel } from './components/MessageStatsPanel'
 import { FileDiff, Network, BookOpen } from 'lucide-react'
+import { UsageRecordsPanel } from './components/UsageRecordsPanel'
+import type { UsageRecord } from './components/UsageRecordsPanel'
 
 function lazyWithReload(factory: () => Promise<{ default: ComponentType<any> }>) {
   return lazy(() => factory().catch(error => {
@@ -64,6 +66,11 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [recentImports, setRecentImports] = useState<RecentImport[]>(readRecentImports)
+  const [usageRecords, setUsageRecords] = useState<UsageRecord[]>([])
+  const [usageRecordsLoading, setUsageRecordsLoading] = useState(false)
+  const [usageRecordsError, setUsageRecordsError] = useState<string | null>(null)
+  const [deletingUsageRecordId, setDeletingUsageRecordId] = useState<string | null>(null)
+  const [clearingUsageRecords, setClearingUsageRecords] = useState(false)
   
   // 视图模式和时间线数据
   const [viewMode, setViewMode] = useState<ViewMode>('main')
@@ -94,6 +101,65 @@ function App() {
     writeRecentImports(recentImports)
   }, [recentImports])
 
+  const loadUsageRecords = useCallback(async () => {
+    setUsageRecordsLoading(true)
+    try {
+      const response = await fetch('/api/usage-records', { cache: 'no-store' })
+      const payload = (await response.json()) as APIResponse<UsageRecord[]>
+      if (!response.ok || !payload.success) {
+        throw new Error(payload.error || `HTTP ${response.status}`)
+      }
+      setUsageRecords(payload.data || [])
+      setUsageRecordsError(null)
+    } catch (err) {
+      setUsageRecordsError('读取使用记录失败: ' + (err as Error).message)
+    } finally {
+      setUsageRecordsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadUsageRecords()
+    const timer = window.setInterval(loadUsageRecords, 60_000)
+    return () => window.clearInterval(timer)
+  }, [loadUsageRecords])
+
+  const handleUsageRecordRemove = useCallback(async (id: string) => {
+    if (!id) return
+    setDeletingUsageRecordId(id)
+    try {
+      const response = await fetch(`/api/usage-records/${encodeURIComponent(id)}`, { method: 'DELETE' })
+      const payload = (await response.json()) as APIResponse<unknown>
+      if (!response.ok || !payload.success) {
+        throw new Error(payload.error || `HTTP ${response.status}`)
+      }
+      setUsageRecords(prev => prev.filter(record => record.id !== id && record.job_id !== id))
+      setUsageRecordsError(null)
+    } catch (err) {
+      setUsageRecordsError('删除使用记录失败: ' + (err as Error).message)
+    } finally {
+      setDeletingUsageRecordId(null)
+    }
+  }, [])
+
+  const handleUsageRecordsClear = useCallback(async () => {
+    if (usageRecords.length === 0) return
+    setClearingUsageRecords(true)
+    try {
+      const response = await fetch('/api/usage-records', { method: 'DELETE' })
+      const payload = (await response.json()) as APIResponse<unknown>
+      if (!response.ok || !payload.success) {
+        throw new Error(payload.error || `HTTP ${response.status}`)
+      }
+      setUsageRecords([])
+      setUsageRecordsError(null)
+    } catch (err) {
+      setUsageRecordsError('清空使用记录失败: ' + (err as Error).message)
+    } finally {
+      setClearingUsageRecords(false)
+    }
+  }, [usageRecords.length])
+
   const clearPendingIMSIState = useCallback(() => {
     pendingIMSIs.current.clear()
     if (imsiFlushTimer.current != null) {
@@ -119,7 +185,8 @@ function App() {
       files: uploadedFiles,
       importedAt: Date.now(),
     }))
-  }, [clearPendingIMSIState])
+    loadUsageRecords()
+  }, [clearPendingIMSIState, loadUsageRecords])
 
   const handleRecentImportSelect = useCallback(async (item: RecentImport) => {
     setError(null)
@@ -375,95 +442,110 @@ function App() {
           </header>
 
           {/* Main Content */}
-          <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-            {error && (
-              <div className="mb-8 p-4 bg-red-50 rounded-xl text-red-700 flex items-center shadow-sm animate-fade-in">
-                <span className="bg-red-100 p-1.5 rounded-xl mr-3 flex-shrink-0">
-                  <svg className="w-4 h-4 text-red-600" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" /></svg>
-                </span>
-                <span className="font-medium">{error}</span>
-              </div>
-            )}
+          <main className="px-4 py-8 sm:px-6 lg:px-7">
+            <div className="grid grid-cols-1 gap-8 xl:grid-cols-[260px_minmax(0,1fr)]">
+              <UsageRecordsPanel
+                records={usageRecords}
+                loading={usageRecordsLoading}
+                error={usageRecordsError}
+                deletingId={deletingUsageRecordId}
+                clearing={clearingUsageRecords}
+                onRefresh={loadUsageRecords}
+                onRemove={handleUsageRecordRemove}
+                onClear={handleUsageRecordsClear}
+              />
 
-            {!currentJob ? (
-              /* Upload Section */
-              <div className={`${recentImports.length > 0 ? 'max-w-5xl' : 'max-w-2xl'} mx-auto mt-12 animate-fade-in-up`}>
-                <div className="text-center mb-10">
-                  <h2 className="text-3xl font-extrabold text-slate-900 mb-4 tracking-tight">
-                    上传抓包文件
-                  </h2>
-                  <p className="text-lg text-slate-500 max-w-lg mx-auto leading-relaxed">
-                    支持 .pcap、.pcap1、.pcapng 格式，自动合并并提取 UE 关键信息
-                  </p>
-                </div>
-                <FileUpload
-                  onUploadComplete={handleUploadComplete}
-                  recentImports={recentImports}
-                  onRecentImportSelect={handleRecentImportSelect}
-                  onRecentImportRemove={handleRecentImportRemove}
-                  onRecentImportRename={handleRecentImportRename}
-                  onRecentImportsClear={handleRecentImportsClear}
-                />
-              </div>
-            ) : (
-              /* Job Processing Section */
-              <div className="space-y-6 animate-fade-in">
-                {/* Row 1: Job Info */}
-                <JobInfo job={currentJob} onScanIMSIs={handleScanIMSIs} loading={loading} />
-                
-                {/* Row 2: IMSI List - Right below Job Info */}
-                <div className="transition-all duration-500 ease-in-out">
-                  {(imsiList.length > 0 || loading) && (
-                    <IMSIList
-                      imsiList={imsiList}
-                      selectedIMSIs={selectedIMSIs}
-                      onSelectionChange={setSelectedIMSIs}
+              <div className="min-w-0">
+                {error && (
+                  <div className="mb-8 p-4 bg-red-50 rounded-xl text-red-700 flex items-center shadow-sm animate-fade-in">
+                    <span className="bg-red-100 p-1.5 rounded-xl mr-3 flex-shrink-0">
+                      <svg className="w-4 h-4 text-red-600" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" /></svg>
+                    </span>
+                    <span className="font-medium">{error}</span>
+                  </div>
+                )}
+
+                {!currentJob ? (
+                  /* Upload Section */
+                  <div className={`${recentImports.length > 0 ? 'max-w-5xl' : 'max-w-2xl'} mx-auto mt-12 animate-fade-in-up`}>
+                    <div className="text-center mb-10">
+                      <h2 className="text-3xl font-extrabold text-slate-900 mb-4 tracking-tight">
+                        上传抓包文件
+                      </h2>
+                      <p className="text-lg text-slate-500 max-w-lg mx-auto leading-relaxed">
+                        支持 .pcap、.pcap1、.pcapng 格式，自动合并并提取 UE 关键信息
+                      </p>
+                    </div>
+                    <FileUpload
+                      onUploadComplete={handleUploadComplete}
+                      recentImports={recentImports}
+                      onRecentImportSelect={handleRecentImportSelect}
+                      onRecentImportRemove={handleRecentImportRemove}
+                      onRecentImportRename={handleRecentImportRename}
+                      onRecentImportsClear={handleRecentImportsClear}
                     />
-                  )}
-                </div>
-                
-                {/* Row 3: Export Panel & Protocol Select - Side by side */}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  <ExportPanel
-                    jobId={currentJob.id}
-                    selectedIMSIs={selectedIMSIs}
-                    selectedProtocols={selectedProtocols}
-                    onViewFlow={handleViewFlow}
-                  />
-                  
-                  <ProtocolSelect
-                    selectedProtocols={selectedProtocols}
-                    onSelectionChange={setSelectedProtocols}
-                  />
-                </div>
+                  </div>
+                ) : (
+                  /* Job Processing Section */
+                  <div className="space-y-6 animate-fade-in">
+                    {/* Row 1: Job Info */}
+                    <JobInfo job={currentJob} onScanIMSIs={handleScanIMSIs} loading={loading} />
+                    
+                    {/* Row 2: IMSI List - Right below Job Info */}
+                    <div className="transition-all duration-500 ease-in-out">
+                      {(imsiList.length > 0 || loading) && (
+                        <IMSIList
+                          imsiList={imsiList}
+                          selectedIMSIs={selectedIMSIs}
+                          onSelectionChange={setSelectedIMSIs}
+                        />
+                      )}
+                    </div>
+                    
+                    {/* Row 3: Export Panel & Protocol Select - Side by side */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                      <ExportPanel
+                        jobId={currentJob.id}
+                        selectedIMSIs={selectedIMSIs}
+                        selectedProtocols={selectedProtocols}
+                        onViewFlow={handleViewFlow}
+                      />
+                      
+                      <ProtocolSelect
+                        selectedProtocols={selectedProtocols}
+                        onSelectionChange={setSelectedProtocols}
+                      />
+                    </div>
 
-                {/* Row 4: Message statistics */}
-                <MessageStatsPanel
-                  jobId={currentJob.id}
-                  selectedIMSIs={selectedIMSIs}
-                />
+                    {/* Row 4: Message statistics */}
+                    <MessageStatsPanel
+                      jobId={currentJob.id}
+                      selectedIMSIs={selectedIMSIs}
+                    />
 
-                <Suspense fallback={<ModuleLoading />}>
-                  {/* Row 5: NGAP message analysis */}
-                  <NGAPMessageAnalyzerPanel jobId={currentJob.id} />
+                    <Suspense fallback={<ModuleLoading />}>
+                      {/* Row 5: NGAP message analysis */}
+                      <NGAPMessageAnalyzerPanel jobId={currentJob.id} />
 
-                  {/* Row 6: S1AP message analysis */}
-                  <S1APMessageAnalyzerPanel jobId={currentJob.id} />
+                      {/* Row 6: S1AP message analysis */}
+                      <S1APMessageAnalyzerPanel jobId={currentJob.id} />
 
-                  {/* Row 7: NAS message analysis */}
-                  <NASMessageAnalyzerPanel jobId={currentJob.id} />
+                      {/* Row 7: NAS message analysis */}
+                      <NASMessageAnalyzerPanel jobId={currentJob.id} />
 
-                  {/* Row 8: SM NAS message analysis */}
-                  <SMNASMessageAnalyzerPanel jobId={currentJob.id} />
+                      {/* Row 8: SM NAS message analysis */}
+                      <SMNASMessageAnalyzerPanel jobId={currentJob.id} />
 
-                  {/* Row 9: S11 message analysis */}
-                  <S11MessageAnalyzerPanel jobId={currentJob.id} />
+                      {/* Row 9: S11 message analysis */}
+                      <S11MessageAnalyzerPanel jobId={currentJob.id} />
 
-                  {/* Row 10: PFCP session transaction analysis */}
-                  <PFCPSessionPanel jobId={currentJob.id} />
-                </Suspense>
+                      {/* Row 10: PFCP session transaction analysis */}
+                      <PFCPSessionPanel jobId={currentJob.id} />
+                    </Suspense>
+                  </div>
+                )}
               </div>
-            )}
+            </div>
           </main>
 
           {/* Footer */}

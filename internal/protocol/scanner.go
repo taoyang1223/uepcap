@@ -176,7 +176,8 @@ func (s *IMSIScanner) ScanIMSIsStream(ctx context.Context, pcapFile string, imsi
 
 	if isLargeCapture(pcapFile) {
 		results := s.scanByFieldsFast(ctx, pcapFile)
-		for _, imsi := range sortedIMSISet(preferredIMSISet(results.primary, results.fallback)) {
+		imsis := sortedIMSISet(preferredIMSISet(results.primary, results.fallback))
+		for _, imsi := range imsis {
 			select {
 			case imsiChan <- imsi:
 			case <-ctx.Done():
@@ -326,15 +327,17 @@ func (s *IMSIScanner) extractIMSIBucketsFromFieldLine(fields []string, line stri
 		}
 	}
 
-	for _, mcc := range mccValues {
-		mcc = normalizeDecimalDigits(mcc, 3, 3)
-		if mcc == "" {
-			continue
-		}
-		for _, mnc := range mncValues {
-			for _, msin := range msinValues {
-				if imsi := buildIMSIFromSUCIMSIN(mcc, mnc, msin); s.isValidIMSI(imsi) {
-					buckets.fallback[imsi] = true
+	if len(buckets.primary) == 0 {
+		for _, mcc := range mccValues {
+			mcc = normalizeDecimalDigits(mcc, 3, 3)
+			if mcc == "" {
+				continue
+			}
+			for _, mnc := range mncValues {
+				for _, msin := range msinValues {
+					if imsi := buildIMSIFromSUCIMSIN(mcc, mnc, msin); s.isValidIMSI(imsi) {
+						buckets.fallback[imsi] = true
+					}
 				}
 			}
 		}
@@ -418,8 +421,33 @@ func normalizeDecimalDigits(value string, minLen, maxLen int) string {
 }
 
 func preferredIMSISet(primary, fallback map[string]bool) map[string]bool {
-	if len(primary) > 0 {
-		return primary
+	preferred := make(map[string]bool, len(primary)+len(fallback))
+	for imsi := range primary {
+		preferred[imsi] = true
+	}
+	primaryMSINs := make(map[string]bool, len(primary)*2)
+	for imsi := range primary {
+		for _, msin := range getMSINCandidates(imsi) {
+			primaryMSINs[msin] = true
+		}
+	}
+	for imsi := range fallback {
+		if preferred[imsi] {
+			continue
+		}
+		hasPrimaryForMSIN := false
+		for _, msin := range getMSINCandidates(imsi) {
+			if primaryMSINs[msin] {
+				hasPrimaryForMSIN = true
+				break
+			}
+		}
+		if !hasPrimaryForMSIN {
+			preferred[imsi] = true
+		}
+	}
+	if len(preferred) > 0 {
+		return preferred
 	}
 	return fallback
 }

@@ -155,6 +155,11 @@ func (m *Manager) GetJobDir(id string) string {
 	return filepath.Join(m.dataDir, "tmp", id)
 }
 
+// DataDir returns the manager's base data directory.
+func (m *Manager) DataDir() string {
+	return m.dataDir
+}
+
 // DeleteJob removes a job and its files
 func (m *Manager) DeleteJob(id string) error {
 	m.mu.Lock()

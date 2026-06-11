@@ -33,7 +33,7 @@ func (h *Handler) GetNGAPMessages(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	value, err := h.analysis.getOrCompute(ctx, id+"|ngap-v2", func(ctx context.Context) (any, error) {
+	value, err := h.analysis.getOrCompute(ctx, id+"|ngap-v4", func(ctx context.Context) (any, error) {
 		result, err := ngapanalyzer.NewAnalyzer().AnalyzeFile(ctx, job.MergedPcap)
 		if err != nil {
 			return nil, err
@@ -76,7 +76,7 @@ func (h *Handler) StreamNGAPMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cacheKey := id + "|ngap-v3-stream"
+	cacheKey := id + "|ngap-v4-stream"
 	if value, ok := h.analysis.get(cacheKey); ok {
 		if result, ok := value.(*ngapanalyzer.AnalysisResult); ok {
 			sendSSEEvent(w, flusher, "done", map[string]any{

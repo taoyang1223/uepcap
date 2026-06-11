@@ -186,7 +186,7 @@ func parseFieldRow(line string) *Message {
 		Timestamp:          parseEpoch(cols[1]),
 		SourceIP:           sourceIP,
 		DestinationIP:      destinationIP,
-		Direction:          inferDirection(procedureCode),
+		Direction:          inferDirection(procedureCode, pduCode),
 		ProcedureCode:      procedureCode,
 		ProcedureName:      ProcedureName(procedureCode),
 		PDUCode:            pduCode,
@@ -201,12 +201,27 @@ func parseFieldRow(line string) *Message {
 	return msg
 }
 
-func inferDirection(procedureCode string) Direction {
+func inferDirection(procedureCode, pduCode string) Direction {
+	pdu := PDUTypeFromCode(pduCode)
 	switch firstToken(procedureCode) {
-	case "15", "46", "21", "42":
+	case "15", "46", "11", "42", "49":
 		return DirectionGNBToAMF
-	case "4", "14", "29", "28", "40", "41", "36":
+	case "4", "7", "36":
 		return DirectionAMFToGNB
+	case "10", "12", "21", "25":
+		if pdu == PDUInitiating {
+			return DirectionGNBToAMF
+		}
+		if pdu == PDUSuccessfulOutcome || pdu == PDUUnsuccessful {
+			return DirectionAMFToGNB
+		}
+	case "13", "14", "26", "28", "29", "40", "41":
+		if pdu == PDUInitiating {
+			return DirectionAMFToGNB
+		}
+		if pdu == PDUSuccessfulOutcome || pdu == PDUUnsuccessful {
+			return DirectionGNBToAMF
+		}
 	}
 	return DirectionUnknown
 }
@@ -261,7 +276,7 @@ func analyzeTransactions(messages []*Message) []*Transaction {
 
 func isTransactionProcedure(code string) bool {
 	switch firstToken(code) {
-	case "0", "14", "21", "26", "28", "29", "40", "41":
+	case "0", "10", "12", "13", "14", "21", "25", "26", "28", "29", "40", "41":
 		return true
 	default:
 		return false

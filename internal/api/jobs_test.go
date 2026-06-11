@@ -87,3 +87,45 @@ func TestCreateJobRejectsUnsupportedFileType(t *testing.T) {
 		t.Fatalf("CreateJob status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }
+
+func TestCreateJobWritesUsageRecord(t *testing.T) {
+	dataDir := t.TempDir()
+	handler := NewHandler(job.NewManagerWithLimit(dataDir, time.Hour, 3))
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("files", "capture.pcap")
+	if err != nil {
+		t.Fatalf("CreateFormFile failed: %v", err)
+	}
+	if _, err := part.Write([]byte("pcap data")); err != nil {
+		t.Fatalf("part write failed: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("writer close failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/jobs", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+
+	handler.CreateJob(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("CreateJob status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	records, err := handler.usageRecords.List()
+	if err != nil {
+		t.Fatalf("List usage records failed: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("usage record count = %d, want 1", len(records))
+	}
+	if records[0].FileCount != 1 || records[0].TotalSize != int64(len("pcap data")) {
+		t.Fatalf("usage record file summary = count %d size %d", records[0].FileCount, records[0].TotalSize)
+	}
+	if len(records[0].Files) != 1 || records[0].Files[0].Name != "capture.pcap" {
+		t.Fatalf("usage record files = %#v", records[0].Files)
+	}
+}
