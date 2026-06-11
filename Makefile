@@ -1,7 +1,10 @@
-.PHONY: all build build-frontend build-backend build-mcp run run-mcp dev test clean check-deps install-tshark install-npm ensure-tshark ensure-npm ensure-deps kill install-mcp mcp-config mcp-config-claude mcp-config-cursor
+.PHONY: all build build-frontend build-backend build-mcp run run-mcp dev test clean check-deps install-tshark install-npm ensure-tshark ensure-npm ensure-deps kill deploy stop reset logs ps check-docker install-mcp mcp-config mcp-config-claude mcp-config-cursor
 
 # Detect OS
 UNAME_S := $(shell uname -s)
+
+# Docker Compose command (prefer v2, fall back to legacy docker-compose).
+DOCKER_COMPOSE := $(shell if docker compose version >/dev/null 2>&1; then echo "docker compose"; elif command -v docker-compose >/dev/null 2>&1; then echo "docker-compose"; else echo "docker compose"; fi)
 
 # Use sudo only when not running as root.
 SUDO := $(shell if [ "$$(id -u)" -eq 0 ]; then echo ""; else echo "sudo"; fi)
@@ -159,6 +162,37 @@ else
 	@pkill -f 'uepcap' 2>/dev/null || echo "No uepcap process found"
 endif
 
+# Check Docker/Compose availability
+check-docker:
+	@command -v docker >/dev/null 2>&1 || (echo "docker not found. Please install Docker first." && exit 1)
+	@$(DOCKER_COMPOSE) version >/dev/null 2>&1 || (echo "Docker Compose not found. Please install Docker Compose v2 or docker-compose." && exit 1)
+
+# One-command Docker deployment. Builds frontend/backend inside Docker, then starts services.
+deploy: check-docker
+	@mkdir -p data/tmp
+	$(DOCKER_COMPOSE) up -d --build
+	@echo ""
+	@echo "UEPCAP is running: http://localhost:$${UEPCAP_PORT:-8080}"
+
+# Stop Docker services while keeping local data.
+stop: check-docker
+	$(DOCKER_COMPOSE) down --remove-orphans
+
+# Stop Docker services and clear generated runtime data.
+reset: check-docker
+	$(DOCKER_COMPOSE) down --remove-orphans --volumes
+	rm -rf data/tmp data/usage_records.json
+	mkdir -p data/tmp
+	@echo "UEPCAP stopped and runtime data cleared."
+
+# Show Docker service logs.
+logs: check-docker
+	$(DOCKER_COMPOSE) logs -f uepcap
+
+# Show Docker service status.
+ps: check-docker
+	$(DOCKER_COMPOSE) ps
+
 # Clean build artifacts
 clean:
 	rm -f uepcap uepcap-mcp
@@ -267,6 +301,11 @@ help:
 	@echo "  make dev            - Run backend in development mode (auto-installs deps)"
 	@echo "  make test           - Run tests"
 	@echo "  make kill           - Kill running uepcap process"
+	@echo "  make deploy         - Build and run with Docker Compose"
+	@echo "  make stop           - Stop Docker Compose services"
+	@echo "  make reset          - Stop Docker Compose services and clear runtime data"
+	@echo "  make logs           - Follow Docker Compose logs"
+	@echo "  make ps             - Show Docker Compose service status"
 	@echo "  make clean          - Clean build artifacts"
 	@echo "  make check-deps     - Check system dependencies"
 	@echo "  make install-tshark - Install tshark for current platform"

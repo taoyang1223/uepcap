@@ -16,6 +16,42 @@
 
 ---
 
+## 一键部署
+
+推荐使用 Docker Compose 部署。用户拉取仓库后不需要在宿主机安装 Go、Node.js、tshark 或 mergecap，镜像会完成前后端构建并内置运行依赖。
+
+```bash
+git clone <repository-url>
+cd uepcap
+cp .env.example .env   # 可选：修改端口、TTL、清理周期等配置
+make deploy
+```
+
+访问：
+
+```text
+http://localhost:8080
+```
+
+服务器部署时请把 `localhost` 换成服务器 IP；如需修改端口，编辑 `.env` 中的 `UEPCAP_PORT`。
+
+停止并清空运行数据：
+
+```bash
+make reset
+```
+
+常用运维命令：
+
+```bash
+make ps      # 查看容器状态
+make logs    # 查看服务日志
+make stop    # 停止服务但保留 data 目录
+make reset   # 停止服务并清空运行数据
+```
+
+---
+
 ## 作为 Go 包使用
 
 uepcap 可以作为 Go 库导入到其他项目中，将 PCAP 分析能力嵌入到您自己的服务中。
@@ -734,12 +770,22 @@ uepcap/
 
 ## 系统要求与依赖
 
-### 运行环境
+### Docker 部署（推荐）
+
+| 依赖 | 版本要求 | 说明 |
+|------|----------|------|
+| **Docker** | 20.10+ | 构建和运行容器 |
+| **Docker Compose** | v2 或 legacy `docker-compose` | 编排 `uepcap` 与清理容器 |
+| **make** | 可选但推荐 | 使用 `make deploy/reset/logs/ps` 一键操作 |
+
+Docker 部署时，Go、Node.js、tshark、mergecap 都在镜像构建或运行环境中处理，宿主机不需要额外安装这些依赖。
+
+### 源码运行/开发
 
 | 依赖 | 版本要求 | 说明 |
 |------|----------|------|
 | **Go** | 1.21+ | 后端编译运行 |
-| **Node.js** | 18+ | 前端构建（生产部署时需要） |
+| **Node.js** | 18+ | 前端源码构建需要 |
 | **npm** | 随 Node.js 安装 | 前端包管理 |
 | **tshark** | 3.0+ | PCAP 解析核心工具 |
 | **mergecap** | 3.0+ | PCAP 文件合并（随 Wireshark 安装） |
@@ -763,7 +809,9 @@ github.com/google/uuid v1.6.0  # UUID 生成
 
 ### 安装依赖
 
-项目提供了自动化的依赖安装，**推荐使用 `make` 命令自动安装**。
+以下内容仅适用于源码本地运行或开发。Docker 部署请直接使用 `make deploy`。
+
+项目提供了自动化的源码运行依赖安装，**推荐使用 `make` 命令自动安装**。
 
 #### 方式一：自动安装（推荐）
 
@@ -831,14 +879,52 @@ make check-deps
 
 ## 快速开始
 
-### 一键启动（推荐）
+### Docker 一键部署（推荐）
 
 ```bash
 # 克隆项目
 git clone <repository-url>
 cd uepcap
 
-# 一键构建并启动（自动安装缺失依赖）
+# 可选：复制配置文件后按需修改端口、TTL 等参数
+cp .env.example .env
+
+# 一键构建镜像并后台启动
+make deploy
+```
+
+`make deploy` 会在 Docker 内完成前端、后端构建，并启动内置 `tshark`/`mergecap` 的运行容器。启动后访问：
+
+```text
+http://localhost:8080
+```
+
+服务器部署时请把 `localhost` 换成服务器 IP；如需改端口，编辑 `.env` 中的 `UEPCAP_PORT`。
+
+停止并清空运行数据：
+
+```bash
+make reset
+```
+
+只停止服务但保留 `data` 目录：
+
+```bash
+make stop
+```
+
+查看运行状态和日志：
+
+```bash
+make ps
+make logs
+```
+
+### 源码本地运行
+
+如果不使用 Docker，也可以在宿主机安装 Go、Node.js、tshark 后直接运行：
+
+```bash
 make run
 ```
 
@@ -917,6 +1003,11 @@ cd web && npm install && npm run dev
 
 | 命令 | 说明 |
 |------|------|
+| `make deploy` | **Docker 一键构建并后台运行** |
+| `make stop` | 停止 Docker Compose 服务，保留本地数据 |
+| `make reset` | 停止 Docker Compose 服务并清空运行数据 |
+| `make logs` | 查看 Docker 服务日志 |
+| `make ps` | 查看 Docker 服务状态 |
 | `make run` | **一键构建并运行**（自动安装依赖）|
 | `make build` | 构建前端和后端 |
 | `make build-mcp` | 构建 MCP server 二进制 |
@@ -932,19 +1023,25 @@ cd web && npm install && npm run dev
 ### 常用场景
 
 ```bash
-# 场景 1：首次运行项目
+# 场景 1：首次 Docker 部署
+make deploy
+
+# 场景 2：停止并清空运行数据
+make reset
+
+# 场景 3：源码本地运行项目
 make run
 
-# 场景 2：只想检查依赖，不运行
+# 场景 4：只想检查源码运行依赖，不运行
 make check-deps
 
-# 场景 3：清理后重新构建
+# 场景 5：清理后重新构建
 make clean && make build
 
-# 场景 4：只构建后端（前端已构建）
+# 场景 6：只构建后端（前端已构建）
 make build-backend
 
-# 场景 5：运行测试
+# 场景 7：运行测试
 make test
 ```
 
@@ -1216,12 +1313,11 @@ func (h *Handler) StreamIMSIList(w http.ResponseWriter, r *http.Request) {
 
 项目提供 `Dockerfile` 和 `docker-compose.yml`，镜像内置 Web 前端、Go 后端以及 `tshark`/`mergecap` 运行依赖。
 
-当前 `docker-compose.yml` 默认使用 `runtime-local` 构建目标，适合内网/离线机器：先在宿主机完成前后端构建，再把生成的 `uepcap` 二进制打进运行镜像。
+当前 `docker-compose.yml` 默认使用源码多阶段构建目标。用户拉取仓库后，只要宿主机有 Docker/Compose，就可以直接构建并运行，不需要预先安装 Go、Node.js 或 tshark。
 
 ```bash
 cp .env.example .env
-make build
-docker-compose up -d --build
+make deploy
 ```
 
 访问：
@@ -1233,10 +1329,10 @@ http://<服务器IP>:8080
 常用命令：
 
 ```bash
-docker-compose ps
-docker-compose logs -f uepcap
-docker-compose restart uepcap
-docker-compose down
+make ps
+make logs
+make stop
+make reset
 ```
 
 默认配置：
@@ -1251,11 +1347,14 @@ docker-compose down
 
 Compose 会把 `./data` 挂载到容器的 `/app/data`，并通过 `uepcap-cleanup` 服务定期清理历史临时目录。Docker 日志使用 `json-file`，主服务单文件最大 `50M`，保留 `7` 份。
 
-如果部署环境可以直接访问 Docker Hub，也可以使用完整源码多阶段构建：
+如果需要直接使用 Docker Compose 命令，也可以运行：
 
 ```bash
-docker build -t uepcap:source .
+docker compose up -d --build
+docker compose down --remove-orphans
 ```
+
+如果环境使用旧版 Compose，可以把上面的 `docker compose` 替换为 `docker-compose`。
 
 ---
 

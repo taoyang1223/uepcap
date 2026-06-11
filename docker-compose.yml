@@ -5,7 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      target: runtime-local
+      target: runtime
       network: host
     image: uepcap:local
     container_name: uepcap
