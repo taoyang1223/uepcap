@@ -84,6 +84,43 @@ func TestManagerDeleteJob(t *testing.T) {
 	}
 }
 
+func TestManagerRestoreJob(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "uepcap-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	jobID := "78b52698-b8fc-4d42-a90a-11579331df03"
+	jobDir := filepath.Join(tmpDir, "tmp", jobID)
+	if err := os.MkdirAll(jobDir, 0755); err != nil {
+		t.Fatalf("failed to create job dir: %v", err)
+	}
+	mergedPcap := filepath.Join(jobDir, "merged.pcap")
+	if err := os.WriteFile(mergedPcap, []byte("pcap"), 0644); err != nil {
+		t.Fatalf("failed to write merged pcap: %v", err)
+	}
+
+	mgr := NewManager(tmpDir, 1*time.Hour)
+	restored, ok := mgr.RestoreJob(jobID)
+	if !ok {
+		t.Fatal("RestoreJob should restore existing merged pcap")
+	}
+	if restored.ID != jobID {
+		t.Errorf("unexpected restored job ID: %s", restored.ID)
+	}
+	if restored.MergedPcap != mergedPcap {
+		t.Errorf("unexpected merged pcap path: %s", restored.MergedPcap)
+	}
+	if restored.IMSIScanned {
+		t.Error("restored job should not reuse stale IMSI scan state")
+	}
+
+	if _, ok := mgr.RestoreJob("../bad"); ok {
+		t.Error("RestoreJob should reject path-like IDs")
+	}
+}
+
 func TestManagerIMSIList(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "uepcap-test-*")
 	if err != nil {

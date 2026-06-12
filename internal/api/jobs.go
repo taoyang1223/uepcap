@@ -236,7 +236,7 @@ func (h *Handler) ListJobs(w http.ResponseWriter, r *http.Request) {
 // GetJob handles GET /api/jobs/{id}
 func (h *Handler) GetJob(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	job, ok := h.jobMgr.GetJob(id)
+	job, ok := h.getJob(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "job not found")
 		return

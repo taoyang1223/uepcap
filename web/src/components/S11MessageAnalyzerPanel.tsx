@@ -9,6 +9,7 @@ import type { StreamProgress } from './StreamProgressBar'
 
 interface S11MessageAnalyzerPanelProps {
   jobId: string
+  analysisRunSignal?: number
 }
 
 type TransactionStatus = 'success' | 'failed' | 'no_response' | 'timeout' | 'retransmit'
@@ -99,7 +100,7 @@ const statusClasses: Record<TransactionStatus, string> = {
 
 const PAGE_SIZE = 15
 
-export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps) {
+export function S11MessageAnalyzerPanel({ jobId, analysisRunSignal = 0 }: S11MessageAnalyzerPanelProps) {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<S11AnalysisResult | null>(null)
   const [progress, setProgress] = useState<StreamProgress | null>(null)
@@ -115,8 +116,10 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
   const [paused, setPaused] = useState(false)
   const abortControllerRef = useRef<AbortController | null>(null)
   const pausedRef = useRef(false)
+  const lastAnalysisRunSignalRef = useRef(0)
 
   const handleAnalyze = useCallback(async () => {
+    if (loading && !paused) return
     abortControllerRef.current?.abort()
     const controller = new AbortController()
     abortControllerRef.current = controller
@@ -163,7 +166,17 @@ export function S11MessageAnalyzerPanel({ jobId }: S11MessageAnalyzerPanelProps)
       }
       setLoading(false)
     }
+  }, [jobId, loading, paused])
+
+  useEffect(() => {
+    lastAnalysisRunSignalRef.current = 0
   }, [jobId])
+
+  useEffect(() => {
+    if (analysisRunSignal <= 0 || analysisRunSignal === lastAnalysisRunSignalRef.current) return
+    lastAnalysisRunSignalRef.current = analysisRunSignal
+    void handleAnalyze()
+  }, [analysisRunSignal, handleAnalyze])
 
   const handlePauseToggle = useCallback(() => {
     setPaused(value => {

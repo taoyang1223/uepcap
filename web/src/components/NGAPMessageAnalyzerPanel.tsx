@@ -9,6 +9,7 @@ import type { StreamProgress } from './StreamProgressBar'
 
 interface NGAPMessageAnalyzerPanelProps {
   jobId: string
+  analysisRunSignal?: number
 }
 
 type Direction = 'gnb_to_amf' | 'amf_to_gnb' | 'unknown'
@@ -147,7 +148,7 @@ const statusClasses: Record<TransactionStatus, string> = {
 
 const PAGE_SIZE = 15
 
-export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProps) {
+export function NGAPMessageAnalyzerPanel({ jobId, analysisRunSignal = 0 }: NGAPMessageAnalyzerPanelProps) {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<NGAPAnalysisResult | null>(null)
   const [progress, setProgress] = useState<StreamProgress | null>(null)
@@ -164,6 +165,7 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
   const [paused, setPaused] = useState(false)
   const abortControllerRef = useRef<AbortController | null>(null)
   const pausedRef = useRef(false)
+  const lastAnalysisRunSignalRef = useRef(0)
 
   const fetchAnalysis = useCallback(async (nextProcedureFilter: string) => {
     abortControllerRef.current?.abort()
@@ -226,6 +228,7 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
   }, [])
 
   const handleAnalyze = useCallback(async () => {
+    if (loading && !paused) return
     const ok = await fetchAnalysis('all')
     if (!ok) return
     setStatusFilter('all')
@@ -233,7 +236,17 @@ export function NGAPMessageAnalyzerPanel({ jobId }: NGAPMessageAnalyzerPanelProp
     setPduFilter('all')
     setQuery('')
     setListPage(1)
-  }, [fetchAnalysis])
+  }, [fetchAnalysis, loading, paused])
+
+  useEffect(() => {
+    lastAnalysisRunSignalRef.current = 0
+  }, [jobId])
+
+  useEffect(() => {
+    if (analysisRunSignal <= 0 || analysisRunSignal === lastAnalysisRunSignalRef.current) return
+    lastAnalysisRunSignalRef.current = analysisRunSignal
+    void handleAnalyze()
+  }, [analysisRunSignal, handleAnalyze])
 
   const handleProcedureSelect = useCallback(async (code: string) => {
     const nextProcedureFilter = procedureFilter === code ? 'all' : code

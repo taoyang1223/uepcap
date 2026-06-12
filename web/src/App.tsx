@@ -8,7 +8,7 @@ import { ProtocolSelect } from './components/ProtocolSelect'
 import { ExportPanel } from './components/ExportPanel'
 import { JobInfo } from './components/JobInfo'
 import { MessageStatsPanel } from './components/MessageStatsPanel'
-import { FileDiff, Network, BookOpen } from 'lucide-react'
+import { FileDiff, Network, BookOpen, Play } from 'lucide-react'
 import { UsageRecordsPanel } from './components/UsageRecordsPanel'
 import type { UsageRecord } from './components/UsageRecordsPanel'
 
@@ -71,6 +71,7 @@ function App() {
   const [usageRecordsError, setUsageRecordsError] = useState<string | null>(null)
   const [deletingUsageRecordId, setDeletingUsageRecordId] = useState<string | null>(null)
   const [clearingUsageRecords, setClearingUsageRecords] = useState(false)
+  const [analysisRunSignal, setAnalysisRunSignal] = useState(0)
   
   // 视图模式和时间线数据
   const [viewMode, setViewMode] = useState<ViewMode>('main')
@@ -172,6 +173,7 @@ function App() {
     setCurrentJob({ id: jobId, status: 'ready', file_count: fileCount })
     setImsiList([])
     setSelectedIMSIs([])
+    setAnalysisRunSignal(0)
     setError(null)
     setViewMode('main')
     setTimelinePackets([])
@@ -207,6 +209,7 @@ function App() {
       })
       setImsiList(job.imsi_list || [])
       setSelectedIMSIs([])
+      setAnalysisRunSignal(0)
       setError(null)
       setViewMode('main')
       setTimelinePackets([])
@@ -301,12 +304,18 @@ function App() {
     setCurrentJob(null)
     setImsiList([])
     setSelectedIMSIs([])
+    setAnalysisRunSignal(0)
     setError(null)
     setViewMode('main')
     setTimelinePackets([])
     setFlowFilter('')
     clearPendingIMSIState()
   }, [clearPendingIMSIState])
+
+  const handleStartAllAnalysis = useCallback(() => {
+    if (!currentJob) return
+    setAnalysisRunSignal(signal => signal + 1)
+  }, [currentJob])
 
   // 从时间线返回主视图
   const handleBackFromTimeline = useCallback(() => {
@@ -517,30 +526,41 @@ function App() {
                       />
                     </div>
 
+                    <div className="flex justify-end">
+                      <button
+                        onClick={handleStartAllAnalysis}
+                        className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm shadow-indigo-600/20 transition-all hover:bg-indigo-700 active:scale-[0.98] sm:w-auto"
+                      >
+                        <Play className="h-4 w-4" />
+                        <span>一键启动分析</span>
+                      </button>
+                    </div>
+
                     {/* Row 4: Message statistics */}
                     <MessageStatsPanel
                       jobId={currentJob.id}
                       selectedIMSIs={selectedIMSIs}
+                      analysisRunSignal={analysisRunSignal}
                     />
 
                     <Suspense fallback={<ModuleLoading />}>
                       {/* Row 5: NGAP message analysis */}
-                      <NGAPMessageAnalyzerPanel jobId={currentJob.id} />
+                      <NGAPMessageAnalyzerPanel jobId={currentJob.id} analysisRunSignal={analysisRunSignal} />
 
                       {/* Row 6: S1AP message analysis */}
-                      <S1APMessageAnalyzerPanel jobId={currentJob.id} />
+                      <S1APMessageAnalyzerPanel jobId={currentJob.id} analysisRunSignal={analysisRunSignal} />
 
                       {/* Row 7: NAS message analysis */}
-                      <NASMessageAnalyzerPanel jobId={currentJob.id} />
+                      <NASMessageAnalyzerPanel jobId={currentJob.id} analysisRunSignal={analysisRunSignal} />
 
                       {/* Row 8: SM NAS message analysis */}
-                      <SMNASMessageAnalyzerPanel jobId={currentJob.id} />
+                      <SMNASMessageAnalyzerPanel jobId={currentJob.id} analysisRunSignal={analysisRunSignal} />
 
                       {/* Row 9: S11 message analysis */}
-                      <S11MessageAnalyzerPanel jobId={currentJob.id} />
+                      <S11MessageAnalyzerPanel jobId={currentJob.id} analysisRunSignal={analysisRunSignal} />
 
                       {/* Row 10: PFCP session transaction analysis */}
-                      <PFCPSessionPanel jobId={currentJob.id} />
+                      <PFCPSessionPanel jobId={currentJob.id} analysisRunSignal={analysisRunSignal} />
                     </Suspense>
                   </div>
                 )}

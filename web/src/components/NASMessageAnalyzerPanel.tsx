@@ -9,6 +9,7 @@ import type { StreamProgress } from './StreamProgressBar'
 
 interface NASMessageAnalyzerPanelProps {
   jobId: string
+  analysisRunSignal?: number
 }
 
 type NASCategory = '5gmm' | '5gsm'
@@ -145,7 +146,7 @@ const categoryLabels: Record<NASCategory, string> = {
 
 const PAGE_SIZE = 15
 
-export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps) {
+export function NASMessageAnalyzerPanel({ jobId, analysisRunSignal = 0 }: NASMessageAnalyzerPanelProps) {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<NASAnalysisResult | null>(null)
   const [progress, setProgress] = useState<StreamProgress | null>(null)
@@ -162,8 +163,10 @@ export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps)
   const [paused, setPaused] = useState(false)
   const abortControllerRef = useRef<AbortController | null>(null)
   const pausedRef = useRef(false)
+  const lastAnalysisRunSignalRef = useRef(0)
 
   const handleAnalyze = useCallback(async () => {
+    if (loading && !paused) return
     abortControllerRef.current?.abort()
     const controller = new AbortController()
     abortControllerRef.current = controller
@@ -211,7 +214,17 @@ export function NASMessageAnalyzerPanel({ jobId }: NASMessageAnalyzerPanelProps)
       }
       setLoading(false)
     }
+  }, [jobId, loading, paused])
+
+  useEffect(() => {
+    lastAnalysisRunSignalRef.current = 0
   }, [jobId])
+
+  useEffect(() => {
+    if (analysisRunSignal <= 0 || analysisRunSignal === lastAnalysisRunSignalRef.current) return
+    lastAnalysisRunSignalRef.current = analysisRunSignal
+    void handleAnalyze()
+  }, [analysisRunSignal, handleAnalyze])
 
   const handlePauseToggle = useCallback(() => {
     setPaused(value => {

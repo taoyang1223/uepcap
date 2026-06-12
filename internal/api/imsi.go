@@ -15,7 +15,7 @@ import (
 func (h *Handler) GetIMSIList(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
-	job, ok := h.jobMgr.GetJob(id)
+	job, ok := h.getJob(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "job not found")
 		return
@@ -49,7 +49,7 @@ func (h *Handler) GetIMSIList(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) StreamIMSIList(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
-	job, ok := h.jobMgr.GetJob(id)
+	job, ok := h.getJob(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "job not found")
 		return

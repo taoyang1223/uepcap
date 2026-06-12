@@ -9,6 +9,7 @@ import type { StreamProgress } from './StreamProgressBar'
 
 interface SMNASMessageAnalyzerPanelProps {
   jobId: string
+  analysisRunSignal?: number
 }
 
 type NASDirection = 'uplink' | 'downlink' | 'unknown'
@@ -121,7 +122,7 @@ const flowStatusClasses: Record<NASFlowStatus, string> = {
 
 const PAGE_SIZE = 15
 
-export function SMNASMessageAnalyzerPanel({ jobId }: SMNASMessageAnalyzerPanelProps) {
+export function SMNASMessageAnalyzerPanel({ jobId, analysisRunSignal = 0 }: SMNASMessageAnalyzerPanelProps) {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<SMNASAnalysisResult | null>(null)
   const [progress, setProgress] = useState<StreamProgress | null>(null)
@@ -137,8 +138,10 @@ export function SMNASMessageAnalyzerPanel({ jobId }: SMNASMessageAnalyzerPanelPr
   const [paused, setPaused] = useState(false)
   const abortControllerRef = useRef<AbortController | null>(null)
   const pausedRef = useRef(false)
+  const lastAnalysisRunSignalRef = useRef(0)
 
   const handleAnalyze = useCallback(async () => {
+    if (loading && !paused) return
     abortControllerRef.current?.abort()
     const controller = new AbortController()
     abortControllerRef.current = controller
@@ -185,7 +188,17 @@ export function SMNASMessageAnalyzerPanel({ jobId }: SMNASMessageAnalyzerPanelPr
       }
       setLoading(false)
     }
+  }, [jobId, loading, paused])
+
+  useEffect(() => {
+    lastAnalysisRunSignalRef.current = 0
   }, [jobId])
+
+  useEffect(() => {
+    if (analysisRunSignal <= 0 || analysisRunSignal === lastAnalysisRunSignalRef.current) return
+    lastAnalysisRunSignalRef.current = analysisRunSignal
+    void handleAnalyze()
+  }, [analysisRunSignal, handleAnalyze])
 
   const handlePauseToggle = useCallback(() => {
     setPaused(value => {

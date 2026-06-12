@@ -5,6 +5,7 @@ import { readEventStream } from '../utils/eventStream'
 interface MessageStatsPanelProps {
   jobId: string
   selectedIMSIs: string[]
+  analysisRunSignal?: number
 }
 
 interface StatsItem {
@@ -47,7 +48,7 @@ interface StreamPayload<T> {
   cached?: boolean
 }
 
-export function MessageStatsPanel({ jobId, selectedIMSIs: _selectedIMSIs }: MessageStatsPanelProps) {
+export function MessageStatsPanel({ jobId, selectedIMSIs: _selectedIMSIs, analysisRunSignal = 0 }: MessageStatsPanelProps) {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<MessageStatsResult | null>(null)
   const [progress, setProgress] = useState<StreamProgress | null>(null)
@@ -57,9 +58,11 @@ export function MessageStatsPanel({ jobId, selectedIMSIs: _selectedIMSIs }: Mess
   const [paused, setPaused] = useState(false)
   const abortControllerRef = useRef<AbortController | null>(null)
   const pausedRef = useRef(false)
+  const lastAnalysisRunSignalRef = useRef(0)
 
   useEffect(() => {
     abortControllerRef.current?.abort()
+    lastAnalysisRunSignalRef.current = 0
     pausedRef.current = false
     setResult(null)
     setProgress(null)
@@ -119,6 +122,12 @@ export function MessageStatsPanel({ jobId, selectedIMSIs: _selectedIMSIs }: Mess
       setLoading(false)
     }
   }, [jobId, loading, paused])
+
+  useEffect(() => {
+    if (analysisRunSignal <= 0 || analysisRunSignal === lastAnalysisRunSignalRef.current) return
+    lastAnalysisRunSignalRef.current = analysisRunSignal
+    void handleLoadStats()
+  }, [analysisRunSignal, handleLoadStats])
 
   const handlePauseToggle = useCallback(() => {
     setPaused(value => {

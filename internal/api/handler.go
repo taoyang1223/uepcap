@@ -37,6 +37,13 @@ func NewHandler(jobMgr *job.Manager) *Handler {
 	}
 }
 
+func (h *Handler) getJob(id string) (*job.Job, bool) {
+	if job, ok := h.jobMgr.GetJob(id); ok {
+		return job, true
+	}
+	return h.jobMgr.RestoreJob(id)
+}
+
 // RegisterRoutes registers API routes
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Job management

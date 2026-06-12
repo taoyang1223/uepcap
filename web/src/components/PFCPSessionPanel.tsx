@@ -7,6 +7,7 @@ import { PaginationControls } from './PaginationControls'
 
 interface PFCPSessionPanelProps {
   jobId: string
+  analysisRunSignal?: number
 }
 
 type SessionStatus = 'success' | 'failed' | 'no_response' | 'timeout' | 'retransmit'
@@ -122,7 +123,7 @@ interface StreamPayload<T> {
   cached?: boolean
 }
 
-export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
+export function PFCPSessionPanel({ jobId, analysisRunSignal = 0 }: PFCPSessionPanelProps) {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<PFCPSessionResult | null>(null)
   const [progress, setProgress] = useState<StreamProgress | null>(null)
@@ -138,8 +139,10 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
   const [paused, setPaused] = useState(false)
   const abortControllerRef = useRef<AbortController | null>(null)
   const pausedRef = useRef(false)
+  const lastAnalysisRunSignalRef = useRef(0)
 
   const handleAnalyze = useCallback(async () => {
+    if (loading && !paused) return
     abortControllerRef.current?.abort()
     const controller = new AbortController()
     abortControllerRef.current = controller
@@ -189,7 +192,17 @@ export function PFCPSessionPanel({ jobId }: PFCPSessionPanelProps) {
       }
       setLoading(false)
     }
+  }, [jobId, loading, paused])
+
+  useEffect(() => {
+    lastAnalysisRunSignalRef.current = 0
   }, [jobId])
+
+  useEffect(() => {
+    if (analysisRunSignal <= 0 || analysisRunSignal === lastAnalysisRunSignalRef.current) return
+    lastAnalysisRunSignalRef.current = analysisRunSignal
+    void handleAnalyze()
+  }, [analysisRunSignal, handleAnalyze])
 
   const handlePauseToggle = useCallback(() => {
     setPaused(value => {

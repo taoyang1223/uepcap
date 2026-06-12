@@ -150,6 +150,45 @@ func (m *Manager) GetJob(id string) (*Job, bool) {
 	return job, ok
 }
 
+// RestoreJob reloads a job from its on-disk merged pcap when the server has
+// restarted and the in-memory job map is empty.
+func (m *Manager) RestoreJob(id string) (*Job, bool) {
+	if id == "" || id == "." || id != filepath.Base(id) {
+		return nil, false
+	}
+
+	if job, ok := m.GetJob(id); ok {
+		return job, true
+	}
+
+	mergedPath := filepath.Join(m.dataDir, "tmp", id, "merged.pcap")
+	info, err := os.Stat(mergedPath)
+	if err != nil || info.IsDir() {
+		return nil, false
+	}
+
+	job := &Job{
+		ID:              id,
+		CreatedAt:       info.ModTime(),
+		MergedPcap:      mergedPath,
+		OriginalFiles:   []string{filepath.Base(mergedPath)},
+		Status:          "ready",
+		ExportCache:     make(map[string]string),
+		TextExportCache: make(map[string]string),
+		TreeCache:       make(map[string]string),
+		TreePrefetched:  make(map[string]bool),
+		ExportTasks:     make(map[string]*ExportTask),
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if existing, ok := m.jobs[id]; ok {
+		return existing, true
+	}
+	m.jobs[id] = job
+	return job, true
+}
+
 // GetJobDir returns the job's directory path
 func (m *Manager) GetJobDir(id string) string {
 	return filepath.Join(m.dataDir, "tmp", id)
