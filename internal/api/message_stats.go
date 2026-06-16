@@ -42,7 +42,7 @@ type MessageStatsRequest struct {
 // GetMessageStats handles POST /api/jobs/{id}/message-stats.
 func (h *Handler) GetMessageStats(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	job, ok := h.jobMgr.GetJob(id)
+	job, ok := h.getJob(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "job not found")
 		return
@@ -69,7 +69,7 @@ func (h *Handler) GetMessageStats(w http.ResponseWriter, r *http.Request) {
 // StreamMessageStats handles POST /api/jobs/{id}/message-stats/stream.
 func (h *Handler) StreamMessageStats(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	job, ok := h.jobMgr.GetJob(id)
+	job, ok := h.getJob(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "job not found")
 		return
@@ -195,7 +195,7 @@ func countMessageStats(ctx context.Context, pcapFile string, imsis []string) (*s
 
 func messageStatsCacheKey(jobID string, imsis []string) string {
 	cleaned := cleanIMSIs(imsis)
-	return jobID + "|stats-v2|" + strings.Join(cleaned, ",")
+	return jobID + "|stats-v5|" + strings.Join(cleaned, ",")
 }
 
 func cleanIMSIs(imsis []string) []string {

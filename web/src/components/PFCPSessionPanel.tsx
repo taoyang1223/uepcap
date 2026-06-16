@@ -272,7 +272,7 @@ export function PFCPSessionPanel({ jobId, analysisRunSignal = 0 }: PFCPSessionPa
             <div>
               <h3 className="text-lg font-bold tracking-tight text-slate-900">PFCP Session Analyzer</h3>
               <p className="text-xs text-slate-500">
-                {collapsed && result ? `事务 ${stats?.total_transactions || 0} · 成功率 ${successRate.toFixed(1)}%` : 'PFCP 会话/节点事务状态分析'}
+                {collapsed && result ? `PFCP ${result.total_packets || 0} · 事务 ${stats?.total_transactions || 0} · 成功率 ${successRate.toFixed(1)}%` : 'PFCP 会话/节点事务状态分析'}
               </p>
             </div>
           </div>
@@ -332,8 +332,8 @@ export function PFCPSessionPanel({ jobId, analysisRunSignal = 0 }: PFCPSessionPa
                 </div>
 
                 <div className="grid grid-cols-3 gap-6 text-center">
-                  <TopMetric label="总事务数" value={stats?.total_transactions || 0} />
-                  <TopMetric label="PFCP 包数" value={result.total_packets || 0} accent="cyan" />
+                  <TopMetric label="PFCP 包数" value={result.total_packets || 0} />
+                  <TopMetric label="总事务数" value={stats?.total_transactions || 0} accent="cyan" />
                   <TopMetric label="成功率" value={`${successRate.toFixed(1)}%`} accent="emerald" />
                 </div>
               </div>

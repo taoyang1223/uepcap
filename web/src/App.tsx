@@ -40,6 +40,7 @@ interface Job {
   id: string
   status: string
   file_count?: number
+  original_files?: string[]
 }
 
 type ViewMode = 'main' | 'timeline' | 'guide' | 'flow' | 'compare'
@@ -170,7 +171,12 @@ function App() {
   }, [])
 
   const handleUploadComplete = useCallback((jobId: string, fileCount: number, uploadedFiles: RecentImportFile[]) => {
-    setCurrentJob({ id: jobId, status: 'ready', file_count: fileCount })
+    setCurrentJob({
+      id: jobId,
+      status: 'ready',
+      file_count: fileCount,
+      original_files: uploadedFiles.map(file => file.name),
+    })
     setImsiList([])
     setSelectedIMSIs([])
     setAnalysisRunSignal(0)
@@ -206,6 +212,7 @@ function App() {
         id: job.id,
         status: job.status || 'ready',
         file_count: item.fileCount || job.original_files?.length,
+        original_files: item.files.length > 0 ? item.files.map(file => file.name) : job.original_files,
       })
       setImsiList(job.imsi_list || [])
       setSelectedIMSIs([])

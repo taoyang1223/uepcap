@@ -45,6 +45,7 @@ type Message struct {
 	ERABID             string    `json:"erab_id,omitempty"`
 	TransactionCapable bool      `json:"transaction_capable"`
 	WiresharkFilter    string    `json:"wireshark_filter"`
+	StatsContribution  int       `json:"-"`
 }
 
 type Transaction struct {

@@ -75,6 +75,36 @@ func TestParseFieldRowsExpandsBundledS1APPDUs(t *testing.T) {
 	}
 }
 
+func TestCalculateProcedureStatsCountsFramesPerFilter(t *testing.T) {
+	stats := calculateProcedureStats([]*Message{
+		{FrameNumber: 20, ProcedureCode: "13", ProcedureName: ProcedureName("13")},
+		{FrameNumber: 20, ProcedureCode: "13", ProcedureName: ProcedureName("13")},
+		{FrameNumber: 21, ProcedureCode: "13", ProcedureName: ProcedureName("13")},
+	})
+
+	if len(stats) != 1 {
+		t.Fatalf("procedure stats len = %d, want 1", len(stats))
+	}
+	if stats[0].Count != 2 {
+		t.Fatalf("procedure count = %d, want 2", stats[0].Count)
+	}
+	if stats[0].Filter != "s1ap.procedureCode == 13" {
+		t.Fatalf("procedure filter = %q", stats[0].Filter)
+	}
+}
+
+func TestAnalyzeTotalMessagesUsesMessageStatsFilterSemantics(t *testing.T) {
+	messages := parseFieldRows("30\t1710000003.000\t10.0.0.1\t10.0.0.2\t\t\t13,13\t0,0\t100\t200\t0x42\t\t\t\t\t\n")
+	result := analyze("sample.pcap", messages)
+
+	if len(result.Messages) != 2 {
+		t.Fatalf("parsed messages = %d, want 2", len(result.Messages))
+	}
+	if result.Statistics.TotalMessages != 1 {
+		t.Fatalf("total messages = %d, want 1", result.Statistics.TotalMessages)
+	}
+}
+
 func TestTransactionsDoNotCrossPeerPairs(t *testing.T) {
 	base := time.Unix(100, 0)
 	messages := []*Message{

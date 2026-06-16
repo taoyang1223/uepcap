@@ -131,8 +131,8 @@ func TestCountFieldRowsCountsNASByAnalyzerCategory(t *testing.T) {
 	}
 
 	s1apUplinkNAS := findItem(t, result, "s1ap", "uplink-nas-transport")
-	if s1apUplinkNAS.Count != 2 {
-		t.Fatalf("s1ap uplink nas count = %d, want 2", s1apUplinkNAS.Count)
+	if s1apUplinkNAS.Count != 1 {
+		t.Fatalf("s1ap uplink nas count = %d, want 1", s1apUplinkNAS.Count)
 	}
 
 	s1apInitialContextResponse := findItem(t, result, "s1ap", "initial-context-setup-response")
@@ -141,13 +141,13 @@ func TestCountFieldRowsCountsNASByAnalyzerCategory(t *testing.T) {
 	}
 
 	s1apInitialContextRequest := findItem(t, result, "s1ap", "initial-context-setup-request")
-	if s1apInitialContextRequest.Count != 0 {
-		t.Fatalf("s1ap initial context setup request count = %d, want 0", s1apInitialContextRequest.Count)
+	if s1apInitialContextRequest.Count != 1 {
+		t.Fatalf("s1ap initial context setup request count = %d, want 1", s1apInitialContextRequest.Count)
 	}
 
 	s1apENBConfigurationTransfer := findItem(t, result, "s1ap", "enb-configuration-transfer")
-	if s1apENBConfigurationTransfer.Count != 2 {
-		t.Fatalf("s1ap enb configuration transfer count = %d, want 2", s1apENBConfigurationTransfer.Count)
+	if s1apENBConfigurationTransfer.Count != 1 {
+		t.Fatalf("s1ap enb configuration transfer count = %d, want 1", s1apENBConfigurationTransfer.Count)
 	}
 
 	smRequest := findItem(t, result, "sm-nas", "pdu-session-establishment-request")
@@ -201,6 +201,25 @@ func TestCountFieldRowsKeepsAllConfiguredModules(t *testing.T) {
 		if result.Modules[i].Key != want {
 			t.Fatalf("module[%d] key = %q, want %q", i, result.Modules[i].Key, want)
 		}
+	}
+}
+
+func TestFinalizeDoesNotBreakStreamingItemPointers(t *testing.T) {
+	result, itemsByKey, index := newCountResult()
+
+	countFieldLine(fieldLine("", "", "", "46", "0", "", ""), itemsByKey, index)
+	finalizeCountResult(result)
+	countFieldLine(fieldLine("", "", "", "46", "0", "", ""), itemsByKey, index)
+	finalizeCountResult(result)
+
+	uplinkNASTransport := findItem(t, result, "ngap", "uplink-nas-transport")
+	if uplinkNASTransport.Count != 2 {
+		t.Fatalf("uplink nas transport count = %d, want 2", uplinkNASTransport.Count)
+	}
+
+	errorIndication := findItem(t, result, "ngap", "error-indication")
+	if errorIndication.Count != 0 {
+		t.Fatalf("error indication count = %d, want 0", errorIndication.Count)
 	}
 }
 

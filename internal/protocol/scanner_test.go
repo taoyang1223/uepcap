@@ -132,6 +132,17 @@ func TestExtractIMSIsFromFieldLinesKeepsDistinctSUCIFallback(t *testing.T) {
 	}
 }
 
+func TestExtractIMSIsFromDiameterUsername(t *testing.T) {
+	scanner := NewIMSIScanner()
+	fields := []string{"diameter.User-Name"}
+
+	result := scanner.extractIMSIsFromFieldLine(fields, "460020000000102@ims.mnc002.mcc460.3gppnetwork.org")
+	expected := []string{"460020000000102"}
+	if !reflect.DeepEqual(result, expected) {
+		t.Errorf("extractIMSIsFromFieldLine() = %v, expected %v", result, expected)
+	}
+}
+
 func TestPreferredIMSISetSkipsFallbackForPrimaryMSIN(t *testing.T) {
 	primary := map[string]bool{
 		"460020000000011": true,

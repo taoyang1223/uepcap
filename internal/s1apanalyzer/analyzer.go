@@ -218,7 +218,87 @@ func parseFieldRow(line string) []*Message {
 		msg.WiresharkFilter = messageFilter(msg)
 		messages = append(messages, msg)
 	}
+	if len(messages) > 0 {
+		messages[0].StatsContribution = s1apMessageStatsCount(procedureCodes, pduCodes)
+	}
 	return messages
+}
+
+var s1apMessageStatsPairs = map[string]bool{
+	"0\x000":  true,
+	"0\x001":  true,
+	"0\x002":  true,
+	"1\x000":  true,
+	"1\x001":  true,
+	"1\x002":  true,
+	"2\x000":  true,
+	"3\x000":  true,
+	"3\x001":  true,
+	"3\x002":  true,
+	"5\x000":  true,
+	"5\x001":  true,
+	"5\x002":  true,
+	"6\x000":  true,
+	"6\x001":  true,
+	"6\x002":  true,
+	"7\x000":  true,
+	"7\x001":  true,
+	"8\x000":  true,
+	"9\x000":  true,
+	"9\x001":  true,
+	"9\x002":  true,
+	"10\x000": true,
+	"11\x000": true,
+	"12\x000": true,
+	"13\x000": true,
+	"14\x000": true,
+	"14\x001": true,
+	"15\x000": true,
+	"16\x000": true,
+	"17\x000": true,
+	"17\x001": true,
+	"17\x002": true,
+	"18\x000": true,
+	"21\x000": true,
+	"21\x001": true,
+	"21\x002": true,
+	"22\x000": true,
+	"23\x000": true,
+	"23\x001": true,
+	"29\x000": true,
+	"29\x001": true,
+	"29\x002": true,
+	"30\x000": true,
+	"30\x001": true,
+	"30\x002": true,
+	"36\x000": true,
+	"36\x001": true,
+	"40\x000": true,
+	"41\x000": true,
+	"43\x000": true,
+	"43\x001": true,
+	"50\x000": true,
+	"50\x001": true,
+	"52\x000": true,
+	"53\x000": true,
+	"53\x001": true,
+	"53\x002": true,
+}
+
+func s1apMessageStatsCount(procedureCodes, pduCodes []string) int {
+	seen := make(map[string]bool)
+	for _, procedureCode := range procedureCodes {
+		if procedureCode == "" {
+			continue
+		}
+		for _, pduCode := range pduCodes {
+			key := procedureCode + "\x00" + pduCode
+			if s1apMessageStatsPairs[key] {
+				seen[key] = true
+			}
+		}
+	}
+	return len(seen)
 }
 
 func inferDirection(procedureCode string, pduType PDUType) Direction {
@@ -373,7 +453,7 @@ func closeTransaction(tx *Transaction, status TransactionStatus, msg *Message) {
 }
 
 func calculateStatistics(messages []*Message, transactions []*Transaction) Statistics {
-	stats := Statistics{TotalMessages: len(messages)}
+	stats := Statistics{TotalMessages: s1apTotalMessages(messages)}
 	for _, msg := range messages {
 		switch msg.PDUType {
 		case PDUInitiating:
@@ -423,8 +503,25 @@ func calculateStatistics(messages []*Message, transactions []*Transaction) Stati
 	return stats
 }
 
+func s1apTotalMessages(messages []*Message) int {
+	total := 0
+	hasContribution := false
+	for _, msg := range messages {
+		if msg.StatsContribution <= 0 {
+			continue
+		}
+		hasContribution = true
+		total += msg.StatsContribution
+	}
+	if hasContribution {
+		return total
+	}
+	return len(messages)
+}
+
 func calculateProcedureStats(messages []*Message) []ProcedureCount {
 	byCode := make(map[string]*ProcedureCount)
+	seenFrame := make(map[string]bool)
 	for _, msg := range messages {
 		if _, ok := byCode[msg.ProcedureCode]; !ok {
 			byCode[msg.ProcedureCode] = &ProcedureCount{
@@ -434,6 +531,11 @@ func calculateProcedureStats(messages []*Message) []ProcedureCount {
 				TransactionCapable: isTransactionProcedure(msg.ProcedureCode),
 			}
 		}
+		key := fmt.Sprintf("%s:%d", msg.ProcedureCode, msg.FrameNumber)
+		if seenFrame[key] {
+			continue
+		}
+		seenFrame[key] = true
 		byCode[msg.ProcedureCode].Count++
 	}
 	stats := make([]ProcedureCount, 0, len(byCode))

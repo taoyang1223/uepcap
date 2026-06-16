@@ -18,7 +18,7 @@ type S11MessagesRequest struct {
 
 func (h *Handler) GetS11Messages(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	job, ok := h.jobMgr.GetJob(id)
+	job, ok := h.getJob(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "job not found")
 		return
@@ -33,7 +33,7 @@ func (h *Handler) GetS11Messages(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	value, err := h.analysis.getOrCompute(ctx, id+"|s11", func(ctx context.Context) (any, error) {
+	value, err := h.analysis.getOrCompute(ctx, id+"|s11-v2", func(ctx context.Context) (any, error) {
 		result, err := s11analyzer.NewAnalyzer().AnalyzeFile(ctx, job.MergedPcap)
 		if err != nil {
 			return nil, err
@@ -58,7 +58,7 @@ func (h *Handler) GetS11Messages(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) StreamS11Messages(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	job, ok := h.jobMgr.GetJob(id)
+	job, ok := h.getJob(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "job not found")
 		return
@@ -76,7 +76,7 @@ func (h *Handler) StreamS11Messages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cacheKey := id + "|s11-v2-stream"
+	cacheKey := id + "|s11-v3-stream"
 	if value, ok := h.analysis.get(cacheKey); ok {
 		if result, ok := value.(*s11analyzer.AnalysisResult); ok {
 			sendSSEEvent(w, flusher, "done", map[string]any{

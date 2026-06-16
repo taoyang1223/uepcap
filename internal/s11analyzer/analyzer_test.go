@@ -79,3 +79,63 @@ func TestAnalyzeTransactionsParsesHexSequence(t *testing.T) {
 		t.Fatalf("expected success rate 100, got %.1f", result.Statistics.SuccessRate)
 	}
 }
+
+func TestAnalyzeTransactionsIncludesIndirectDataForwardingTunnel(t *testing.T) {
+	base := time.Unix(0, 0)
+	messages := []*Message{
+		{
+			FrameNumber:     10,
+			Timestamp:       base,
+			SourceIP:        "127.0.0.3",
+			DestinationIP:   "127.0.0.1",
+			MessageTypeCode: 166,
+			MessageType:     MessageTypeName(166),
+			SequenceNumber:  7,
+		},
+		{
+			FrameNumber:     11,
+			Timestamp:       base.Add(time.Millisecond),
+			SourceIP:        "127.0.0.1",
+			DestinationIP:   "127.0.0.3",
+			MessageTypeCode: 167,
+			MessageType:     MessageTypeName(167),
+			SequenceNumber:  7,
+			Cause:           "16",
+			CauseName:       CauseName("16"),
+		},
+		{
+			FrameNumber:     12,
+			Timestamp:       base.Add(2 * time.Millisecond),
+			SourceIP:        "127.0.0.3",
+			DestinationIP:   "127.0.0.1",
+			MessageTypeCode: 168,
+			MessageType:     MessageTypeName(168),
+			SequenceNumber:  8,
+		},
+		{
+			FrameNumber:     13,
+			Timestamp:       base.Add(3 * time.Millisecond),
+			SourceIP:        "127.0.0.1",
+			DestinationIP:   "127.0.0.3",
+			MessageTypeCode: 169,
+			MessageType:     MessageTypeName(169),
+			SequenceNumber:  8,
+			Cause:           "16",
+			CauseName:       CauseName("16"),
+		},
+	}
+
+	result := NewAnalyzer().analyze("sample.pcap", messages)
+	if result.Statistics.TotalMessages != 4 {
+		t.Fatalf("total S11 transaction messages = %d, want 4", result.Statistics.TotalMessages)
+	}
+	if result.Statistics.TotalTransactions != 2 {
+		t.Fatalf("total S11 transactions = %d, want 2", result.Statistics.TotalTransactions)
+	}
+	if result.Statistics.Successful != 2 {
+		t.Fatalf("successful transactions = %d, want 2", result.Statistics.Successful)
+	}
+	if result.ProcedureStats[0].Name != "Create Indirect Data Forwarding Tunnel" {
+		t.Fatalf("first procedure = %q", result.ProcedureStats[0].Name)
+	}
+}

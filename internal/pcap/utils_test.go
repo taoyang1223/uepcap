@@ -15,9 +15,22 @@ func TestIsPcapFile(t *testing.T) {
 		{name: "capture.cap", want: true},
 		{name: "capture.PCAP0", want: true},
 		{name: "capture.PCAP14", want: true},
+		{name: "capture.pcap0.gz", want: true},
+		{name: "capture.pcap0(1).gz", want: true},
+		{name: "capture.pcap0 (1).gz", want: true},
+		{name: "capture.pcapng.gz", want: true},
+		{name: "capture.pcapng(2).gz", want: true},
+		{name: "capture.cap.gz", want: true},
+		{name: "capture.cap(3).gz", want: true},
+		{name: "capture.PCAP0.GZ", want: true},
+		{name: "capture.PCAP0(1).GZ", want: true},
+		{name: "capture.pcap0(1)", want: true},
 		{name: "capture.pcapx", want: false},
 		{name: "capture.txt", want: false},
 		{name: "capture.pcap0.zip", want: false},
+		{name: "capture.pcap0(1).zip", want: false},
+		{name: "capture.pcapx.gz", want: false},
+		{name: "capture.gz", want: false},
 	}
 
 	for _, tt := range tests {

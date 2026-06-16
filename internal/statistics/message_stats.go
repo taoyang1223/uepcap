@@ -274,7 +274,9 @@ var moduleDefinitions = []moduleDefinition{
 			gtpv2("create-forwarding-tunnel-request", "Create Forwarding Tunnel Request", "160"),
 			gtpv2("create-forwarding-tunnel-response", "Create Forwarding Tunnel Response", "161"),
 			gtpv2("create-indirect-data-forwarding-tunnel-request", "Create Indirect Data Forwarding Tunnel Request", "166"),
+			gtpv2("create-indirect-data-forwarding-tunnel-response", "Create Indirect Data Forwarding Tunnel Response", "167"),
 			gtpv2("delete-indirect-data-forwarding-tunnel-request", "Delete Indirect Data Forwarding Tunnel Request", "168"),
+			gtpv2("delete-indirect-data-forwarding-tunnel-response", "Delete Indirect Data Forwarding Tunnel Response", "169"),
 			gtpv2("pgw-restart-notification", "PGW Restart Notification", "179"),
 			gtpv2("pgw-restart-notification-acknowledge", "PGW Restart Notification Acknowledge", "180"),
 			gtpv2("stop-paging-indication", "Stop Paging Indication", "73"),
@@ -537,13 +539,22 @@ func newCountResult() (*Result, map[string]*Item, *definitionIndex) {
 			Items:    make([]Item, len(moduleDef.Items)),
 		}
 		for i, def := range moduleDef.Items {
-			def.Module = moduleDef.Key
 			module.Items[i] = Item{
 				Key:    def.Key,
 				Name:   def.Name,
 				Filter: def.Filter,
 			}
-			itemsByKey[definitionItemKey(def)] = &module.Items[i]
+		}
+		sort.SliceStable(module.Items, func(a, b int) bool {
+			left := module.Items[a]
+			right := module.Items[b]
+			return sortValueByModuleItemKey(moduleDef.Key, left.Key) < sortValueByModuleItemKey(moduleDef.Key, right.Key)
+		})
+		for i := range module.Items {
+			itemsByKey[compoundKey(moduleDef.Key, module.Items[i].Key)] = &module.Items[i]
+		}
+		for _, def := range moduleDef.Items {
+			def.Module = moduleDef.Key
 			index.add(def)
 		}
 		result.Modules = append(result.Modules, module)
@@ -572,14 +583,18 @@ func countFieldLine(line string, itemsByKey map[string]*Item, index *definitionI
 			inc(def, true)
 		}
 	}
-	for _, pair := range procedurePDUPairs(row.ngapProcedures, row.ngapPDUs) {
-		for _, def := range index.ngap[compoundKey(pair.procedure, pair.pdu)] {
-			inc(def, false)
+	for _, procedure := range row.ngapProcedures {
+		for _, pdu := range row.ngapPDUs {
+			for _, def := range index.ngap[compoundKey(procedure, pdu)] {
+				inc(def, true)
+			}
 		}
 	}
-	for _, pair := range procedurePDUPairs(row.s1apProcedures, row.s1apPDUs) {
-		for _, def := range index.s1ap[compoundKey(pair.procedure, pair.pdu)] {
-			inc(def, false)
+	for _, procedure := range row.s1apProcedures {
+		for _, pdu := range row.s1apPDUs {
+			for _, def := range index.s1ap[compoundKey(procedure, pdu)] {
+				inc(def, true)
+			}
 		}
 	}
 	for _, value := range row.gtpv2MessageTypes {
@@ -596,14 +611,8 @@ func countFieldLine(line string, itemsByKey map[string]*Item, index *definitionI
 
 func finalizeCountResult(result *Result) {
 	for i := range result.Modules {
-		moduleKey := result.Modules[i].Key
 		result.Modules[i].RawTotal = 0
 		result.Modules[i].FinalTotal = 0
-		sort.SliceStable(result.Modules[i].Items, func(a, b int) bool {
-			left := result.Modules[i].Items[a]
-			right := result.Modules[i].Items[b]
-			return sortValueByModuleItemKey(moduleKey, left.Key) < sortValueByModuleItemKey(moduleKey, right.Key)
-		})
 		for j := range result.Modules[i].Items {
 			item := &result.Modules[i].Items[j]
 			item.Count = item.RawCount + item.Correction
@@ -736,15 +745,7 @@ func parseFieldRow(line string) fieldRow {
 }
 
 func parseNASMessageTypes(mmField, smField string) ([]string, []string) {
-	return firstSplitValue(mmField, true), firstSplitValue(smField, true)
-}
-
-func firstSplitValue(value string, asHex bool) []string {
-	values := splitValues(value, asHex)
-	if len(values) == 0 {
-		return nil
-	}
-	return values[:1]
+	return splitValues(mmField, true), splitValues(smField, true)
 }
 
 func matchesDefinition(def messageDefinition, row fieldRow) bool {

@@ -296,7 +296,7 @@ func (a *Analyzer) buildTransaction(req, resp *Message, requestFrames []int) *Tr
 
 var requestToResponse = map[int]int{
 	32: 33, 34: 35, 36: 37, 38: 39, 95: 96, 97: 98, 99: 100,
-	101: 102, 160: 161, 170: 171, 179: 180, 211: 212,
+	101: 102, 160: 161, 166: 167, 168: 169, 170: 171, 179: 180, 211: 212,
 }
 
 var responseToRequest = reverseMap(requestToResponse)

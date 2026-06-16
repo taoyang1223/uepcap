@@ -106,6 +106,22 @@ func TestHandoverProceduresAreNamedAndPaired(t *testing.T) {
 	}
 }
 
+func TestCalculateProcedureStatsCountsFramesPerFilter(t *testing.T) {
+	result := analyze("sample.pcap", []*Message{
+		{FrameNumber: 20, ProcedureCode: "46", ProcedureName: ProcedureName("46")},
+		{FrameNumber: 20, ProcedureCode: "46", ProcedureName: ProcedureName("46")},
+		{FrameNumber: 21, ProcedureCode: "46", ProcedureName: ProcedureName("46")},
+	})
+
+	stat := findProcedureStat(t, result, "46")
+	if stat.Count != 2 {
+		t.Fatalf("procedure count = %d, want 2", stat.Count)
+	}
+	if stat.Filter != "ngap.procedureCode == 46" {
+		t.Fatalf("procedure filter = %q", stat.Filter)
+	}
+}
+
 func ngapFieldLine(frame, epoch, src, dst, procedure, pdu, amfID, ranID string) string {
 	values := []string{
 		frame,

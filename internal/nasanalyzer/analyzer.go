@@ -259,9 +259,9 @@ func parseFieldRow(line string) []*Message {
 		cols = append(cols, "")
 	}
 
-	mmType := normalizeHex(firstValue(cols[8]))
-	smType := normalizeHex(firstValue(cols[9]))
-	if mmType == "" && smType == "" {
+	mmTypes := normalizeHexValues(cols[8])
+	smTypes := normalizeHexValues(cols[9])
+	if len(mmTypes) == 0 && len(smTypes) == 0 {
 		return nil
 	}
 
@@ -272,17 +272,18 @@ func parseFieldRow(line string) []*Message {
 	}
 
 	securityHeader := firstValue(cols[10])
+	ngapProcedureCode := firstValue(cols[6])
+	ngapPDU := firstValue(cols[7])
 	base := Message{
 		FrameNumber:        parseInt(cols[0]),
 		Timestamp:          parseEpoch(cols[1]),
 		SourceIP:           sourceIP,
 		DestinationIP:      destinationIP,
-		Direction:          directionFromNGAP(firstValue(cols[6]), mmType),
 		SecurityHeaderType: securityHeader,
 		SecurityHeaderName: SecurityHeaderName(securityHeader),
 		SequenceNumber:     firstValue(cols[11]),
-		NGAPProcedureCode:  firstValue(cols[6]),
-		NGAPPDU:            firstValue(cols[7]),
+		NGAPProcedureCode:  ngapProcedureCode,
+		NGAPPDU:            ngapPDU,
 		ElementIDs:         splitValues(cols[12]),
 		ProcTransID:        firstValue(cols[13]),
 		PDUSessionID:       firstValue(cols[14]),
@@ -290,17 +291,24 @@ func parseFieldRow(line string) []*Message {
 		RANUENGAPID:        firstValue(cols[16]),
 	}
 
-	messages := make([]*Message, 0, 2)
-	if mmType != "" {
+	messages := make([]*Message, 0, len(mmTypes)+len(smTypes))
+	for _, mmType := range mmTypes {
 		msg := base
+		msg.Direction = directionFromNGAP(ngapProcedureCode, mmType)
 		msg.Category = CategoryMM
 		msg.MessageTypeCode = mmType
 		msg.MessageType = MMMessageTypeName(mmType)
 		msg.WiresharkFilter = messageFilter(&msg)
 		messages = append(messages, &msg)
 	}
-	if smType != "" {
+
+	smDirectionType := ""
+	if len(mmTypes) > 0 {
+		smDirectionType = mmTypes[0]
+	}
+	for _, smType := range smTypes {
 		msg := base
+		msg.Direction = directionFromNGAP(ngapProcedureCode, smDirectionType)
 		msg.Category = CategorySM
 		msg.MessageTypeCode = smType
 		msg.MessageType = SMMessageTypeName(smType)
@@ -760,6 +768,24 @@ func normalizeHex(value string) string {
 		return fmt.Sprintf("0x%x", parsed)
 	}
 	return value
+}
+
+func normalizeHexValues(field string) []string {
+	values := splitValues(field)
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool)
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := normalizeHex(value)
+		if normalized == "" || seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		out = append(out, normalized)
+	}
+	return out
 }
 
 func displayHex(value string) string {

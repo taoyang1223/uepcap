@@ -137,6 +137,14 @@ func MessageTypeName(code int) string {
 		return "Create Forwarding Tunnel Request"
 	case 161:
 		return "Create Forwarding Tunnel Response"
+	case 166:
+		return "Create Indirect Data Forwarding Tunnel Request"
+	case 167:
+		return "Create Indirect Data Forwarding Tunnel Response"
+	case 168:
+		return "Delete Indirect Data Forwarding Tunnel Request"
+	case 169:
+		return "Delete Indirect Data Forwarding Tunnel Response"
 	case 170:
 		return "Release Access Bearers Request"
 	case 171:

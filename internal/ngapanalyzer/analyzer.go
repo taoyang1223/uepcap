@@ -396,6 +396,7 @@ func calculateStatistics(messages []*Message, transactions []*Transaction) Stati
 
 func calculateProcedureStats(messages []*Message) []ProcedureCount {
 	byCode := make(map[string]*ProcedureCount)
+	seenFrame := make(map[string]bool)
 	for _, msg := range messages {
 		if _, ok := byCode[msg.ProcedureCode]; !ok {
 			byCode[msg.ProcedureCode] = &ProcedureCount{
@@ -405,6 +406,11 @@ func calculateProcedureStats(messages []*Message) []ProcedureCount {
 				TransactionCapable: isTransactionProcedure(msg.ProcedureCode),
 			}
 		}
+		key := fmt.Sprintf("%s:%d", msg.ProcedureCode, msg.FrameNumber)
+		if seenFrame[key] {
+			continue
+		}
+		seenFrame[key] = true
 		byCode[msg.ProcedureCode].Count++
 	}
 	stats := make([]ProcedureCount, 0, len(byCode))

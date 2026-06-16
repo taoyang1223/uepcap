@@ -4,6 +4,7 @@ interface Job {
   id: string
   status: string
   file_count?: number
+  original_files?: string[]
 }
 
 interface JobInfoProps {
@@ -13,13 +14,15 @@ interface JobInfoProps {
 }
 
 export function JobInfo({ job, onScanIMSIs, loading }: JobInfoProps) {
+  const fileSummary = formatJobFileSummary(job.original_files)
+
   return (
     <div className="bg-white rounded-2xl shadow-lg shadow-slate-900/5 p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-6 transition-all">
-      <div className="flex items-start gap-4">
+      <div className="flex min-w-0 items-start gap-4">
         <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center flex-shrink-0 shadow-lg shadow-emerald-500/20">
            <BadgeCheck className="w-6 h-6 text-white" />
         </div>
-        <div>
+        <div className="min-w-0">
           <h3 className="text-lg font-bold text-slate-800 flex items-center gap-3">
             文件预处理完成
             <span className="text-xs px-2.5 py-1 bg-emerald-50 text-emerald-700 rounded-full font-bold uppercase tracking-wide">Ready</span>
@@ -36,6 +39,13 @@ export function JobInfo({ job, onScanIMSIs, loading }: JobInfoProps) {
                </div>
              )}
           </div>
+          {fileSummary && (
+            <div className="mt-2 flex min-w-0 items-center gap-1.5 text-sm text-slate-600" title={fileSummary.title}>
+              <FileText className="h-4 w-4 flex-shrink-0 text-slate-400" />
+              <span className="flex-shrink-0 font-semibold text-slate-500">当前文件</span>
+              <span className="min-w-0 truncate font-medium text-slate-800">{fileSummary.label}</span>
+            </div>
+          )}
         </div>
       </div>
         
@@ -58,4 +68,25 @@ export function JobInfo({ job, onScanIMSIs, loading }: JobInfoProps) {
       </button>
     </div>
   )
+}
+
+function formatJobFileSummary(files?: string[]) {
+  const names = (files || [])
+    .map(file => fileBaseName(file))
+    .filter(Boolean)
+
+  if (names.length === 0) return null
+  if (names.length === 1) {
+    return { label: names[0], title: names[0] }
+  }
+  return {
+    label: `${names[0]} 等 ${names.length} 个文件`,
+    title: names.join('\n'),
+  }
+}
+
+function fileBaseName(path: string) {
+  const normalized = path.trim()
+  if (!normalized) return ''
+  return normalized.split(/[\\/]/).pop() || normalized
 }

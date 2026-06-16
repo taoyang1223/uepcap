@@ -2,7 +2,9 @@ package api
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -58,6 +60,68 @@ func TestCreateJobStreamsUploadToDisk(t *testing.T) {
 	}
 	if filepath.Base(mergedPath) != "merged.pcap" {
 		t.Fatalf("merged path = %q, want merged.pcap", mergedPath)
+	}
+}
+
+func TestCreateJobAcceptsGzipPcapShard(t *testing.T) {
+	dataDir := t.TempDir()
+	handler := NewHandler(job.NewManagerWithLimit(dataDir, time.Hour, 3))
+
+	var gzipped bytes.Buffer
+	gzipWriter := gzip.NewWriter(&gzipped)
+	if _, err := gzipWriter.Write([]byte("pcap data")); err != nil {
+		t.Fatalf("gzip write failed: %v", err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatalf("gzip close failed: %v", err)
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("files", "any_20260615_10-16-51.pcap0(1).gz")
+	if err != nil {
+		t.Fatalf("CreateFormFile failed: %v", err)
+	}
+	if _, err := part.Write(gzipped.Bytes()); err != nil {
+		t.Fatalf("part write failed: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("writer close failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/jobs", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+
+	handler.CreateJob(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("CreateJob status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var resp APIResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("response decode failed: %v", err)
+	}
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("response data type = %T", resp.Data)
+	}
+	mergedPath, ok := data["merged_pcap"].(string)
+	if !ok || mergedPath == "" {
+		t.Fatalf("merged_pcap missing in response: %#v", data)
+	}
+	mergedFile, err := os.Open(mergedPath)
+	if err != nil {
+		t.Fatalf("open merged pcap failed: %v", err)
+	}
+	defer mergedFile.Close()
+	mergedData, err := io.ReadAll(mergedFile)
+	if err != nil {
+		t.Fatalf("read merged pcap failed: %v", err)
+	}
+	if string(mergedData) != "pcap data" {
+		t.Fatalf("merged pcap data = %q, want %q", string(mergedData), "pcap data")
 	}
 }
 

@@ -20,7 +20,7 @@ type PFCPSessionRequest struct {
 
 func (h *Handler) GetPFCPSessions(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	job, ok := h.jobMgr.GetJob(id)
+	job, ok := h.getJob(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "job not found")
 		return
@@ -65,7 +65,7 @@ func (h *Handler) GetPFCPSessions(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) StreamPFCPSessions(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	job, ok := h.jobMgr.GetJob(id)
+	job, ok := h.getJob(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "job not found")
 		return

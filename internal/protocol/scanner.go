@@ -20,11 +20,14 @@ type IMSIScanner struct {
 
 var imsiFieldCandidates = []string{
 	"e212.imsi",            // Generic E.212 IMSI (covers GTPv2, S1AP, NGAP, etc.)
+	"e212.assoc.imsi",      // Association IMSI shown by some dissectors
 	"gsm_a.imsi",           // GSM/UMTS IMSI
 	"nas_5gs.mm.imsi",      // 5G NAS IMSI on newer Wireshark versions
 	"nas_eps.emm.imsi",     // LTE NAS IMSI on newer Wireshark versions
 	"pfcp.user_id",         // PFCP User ID on newer Wireshark versions
 	"pfcp.user_id.supi",    // PFCP User ID SUPI on newer Wireshark versions
+	"diameter.User-Name",   // Cx/S6a User-Name, often imsi@realm
+	"diameter.3GPP-IMSI",   // 3GPP IMSI AVP on Diameter variants
 	"e212.mcc",             // Needed to reconstruct IMSI from NAS-5GS SUCI MSIN
 	"e212.mnc",             // Needed to reconstruct IMSI from NAS-5GS SUCI MSIN
 	"nas_5gs.mm.suci.msin", // SUCI NULL-scheme MSIN, used when PFCP/IMSI fields are absent
@@ -348,7 +351,7 @@ func (s *IMSIScanner) extractIMSIBucketsFromFieldLine(fields []string, line stri
 
 func isDirectIMSIField(field string) bool {
 	switch field {
-	case "e212.imsi", "gsm_a.imsi", "nas_5gs.mm.imsi", "nas_eps.emm.imsi", "pfcp.user_id", "pfcp.user_id.supi":
+	case "e212.imsi", "e212.assoc.imsi", "gsm_a.imsi", "nas_5gs.mm.imsi", "nas_eps.emm.imsi", "pfcp.user_id", "pfcp.user_id.supi", "diameter.User-Name", "diameter.3GPP-IMSI":
 		return true
 	default:
 		return false

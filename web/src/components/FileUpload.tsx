@@ -12,7 +12,7 @@ interface FileUploadProps {
   onRecentImportsClear: () => void
 }
 
-const pcapFilenamePattern = /\.(pcap\d*|pcapng|cap)$/i
+const pcapFilenamePattern = /\.(pcap\d*|pcapng|cap)(?:\s*\(\d+\))?(\.gz)?$/i
 const largeUploadThreshold = 300 * 1024 * 1024
 const maxUploadBytes = 2 * 1024 * 1024 * 1024
 
@@ -37,7 +37,7 @@ export function FileUpload({
     const pcapFiles = Array.from(newFiles).filter(f => pcapFilenamePattern.test(f.name))
     
     if (pcapFiles.length === 0) {
-      setError('请选择 .pcap、.pcap1、.pcapng 或 .cap 文件')
+      setError('请选择 .pcap、.pcap1、.pcapng、.cap 或对应 .gz 压缩文件')
       return
     }
 
@@ -168,7 +168,7 @@ export function FileUpload({
             点击或拖拽文件到此处
           </h3>
           <p className="text-sm text-slate-500 max-w-xs mx-auto">
-            支持上传多个 .pcap、.pcap1、.pcapng 文件，系统将自动合并处理
+            支持上传多个 .pcap、.pcap1、.pcapng、.cap 文件及其 .gz 压缩包，系统将自动合并处理
           </p>
         </div>
 

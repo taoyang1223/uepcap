@@ -1,6 +1,7 @@
 package api
 
 import (
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	pcappkg "gitee.com/yangdadayyds/uepcap/internal/pcap"
 	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
 
@@ -38,6 +40,8 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 
 	jobDir := h.jobMgr.GetJobDir(job.ID)
 	var savedFiles []string
+	var originalFiles []string
+	var storedFiles []string
 	var usageFiles []UsageRecordFile
 	var fileCount int
 
@@ -73,7 +77,8 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		destPath := filepath.Join(jobDir, uniqueUploadFilename(savedFiles, filename))
+		destPath := filepath.Join(jobDir, uniqueUploadFilename(storedFiles, filename))
+		storedFiles = append(storedFiles, destPath)
 		if err := saveUploadedPart(destPath, part); err != nil {
 			h.jobMgr.DeleteJob(job.ID)
 			if isMaxBytesError(err) {
@@ -99,7 +104,24 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 
-		savedFiles = append(savedFiles, destPath)
+		processedPath := destPath
+		if pcappkg.IsGzipPcapFile(filename) {
+			decompressedName := uniqueUploadFilename(storedFiles, pcappkg.UncompressedFilename(filename))
+			decompressedPath := filepath.Join(jobDir, decompressedName)
+			if err := decompressUploadedPcap(destPath, decompressedPath); err != nil {
+				h.jobMgr.DeleteJob(job.ID)
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			storedFiles = append(storedFiles, decompressedPath)
+			processedPath = decompressedPath
+			if err := os.Remove(destPath); err != nil {
+				log.Printf("[Upload] failed to remove compressed upload %s: %v", destPath, err)
+			}
+		}
+
+		originalFiles = append(originalFiles, destPath)
+		savedFiles = append(savedFiles, processedPath)
 		fileCount++
 	}
 
@@ -132,7 +154,7 @@ func (h *Handler) CreateJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.jobMgr.SetJobMergedPcap(job.ID, mergedPath, savedFiles)
+	h.jobMgr.SetJobMergedPcap(job.ID, mergedPath, originalFiles)
 	h.jobMgr.UpdateJobStatus(job.ID, "ready", nil)
 	if h.usageRecords != nil {
 		if err := h.usageRecords.Add(UsageRecord{
@@ -171,14 +193,50 @@ func saveUploadedPart(destPath string, part *multipart.Part) error {
 	return err
 }
 
+func decompressUploadedPcap(srcPath, destPath string) error {
+	srcFile, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("failed to open compressed pcap: %w", err)
+	}
+	defer srcFile.Close()
+
+	gzipReader, err := gzip.NewReader(srcFile)
+	if err != nil {
+		return fmt.Errorf("failed to read gzip pcap: %w", err)
+	}
+	defer gzipReader.Close()
+
+	destFile, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to create decompressed pcap: %w", err)
+	}
+
+	limitedReader := &io.LimitedReader{R: gzipReader, N: maxUploadBytes + 1}
+	written, copyErr := io.CopyBuffer(destFile, limitedReader, make([]byte, 1024*1024))
+	closeErr := destFile.Close()
+	if copyErr != nil {
+		os.Remove(destPath)
+		return fmt.Errorf("failed to decompress gzip pcap: %w", copyErr)
+	}
+	if closeErr != nil {
+		os.Remove(destPath)
+		return fmt.Errorf("failed to write decompressed pcap: %w", closeErr)
+	}
+	if written > maxUploadBytes {
+		os.Remove(destPath)
+		return fmt.Errorf("decompressed pcap is too large; maximum size is %s", formatBytes(maxUploadBytes))
+	}
+	return nil
+}
+
 func safeUploadFilename(filename string) (string, error) {
 	base := filepath.Base(strings.TrimSpace(filename))
 	if base == "." || base == string(filepath.Separator) || base == "" {
 		return "", fmt.Errorf("invalid upload filename")
 	}
-	ext := strings.ToLower(filepath.Ext(base))
-	if ext != ".pcap" && ext != ".pcapng" && ext != ".cap" && !strings.HasPrefix(ext, ".pcap") {
-		return "", fmt.Errorf("unsupported file type %q; please upload .pcap, .pcap1, .pcapng or .cap files", ext)
+	if !pcappkg.IsPcapFile(base) {
+		ext := strings.ToLower(filepath.Ext(base))
+		return "", fmt.Errorf("unsupported file type %q; please upload .pcap, .pcap1, .pcapng, .cap or gzip-compressed pcap files", ext)
 	}
 	return base, nil
 }

@@ -256,7 +256,7 @@ export function S11MessageAnalyzerPanel({ jobId, analysisRunSignal = 0 }: S11Mes
             <div>
               <h3 className="text-lg font-bold tracking-tight text-slate-900">S11 Message Analyzer</h3>
               <p className="text-xs text-slate-500">
-                {collapsed && result ? `S11 ${stats?.total_transactions || 0} 个请求响应事务 · 成功率 ${(stats?.success_rate || 0).toFixed(1)}%` : 'GTPv2-C 请求响应事务 / Cause / TEID 分析'}
+                {collapsed && result ? `S11 ${stats?.total_messages || 0} · 事务 ${stats?.total_transactions || 0} · 成功率 ${(stats?.success_rate || 0).toFixed(1)}%` : 'GTPv2-C 请求响应事务 / Cause / TEID 分析'}
               </p>
             </div>
           </div>

@@ -115,19 +115,25 @@ func (h *Handler) StreamIMSIList(w http.ResponseWriter, r *http.Request) {
 
 	// Collect all IMSIs for caching
 	var allIMSIs []string
+	recordIMSI := func(imsi string) {
+		allIMSIs = append(allIMSIs, imsi)
+		sendSSEEvent(w, flusher, "imsi", imsi)
+	}
 
 	// Stream results as they come
 	for {
 		select {
 		case imsi, ok := <-imsiChan:
 			if !ok {
-				// Channel closed, wait for done
+				imsiChan = nil
 				continue
 			}
-			allIMSIs = append(allIMSIs, imsi)
-			sendSSEEvent(w, flusher, "imsi", imsi)
+			recordIMSI(imsi)
 
 		case err := <-doneChan:
+			if imsiChan != nil {
+				drainIMSIChannel(imsiChan, recordIMSI)
+			}
 			call.imsis = allIMSIs
 			call.err = err
 			if err != nil {
@@ -148,6 +154,12 @@ func (h *Handler) StreamIMSIList(w http.ResponseWriter, r *http.Request) {
 			sendSSEEvent(w, flusher, "error", "timeout")
 			return
 		}
+	}
+}
+
+func drainIMSIChannel(imsiChan <-chan string, record func(string)) {
+	for imsi := range imsiChan {
+		record(imsi)
 	}
 }
 

@@ -17,7 +17,7 @@ type NASMessagesRequest struct {
 
 func (h *Handler) GetNASMessages(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	job, ok := h.jobMgr.GetJob(id)
+	job, ok := h.getJob(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "job not found")
 		return
@@ -32,7 +32,7 @@ func (h *Handler) GetNASMessages(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	value, err := h.analysis.getOrCompute(ctx, id+"|nas", func(ctx context.Context) (any, error) {
+	value, err := h.analysis.getOrCompute(ctx, id+"|nas-v2", func(ctx context.Context) (any, error) {
 		result, err := nasanalyzer.NewAnalyzer().AnalyzeMMFile(ctx, job.MergedPcap)
 		if err != nil {
 			return nil, err
@@ -61,7 +61,7 @@ func (h *Handler) StreamNASMessages(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) GetSMNASMessages(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	job, ok := h.jobMgr.GetJob(id)
+	job, ok := h.getJob(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "job not found")
 		return
@@ -76,7 +76,7 @@ func (h *Handler) GetSMNASMessages(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	value, err := h.analysis.getOrCompute(ctx, id+"|sm-nas", func(ctx context.Context) (any, error) {
+	value, err := h.analysis.getOrCompute(ctx, id+"|sm-nas-v2", func(ctx context.Context) (any, error) {
 		result, err := nasanalyzer.NewAnalyzer().AnalyzeSMFile(ctx, job.MergedPcap)
 		if err != nil {
 			return nil, err
@@ -105,7 +105,7 @@ func (h *Handler) StreamSMNASMessages(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) streamNASMessages(w http.ResponseWriter, r *http.Request, smOnly bool) {
 	id := r.PathValue("id")
-	job, ok := h.jobMgr.GetJob(id)
+	job, ok := h.getJob(id)
 	if !ok {
 		writeError(w, http.StatusNotFound, "job not found")
 		return
@@ -123,7 +123,7 @@ func (h *Handler) streamNASMessages(w http.ResponseWriter, r *http.Request, smOn
 		return
 	}
 
-	cacheKey := id + "|nas-v2-stream"
+	cacheKey := id + "|nas-v3-stream"
 	filter := func(result *nasanalyzer.AnalysisResult) *nasanalyzer.AnalysisResult {
 		if smOnly {
 			return nasanalyzer.FilterSMResult(result)

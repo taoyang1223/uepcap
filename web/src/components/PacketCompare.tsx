@@ -151,7 +151,7 @@ interface ComparisonResult {
 }
 
 const PAGE_SIZE = 12
-const pcapFilenamePattern = /\.(pcap\d*|pcapng|cap)$/i
+const pcapFilenamePattern = /\.(pcap\d*|pcapng|cap)(?:\s*\(\d+\))?(\.gz)?$/i
 
 const emptyCaptureState: CaptureState = {
   job: null,
@@ -991,7 +991,7 @@ function UploadSlot({ side, job, onUploaded }: { side: CaptureSide; job: Uploade
     if (!newFiles) return
     const pcapFiles = Array.from(newFiles).filter(file => pcapFilenamePattern.test(file.name))
     if (pcapFiles.length === 0) {
-      setError('请选择 .pcap、.pcap1、.pcapng 或 .cap 文件')
+      setError('请选择 .pcap、.pcap1、.pcapng、.cap 或对应 .gz 压缩文件')
       return
     }
     setFiles(previous => [...previous, ...pcapFiles])

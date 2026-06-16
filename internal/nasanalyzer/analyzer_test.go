@@ -15,6 +15,27 @@ func TestParseFieldRowsCountsMMAndSMLayers(t *testing.T) {
 	}
 }
 
+func TestParseFieldRowsCountsAllMessageTypesInFrame(t *testing.T) {
+	messages := parseFieldRows("101\t1.6\t10.0.0.1\t10.0.0.2\t\t\t46\t0\t0x41,0x67,0x41\t0xc1;193\t2\t9\t")
+	if len(messages) != 3 {
+		t.Fatalf("message count = %d, want 3", len(messages))
+	}
+
+	want := []struct {
+		category NASCategory
+		code     string
+	}{
+		{CategoryMM, "0x41"},
+		{CategoryMM, "0x67"},
+		{CategorySM, "0xc1"},
+	}
+	for i, item := range want {
+		if messages[i].Category != item.category || messages[i].MessageTypeCode != item.code {
+			t.Fatalf("message[%d] = %s/%s, want %s/%s", i, messages[i].Category, messages[i].MessageTypeCode, item.category, item.code)
+		}
+	}
+}
+
 func TestFilterMMAndSMResultsSeparateCategories(t *testing.T) {
 	result := analyze("sample.pcap", []*Message{
 		{FrameNumber: 1, Category: CategoryMM, MessageTypeCode: "0x41", MessageType: MMMessageTypeName("0x41")},
