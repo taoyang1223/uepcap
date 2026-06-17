@@ -230,6 +230,10 @@ func tolerateTsharkNonFatalWarnings(result *ExecResult) {
 	}
 }
 
+func hasCutShortPacketWarning(stderr string) bool {
+	return strings.Contains(stderr, "appears to have been cut short in the middle of a packet")
+}
+
 // ExecWithTimeout runs a command with specified timeout
 func ExecWithTimeout(timeout time.Duration, name string, args ...string) (*ExecResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -382,9 +386,55 @@ func Mergecap(ctx context.Context, outputPcap string, inputPcaps ...string) erro
 	if len(inputPcaps) == 0 {
 		return fmt.Errorf("no input files provided")
 	}
+	result, err := runMergecap(ctx, outputPcap, inputPcaps...)
+	if err != nil {
+		return err
+	}
+	if result.ExitCode == 0 {
+		return nil
+	}
+
+	mergeErr := fmt.Errorf("mergecap failed: %s", strings.TrimSpace(result.Stderr))
+	if !hasCutShortPacketWarning(result.Stderr) {
+		return mergeErr
+	}
+	if err := mergecapAfterDroppingTruncatedTail(ctx, outputPcap, inputPcaps); err != nil {
+		return fmt.Errorf("%v; retry after discarding truncated tail packets failed: %w", mergeErr, err)
+	}
+	return nil
+}
+
+func runMergecap(ctx context.Context, outputPcap string, inputPcaps ...string) (*ExecResult, error) {
 	args := []string{"-w", outputPcap}
 	args = append(args, inputPcaps...)
-	result, err := Exec(ctx, "mergecap", args...)
+	return Exec(ctx, "mergecap", args...)
+}
+
+func mergecapAfterDroppingTruncatedTail(ctx context.Context, outputPcap string, inputPcaps []string) error {
+	tempDir, err := os.MkdirTemp(filepath.Dir(outputPcap), ".pcap-repair-*")
+	if err != nil {
+		return fmt.Errorf("create repair temp dir: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	repairedInputs := make([]string, 0, len(inputPcaps))
+	for i, inputPcap := range inputPcaps {
+		repairedPath := filepath.Join(tempDir, fmt.Sprintf("input_%d.pcapng", i))
+		if err := TsharkExport(ctx, inputPcap, repairedPath, ""); err != nil {
+			return fmt.Errorf("repair %q: %w", inputPcap, err)
+		}
+		info, err := os.Stat(repairedPath)
+		if err != nil {
+			return fmt.Errorf("repair %q did not produce output: %w", inputPcap, err)
+		}
+		if info.Size() == 0 {
+			return fmt.Errorf("repair %q produced empty output", inputPcap)
+		}
+		repairedInputs = append(repairedInputs, repairedPath)
+	}
+
+	_ = os.Remove(outputPcap)
+	result, err := runMergecap(ctx, outputPcap, repairedInputs...)
 	if err != nil {
 		return err
 	}
