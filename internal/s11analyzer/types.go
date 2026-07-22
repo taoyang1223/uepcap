@@ -1,6 +1,10 @@
 package s11analyzer
 
-import "time"
+import (
+	"time"
+
+	gtpv2msg "gitee.com/yangdadayyds/uepcap/internal/gtpv2"
+)
 
 type TransactionStatus string
 
@@ -100,66 +104,7 @@ type ProcedureCount struct {
 }
 
 func MessageTypeName(code int) string {
-	switch code {
-	case 32:
-		return "Create Session Request"
-	case 33:
-		return "Create Session Response"
-	case 34:
-		return "Modify Bearer Request"
-	case 35:
-		return "Modify Bearer Response"
-	case 36:
-		return "Delete Session Request"
-	case 37:
-		return "Delete Session Response"
-	case 38:
-		return "Change Notification Request"
-	case 39:
-		return "Change Notification Response"
-	case 95:
-		return "Create Bearer Request"
-	case 96:
-		return "Create Bearer Response"
-	case 97:
-		return "Update Bearer Request"
-	case 98:
-		return "Update Bearer Response"
-	case 99:
-		return "Delete Bearer Request"
-	case 100:
-		return "Delete Bearer Response"
-	case 101:
-		return "Delete PDN Connection Set Request"
-	case 102:
-		return "Delete PDN Connection Set Response"
-	case 160:
-		return "Create Forwarding Tunnel Request"
-	case 161:
-		return "Create Forwarding Tunnel Response"
-	case 166:
-		return "Create Indirect Data Forwarding Tunnel Request"
-	case 167:
-		return "Create Indirect Data Forwarding Tunnel Response"
-	case 168:
-		return "Delete Indirect Data Forwarding Tunnel Request"
-	case 169:
-		return "Delete Indirect Data Forwarding Tunnel Response"
-	case 170:
-		return "Release Access Bearers Request"
-	case 171:
-		return "Release Access Bearers Response"
-	case 179:
-		return "PGW Restart Notification"
-	case 180:
-		return "PGW Restart Notification Acknowledge"
-	case 211:
-		return "Modify Access Bearers Request"
-	case 212:
-		return "Modify Access Bearers Response"
-	default:
-		return "GTPv2 Message"
-	}
+	return gtpv2msg.Name(code)
 }
 
 func CauseName(cause string) string {

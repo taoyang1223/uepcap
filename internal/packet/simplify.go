@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	gtpv2msg "gitee.com/yangdadayyds/uepcap/internal/gtpv2"
 )
 
 // CompactPacket represents a simplified packet structure
@@ -167,42 +169,7 @@ var ngapProcedureCodes = map[string]string{
 }
 
 // GTPv2 消息类型映射
-var gtpv2MessageTypes = map[string]string{
-	"1":   "Echo Request",
-	"2":   "Echo Response",
-	"32":  "Create Session Request",
-	"33":  "Create Session Response",
-	"34":  "Modify Bearer Request",
-	"35":  "Modify Bearer Response",
-	"36":  "Delete Session Request",
-	"37":  "Delete Session Response",
-	"38":  "Change Notification Request",
-	"39":  "Change Notification Response",
-	"64":  "Modify Bearer Command",
-	"65":  "Modify Bearer Failure Indication",
-	"66":  "Delete Bearer Command",
-	"67":  "Delete Bearer Failure Indication",
-	"68":  "Bearer Resource Command",
-	"69":  "Bearer Resource Failure Indication",
-	"70":  "Downlink Data Notification Failure Indication",
-	"71":  "Trace Session Activation",
-	"72":  "Trace Session Deactivation",
-	"73":  "Stop Paging Indication",
-	"95":  "Create Bearer Request",
-	"96":  "Create Bearer Response",
-	"97":  "Update Bearer Request",
-	"98":  "Update Bearer Response",
-	"99":  "Delete Bearer Request",
-	"100": "Delete Bearer Response",
-	"162": "Release Access Bearers Request",
-	"163": "Release Access Bearers Response",
-	"170": "Downlink Data Notification",
-	"171": "Downlink Data Notification Ack",
-	"176": "Suspend Notification",
-	"177": "Suspend Acknowledge",
-	"178": "Resume Notification",
-	"179": "Resume Acknowledge",
-}
+var gtpv2MessageTypes = gtpv2msg.StringNameMap()
 
 // SimplifyPacketsJSON simplifies tshark JSON output to extract key information
 func SimplifyPacketsJSON(rawJSON string) (string, error) {

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"gitee.com/yangdadayyds/uepcap/internal/analysislimit"
+	gtpv2msg "gitee.com/yangdadayyds/uepcap/internal/gtpv2"
 	"gitee.com/yangdadayyds/uepcap/internal/tshark"
 )
 
@@ -252,41 +253,9 @@ var moduleDefinitions = []moduleDefinition{
 	},
 	{
 		Key:      "s11",
-		Name:     "S11消息",
+		Name:     "S11/GTPv2-C消息",
 		Standard: "TS 29.274",
-		Items: []messageDefinition{
-			gtpv2("create-session-request", "Create Session Request", "32"),
-			gtpv2("create-session-response", "Create Session Response", "33"),
-			gtpv2("modify-bearer-request", "Modify Bearer Request", "34"),
-			gtpv2("modify-bearer-response", "Modify Bearer Response", "35"),
-			gtpv2("delete-session-request", "Delete Session Request", "36"),
-			gtpv2("delete-session-response", "Delete Session Response", "37"),
-			gtpv2("change-notification-request", "Change Notification Request", "38"),
-			gtpv2("change-notification-response", "Change Notification Response", "39"),
-			gtpv2("create-bearer-request", "Create Bearer Request", "95"),
-			gtpv2("create-bearer-response", "Create Bearer Response", "96"),
-			gtpv2("update-bearer-request", "Update Bearer Request", "97"),
-			gtpv2("update-bearer-response", "Update Bearer Response", "98"),
-			gtpv2("delete-bearer-request", "Delete Bearer Request", "99"),
-			gtpv2("delete-bearer-response", "Delete Bearer Response", "100"),
-			gtpv2("delete-pdn-connection-set-request", "Delete PDN Connection Set Request", "101"),
-			gtpv2("delete-pdn-connection-set-response", "Delete PDN Connection Set Response", "102"),
-			gtpv2("create-forwarding-tunnel-request", "Create Forwarding Tunnel Request", "160"),
-			gtpv2("create-forwarding-tunnel-response", "Create Forwarding Tunnel Response", "161"),
-			gtpv2("create-indirect-data-forwarding-tunnel-request", "Create Indirect Data Forwarding Tunnel Request", "166"),
-			gtpv2("create-indirect-data-forwarding-tunnel-response", "Create Indirect Data Forwarding Tunnel Response", "167"),
-			gtpv2("delete-indirect-data-forwarding-tunnel-request", "Delete Indirect Data Forwarding Tunnel Request", "168"),
-			gtpv2("delete-indirect-data-forwarding-tunnel-response", "Delete Indirect Data Forwarding Tunnel Response", "169"),
-			gtpv2("pgw-restart-notification", "PGW Restart Notification", "179"),
-			gtpv2("pgw-restart-notification-acknowledge", "PGW Restart Notification Acknowledge", "180"),
-			gtpv2("stop-paging-indication", "Stop Paging Indication", "73"),
-			gtpv2("modify-access-bearers-request", "Modify Access Bearers Request", "211"),
-			gtpv2("modify-access-bearers-response", "Modify Access Bearers Response", "212"),
-			gtpv2("release-access-bearers-request", "Release Access Bearers Request", "170"),
-			gtpv2("release-access-bearers-response", "Release Access Bearers Response", "171"),
-			gtpv2("trace-session-activation", "Trace Session Activation", "71"),
-			gtpv2("trace-session-deactivation", "Trace Session Deactivation", "72"),
-		},
+		Items:    gtpv2Definitions(),
 	},
 	{
 		Key:      "sm-nas",
@@ -389,6 +358,14 @@ func gtpv2(key, name, value string) messageDefinition {
 		Value:  value,
 		Filter: fmt.Sprintf("%s == %s", fieldGTPv2MessageType, value),
 	}
+}
+
+func gtpv2Definitions() []messageDefinition {
+	items := make([]messageDefinition, 0, len(gtpv2msg.MessageTypes))
+	for _, msg := range gtpv2msg.MessageTypes {
+		items = append(items, gtpv2(msg.Key, msg.Name, strconv.Itoa(msg.Code)))
+	}
+	return items
 }
 
 func pfcp(key, name, value string) messageDefinition {

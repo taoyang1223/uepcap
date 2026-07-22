@@ -266,6 +266,11 @@ func TestMessageDefinitionsUseTsharkValues(t *testing.T) {
 		{name: "S11 create bearer response", module: "s11", key: "create-bearer-response", want: messageDefinition{Kind: matchGTPv2, Value: "96"}},
 		{name: "S11 stop paging indication", module: "s11", key: "stop-paging-indication", want: messageDefinition{Kind: matchGTPv2, Value: "73"}},
 		{name: "S11 release access bearers request", module: "s11", key: "release-access-bearers-request", want: messageDefinition{Kind: matchGTPv2, Value: "170"}},
+		{name: "GTPv2 remote UE report notification", module: "s11", key: "remote-ue-report-notification", want: messageDefinition{Kind: matchGTPv2, Value: "40"}},
+		{name: "GTPv2 identification request", module: "s11", key: "identification-request", want: messageDefinition{Kind: matchGTPv2, Value: "128"}},
+		{name: "GTPv2 downlink data notification", module: "s11", key: "downlink-data-notification", want: messageDefinition{Kind: matchGTPv2, Value: "176"}},
+		{name: "GTPv2 suspend notification", module: "s11", key: "suspend-notification", want: messageDefinition{Kind: matchGTPv2, Value: "162"}},
+		{name: "GTPv2 MBMS session start request", module: "s11", key: "mbms-session-start-request", want: messageDefinition{Kind: matchGTPv2, Value: "231"}},
 		{name: "PFCP session establishment request", module: "pfcp", key: "pfcp-session-establishment-request", want: messageDefinition{Kind: matchPFCP, Value: "50"}},
 		{name: "PFCP session establishment response", module: "pfcp", key: "pfcp-session-establishment-response", want: messageDefinition{Kind: matchPFCP, Value: "51"}},
 	}
