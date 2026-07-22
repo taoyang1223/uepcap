@@ -126,4 +126,3 @@ func (h *Handler) GetPacketTree(w http.ResponseWriter, r *http.Request) {
 		Cached:   false,
 	})
 }
-

@@ -32,11 +32,12 @@ func (h *Handler) GetNASMessages(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	value, err := h.analysis.getOrCompute(ctx, id+"|nas-v2", func(ctx context.Context) (any, error) {
+	value, err := h.analysis.getOrCompute(ctx, id+"|nas-v4-source", func(ctx context.Context) (any, error) {
 		result, err := nasanalyzer.NewAnalyzer().AnalyzeMMFile(ctx, job.MergedPcap)
 		if err != nil {
 			return nil, err
 		}
+		annotateNASSourceFiles(result, h.packetSourceIndexBestEffort(ctx, id, job.OriginalFiles, job.MergedPcap))
 		result.Filename = displayPcapFilename(job.OriginalFiles, job.MergedPcap)
 		return result, nil
 	})
@@ -76,11 +77,12 @@ func (h *Handler) GetSMNASMessages(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	value, err := h.analysis.getOrCompute(ctx, id+"|sm-nas-v2", func(ctx context.Context) (any, error) {
+	value, err := h.analysis.getOrCompute(ctx, id+"|sm-nas-v4-source", func(ctx context.Context) (any, error) {
 		result, err := nasanalyzer.NewAnalyzer().AnalyzeSMFile(ctx, job.MergedPcap)
 		if err != nil {
 			return nil, err
 		}
+		annotateNASSourceFiles(result, h.packetSourceIndexBestEffort(ctx, id, job.OriginalFiles, job.MergedPcap))
 		result.Filename = displayPcapFilename(job.OriginalFiles, job.MergedPcap)
 		return result, nil
 	})
@@ -123,7 +125,7 @@ func (h *Handler) streamNASMessages(w http.ResponseWriter, r *http.Request, smOn
 		return
 	}
 
-	cacheKey := id + "|nas-v3-stream"
+	cacheKey := id + "|nas-v4-source-stream"
 	filter := func(result *nasanalyzer.AnalysisResult) *nasanalyzer.AnalysisResult {
 		if smOnly {
 			return nasanalyzer.FilterSMResult(result)
@@ -143,6 +145,9 @@ func (h *Handler) streamNASMessages(w http.ResponseWriter, r *http.Request, smOn
 
 	sendSSEEvent(w, flusher, "progress", map[string]any{"phase": "analyzing"})
 	result, err := nasanalyzer.NewAnalyzer().AnalyzeFileStream(r.Context(), job.MergedPcap, normalizedStreamBatchRows(req.BatchRows), func(progress analysisstream.Progress, result *nasanalyzer.AnalysisResult) error {
+		if progress.Done {
+			annotateNASSourceFiles(result, h.packetSourceIndexBestEffort(r.Context(), id, job.OriginalFiles, job.MergedPcap))
+		}
 		result.Filename = displayPcapFilename(job.OriginalFiles, job.MergedPcap)
 		event := "partial_result"
 		if progress.Done {

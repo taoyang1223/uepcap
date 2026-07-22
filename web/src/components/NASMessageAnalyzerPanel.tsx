@@ -6,6 +6,7 @@ import { readEventStream } from '../utils/eventStream'
 import { PaginationControls } from './PaginationControls'
 import { StreamProgressBar } from './StreamProgressBar'
 import type { StreamProgress } from './StreamProgressBar'
+import { CaptureFileHint } from './CaptureFileHint'
 
 interface NASMessageAnalyzerPanelProps {
   jobId: string
@@ -62,6 +63,7 @@ interface NASMessage {
   ngap_pdu?: string
   element_ids?: string[]
   wireshark_filter: string
+  source_file?: string
 }
 
 interface NASFlowStep {
@@ -88,6 +90,8 @@ interface NASFlow {
   step_count: number
   steps: NASFlowStep[]
   wireshark_filter: string
+  source_file?: string
+  response_file?: string
 }
 
 interface NASAnalysisResult {
@@ -164,6 +168,16 @@ export function NASMessageAnalyzerPanel({ jobId, analysisRunSignal = 0 }: NASMes
   const abortControllerRef = useRef<AbortController | null>(null)
   const pausedRef = useRef(false)
   const lastAnalysisRunSignalRef = useRef(0)
+
+  useEffect(() => {
+    if (!result) return
+    setSelectedFlow(current => current
+      ? result.flows.find(flow => flow.id === current.id) ?? current
+      : null)
+    setSelectedMessage(current => current
+      ? result.messages.find(message => message.id === current.id) ?? current
+      : null)
+  }, [result])
 
   const handleAnalyze = useCallback(async () => {
     if (loading && !paused) return
@@ -558,6 +572,7 @@ export function NASMessageAnalyzerPanel({ jobId, analysisRunSignal = 0 }: NASMes
       {selectedFlow && (
         <NASFlowDetailModal
           flow={selectedFlow}
+          filename={result?.filename}
           copied={copiedId === selectedFlow.id}
           onCopy={() => handleCopyFlowFilter(selectedFlow)}
           onClose={() => setSelectedFlow(null)}
@@ -567,6 +582,7 @@ export function NASMessageAnalyzerPanel({ jobId, analysisRunSignal = 0 }: NASMes
       {selectedMessage && (
         <NASDetailModal
           message={selectedMessage}
+          filename={result?.filename}
           copied={copiedId === selectedMessage.id}
           onCopy={() => handleCopyMessageFilter(selectedMessage)}
           onClose={() => setSelectedMessage(null)}
@@ -645,7 +661,7 @@ function FilterPill({ label }: { label: string }) {
   return <span className="rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-700">{label}</span>
 }
 
-function NASFlowDetailModal({ flow, copied, onCopy, onClose }: { flow: NASFlow; copied: boolean; onCopy: () => void; onClose: () => void }) {
+function NASFlowDetailModal({ flow, filename, copied, onCopy, onClose }: { flow: NASFlow; filename?: string; copied: boolean; onCopy: () => void; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
       <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
@@ -697,6 +713,7 @@ function NASFlowDetailModal({ flow, copied, onCopy, onClose }: { flow: NASFlow; 
           </DetailSection>
 
           <DetailSection icon={<Copy className="h-4 w-4" />} title="Wireshark 过滤器">
+            <CaptureFileHint filename={filename} sourceFile={flow.source_file} responseFile={flow.response_file} />
             <div className="flex items-center justify-between gap-3 rounded-lg bg-slate-100 px-4 py-3 font-mono text-xs text-slate-700">
               <span className="break-all">{flow.wireshark_filter}</span>
               <button type="button" onClick={event => { event.preventDefault(); event.stopPropagation(); onCopy() }} className="shrink-0 rounded-md bg-white px-2 py-1 font-sans text-xs font-bold text-indigo-600 shadow-sm hover:bg-indigo-50 active:scale-95">
@@ -710,7 +727,7 @@ function NASFlowDetailModal({ flow, copied, onCopy, onClose }: { flow: NASFlow; 
   )
 }
 
-function NASDetailModal({ message, copied, onCopy, onClose }: { message: NASMessage; copied: boolean; onCopy: () => void; onClose: () => void }) {
+function NASDetailModal({ message, filename, copied, onCopy, onClose }: { message: NASMessage; filename?: string; copied: boolean; onCopy: () => void; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
       <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
@@ -757,6 +774,7 @@ function NASDetailModal({ message, copied, onCopy, onClose }: { message: NASMess
           </DetailSection>
 
           <DetailSection icon={<Copy className="h-4 w-4" />} title="Wireshark 过滤器">
+            <CaptureFileHint filename={filename} sourceFile={message.source_file} />
             <div className="flex items-center justify-between gap-3 rounded-lg bg-slate-100 px-4 py-3 font-mono text-xs text-slate-700">
               <span className="break-all">{message.wireshark_filter}</span>
               <button type="button" onClick={event => { event.preventDefault(); event.stopPropagation(); onCopy() }} className="shrink-0 rounded-md bg-white px-2 py-1 font-sans text-xs font-bold text-indigo-600 shadow-sm hover:bg-indigo-50 active:scale-95">

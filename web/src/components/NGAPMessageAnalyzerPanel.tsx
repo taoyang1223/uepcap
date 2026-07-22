@@ -6,6 +6,7 @@ import { readEventStream } from '../utils/eventStream'
 import { PaginationControls } from './PaginationControls'
 import { StreamProgressBar } from './StreamProgressBar'
 import type { StreamProgress } from './StreamProgressBar'
+import { CaptureFileHint } from './CaptureFileHint'
 
 interface NGAPMessageAnalyzerPanelProps {
   jobId: string
@@ -61,6 +62,7 @@ interface NGAPMessage {
   gtp_teid?: string
   transaction_capable: boolean
   wireshark_filter: string
+  source_file?: string
 }
 
 interface TransactionStep {
@@ -88,6 +90,8 @@ interface NGAPTransaction {
   step_count: number
   steps: TransactionStep[]
   wireshark_filter: string
+  source_file?: string
+  response_file?: string
 }
 
 interface NGAPAnalysisResult {
@@ -166,6 +170,16 @@ export function NGAPMessageAnalyzerPanel({ jobId, analysisRunSignal = 0 }: NGAPM
   const abortControllerRef = useRef<AbortController | null>(null)
   const pausedRef = useRef(false)
   const lastAnalysisRunSignalRef = useRef(0)
+
+  useEffect(() => {
+    if (!result) return
+    setSelectedTransaction(current => current
+      ? result.transactions.find(transaction => transaction.id === current.id) ?? current
+      : null)
+    setSelectedMessage(current => current
+      ? result.messages.find(message => message.id === current.id) ?? current
+      : null)
+  }, [result])
 
   const fetchAnalysis = useCallback(async (nextProcedureFilter: string) => {
     abortControllerRef.current?.abort()
@@ -560,6 +574,7 @@ export function NGAPMessageAnalyzerPanel({ jobId, analysisRunSignal = 0 }: NGAPM
       {selectedTransaction && (
         <TransactionDetailModal
           transaction={selectedTransaction}
+          filename={result?.filename}
           copied={copiedId === selectedTransaction.id}
           onCopy={() => handleCopy(selectedTransaction.id, selectedTransaction.wireshark_filter)}
           onClose={() => setSelectedTransaction(null)}
@@ -568,6 +583,7 @@ export function NGAPMessageAnalyzerPanel({ jobId, analysisRunSignal = 0 }: NGAPM
       {selectedMessage && (
         <MessageDetailModal
           message={selectedMessage}
+          filename={result?.filename}
           copied={copiedId === selectedMessage.id}
           onCopy={() => handleCopy(selectedMessage.id, selectedMessage.wireshark_filter)}
           onClose={() => setSelectedMessage(null)}
@@ -691,7 +707,7 @@ function EmptyNGAPState() {
   )
 }
 
-function TransactionDetailModal({ transaction, copied, onCopy, onClose }: { transaction: NGAPTransaction; copied: boolean; onCopy: () => void; onClose: () => void }) {
+function TransactionDetailModal({ transaction, filename, copied, onCopy, onClose }: { transaction: NGAPTransaction; filename?: string; copied: boolean; onCopy: () => void; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
       <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
@@ -725,14 +741,14 @@ function TransactionDetailModal({ transaction, copied, onCopy, onClose }: { tran
               ))}
             </div>
           </DetailSection>
-          <FilterCopy filter={transaction.wireshark_filter} copied={copied} onCopy={onCopy} />
+          <FilterCopy filter={transaction.wireshark_filter} filename={filename} sourceFile={transaction.source_file} responseFile={transaction.response_file} copied={copied} onCopy={onCopy} />
         </div>
       </div>
     </div>
   )
 }
 
-function MessageDetailModal({ message, copied, onCopy, onClose }: { message: NGAPMessage; copied: boolean; onCopy: () => void; onClose: () => void }) {
+function MessageDetailModal({ message, filename, copied, onCopy, onClose }: { message: NGAPMessage; filename?: string; copied: boolean; onCopy: () => void; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
       <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
@@ -757,7 +773,7 @@ function MessageDetailModal({ message, copied, onCopy, onClose }: { message: NGA
               <DetailValue label="承载 NAS" value={message.has_nas ? '是' : '否'} />
             </div>
           </DetailSection>
-          <FilterCopy filter={message.wireshark_filter} copied={copied} onCopy={onCopy} />
+          <FilterCopy filter={message.wireshark_filter} filename={filename} sourceFile={message.source_file} copied={copied} onCopy={onCopy} />
         </div>
       </div>
     </div>
@@ -804,9 +820,10 @@ function DetailValue({ label, value }: { label: string; value: string | number }
   )
 }
 
-function FilterCopy({ filter, copied, onCopy }: { filter: string; copied: boolean; onCopy: () => void }) {
+function FilterCopy({ filter, filename, sourceFile, responseFile, copied, onCopy }: { filter: string; filename?: string; sourceFile?: string; responseFile?: string; copied: boolean; onCopy: () => void }) {
   return (
     <DetailSection icon={<Copy className="h-4 w-4" />} title="Wireshark 过滤器">
+      <CaptureFileHint filename={filename} sourceFile={sourceFile} responseFile={responseFile} />
       <div className="flex items-center justify-between gap-3 rounded-lg bg-slate-100 px-4 py-3 font-mono text-xs text-slate-700">
         <span className="break-all">{filter}</span>
         <button type="button" onClick={event => { event.preventDefault(); event.stopPropagation(); onCopy() }} className="shrink-0 rounded-md bg-white px-2 py-1 font-sans text-xs font-bold text-sky-600 shadow-sm hover:bg-sky-50 active:scale-95">{copied ? '已复制' : '复制'}</button>

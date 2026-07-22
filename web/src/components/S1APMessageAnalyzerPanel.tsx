@@ -6,6 +6,7 @@ import { readEventStream } from '../utils/eventStream'
 import { PaginationControls } from './PaginationControls'
 import { StreamProgressBar } from './StreamProgressBar'
 import type { StreamProgress } from './StreamProgressBar'
+import { CaptureFileHint } from './CaptureFileHint'
 
 interface S1APMessageAnalyzerPanelProps {
   jobId: string
@@ -62,6 +63,7 @@ interface S1APMessage {
   erab_id?: string
   transaction_capable: boolean
   wireshark_filter: string
+  source_file?: string
 }
 
 interface TransactionStep {
@@ -90,6 +92,8 @@ interface S1APTransaction {
   step_count: number
   steps: TransactionStep[]
   wireshark_filter: string
+  source_file?: string
+  response_file?: string
 }
 
 interface S1APAnalysisResult {
@@ -257,6 +261,16 @@ export function S1APMessageAnalyzerPanel({ jobId, analysisRunSignal = 0 }: S1APM
   const abortControllerRef = useRef<AbortController | null>(null)
   const pausedRef = useRef(false)
   const lastAnalysisRunSignalRef = useRef(0)
+
+  useEffect(() => {
+    if (!result) return
+    setSelectedTransaction(current => current
+      ? result.transactions.find(transaction => transaction.id === current.id) ?? current
+      : null)
+    setSelectedMessage(current => current
+      ? result.messages.find(message => message.id === current.id) ?? current
+      : null)
+  }, [result])
 
   const fetchAnalysis = useCallback(async (nextProcedureFilter: string) => {
     abortControllerRef.current?.abort()
@@ -669,6 +683,7 @@ export function S1APMessageAnalyzerPanel({ jobId, analysisRunSignal = 0 }: S1APM
       {selectedTransaction && (
         <TransactionDetailModal
           transaction={selectedTransaction}
+          filename={result?.filename}
           copied={copiedId === selectedTransaction.id}
           onCopy={() => handleCopy(selectedTransaction.id, selectedTransaction.wireshark_filter)}
           onClose={() => setSelectedTransaction(null)}
@@ -677,6 +692,7 @@ export function S1APMessageAnalyzerPanel({ jobId, analysisRunSignal = 0 }: S1APM
       {selectedMessage && (
         <MessageDetailModal
           message={selectedMessage}
+          filename={result?.filename}
           copied={copiedId === selectedMessage.id}
           onCopy={() => handleCopy(selectedMessage.id, selectedMessage.wireshark_filter)}
           onClose={() => setSelectedMessage(null)}
@@ -837,7 +853,7 @@ function EmptyS1APState() {
   )
 }
 
-function TransactionDetailModal({ transaction, copied, onCopy, onClose }: { transaction: S1APTransaction; copied: boolean; onCopy: () => void; onClose: () => void }) {
+function TransactionDetailModal({ transaction, filename, copied, onCopy, onClose }: { transaction: S1APTransaction; filename?: string; copied: boolean; onCopy: () => void; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
       <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
@@ -878,14 +894,14 @@ function TransactionDetailModal({ transaction, copied, onCopy, onClose }: { tran
               ))}
             </div>
           </DetailSection>
-          <FilterCopy filter={transaction.wireshark_filter} copied={copied} onCopy={onCopy} />
+          <FilterCopy filter={transaction.wireshark_filter} filename={filename} sourceFile={transaction.source_file} responseFile={transaction.response_file} copied={copied} onCopy={onCopy} />
         </div>
       </div>
     </div>
   )
 }
 
-function MessageDetailModal({ message, copied, onCopy, onClose }: { message: S1APMessage; copied: boolean; onCopy: () => void; onClose: () => void }) {
+function MessageDetailModal({ message, filename, copied, onCopy, onClose }: { message: S1APMessage; filename?: string; copied: boolean; onCopy: () => void; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
       <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
@@ -917,7 +933,7 @@ function MessageDetailModal({ message, copied, onCopy, onClose }: { message: S1A
               <DetailValue label="包含 NAS" value={message.has_nas ? '是' : '否'} />
             </div>
           </DetailSection>
-          <FilterCopy filter={message.wireshark_filter} copied={copied} onCopy={onCopy} />
+          <FilterCopy filter={message.wireshark_filter} filename={filename} sourceFile={message.source_file} copied={copied} onCopy={onCopy} />
         </div>
       </div>
     </div>
@@ -959,7 +975,7 @@ function DetailValue({ label, value }: { label: string; value: string }) {
   )
 }
 
-function FilterCopy({ filter, copied, onCopy }: { filter: string; copied: boolean; onCopy: () => void }) {
+function FilterCopy({ filter, filename, sourceFile, responseFile, copied, onCopy }: { filter: string; filename?: string; sourceFile?: string; responseFile?: string; copied: boolean; onCopy: () => void }) {
   return (
     <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
       <div className="mb-2 flex items-center justify-between gap-3">
@@ -969,6 +985,7 @@ function FilterCopy({ filter, copied, onCopy }: { filter: string; copied: boolea
           {copied ? '已复制' : '复制'}
         </button>
       </div>
+      <CaptureFileHint filename={filename} sourceFile={sourceFile} responseFile={responseFile} />
       <pre className="max-h-36 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-white p-3 text-xs font-semibold text-slate-700">{filter}</pre>
     </div>
   )

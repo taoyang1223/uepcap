@@ -6,6 +6,7 @@ import { readEventStream } from '../utils/eventStream'
 import { PaginationControls } from './PaginationControls'
 import { StreamProgressBar } from './StreamProgressBar'
 import type { StreamProgress } from './StreamProgressBar'
+import { CaptureFileHint } from './CaptureFileHint'
 
 interface S11MessageAnalyzerPanelProps {
   jobId: string
@@ -58,6 +59,8 @@ interface S11Transaction {
   retransmit_count: number
   retransmit_frames?: number[]
   wireshark_filter: string
+  source_file?: string
+  response_file?: string
 }
 
 interface ProcedureCount {
@@ -117,6 +120,13 @@ export function S11MessageAnalyzerPanel({ jobId, analysisRunSignal = 0 }: S11Mes
   const abortControllerRef = useRef<AbortController | null>(null)
   const pausedRef = useRef(false)
   const lastAnalysisRunSignalRef = useRef(0)
+
+  useEffect(() => {
+    if (!result) return
+    setSelectedTransaction(current => current
+      ? result.transactions.find(transaction => transaction.id === current.id) ?? current
+      : null)
+  }, [result])
 
   const handleAnalyze = useCallback(async () => {
     if (loading && !paused) return
@@ -402,7 +412,7 @@ export function S11MessageAnalyzerPanel({ jobId, analysisRunSignal = 0 }: S11Mes
         </div>
       )}
 
-      {selectedTransaction && <TransactionDetailModal transaction={selectedTransaction} copied={copiedId === selectedTransaction.id} onCopy={() => handleCopy(selectedTransaction.id, selectedTransaction.wireshark_filter)} onClose={() => setSelectedTransaction(null)} />}
+      {selectedTransaction && <TransactionDetailModal transaction={selectedTransaction} filename={result?.filename} copied={copiedId === selectedTransaction.id} onCopy={() => handleCopy(selectedTransaction.id, selectedTransaction.wireshark_filter)} onClose={() => setSelectedTransaction(null)} />}
     </div>
   )
 }
@@ -442,7 +452,7 @@ function FilterPill({ label }: { label: string }) {
   return <span className="rounded-full border border-orange-200 bg-orange-50 px-3 py-1 text-xs font-bold text-orange-700">{label}</span>
 }
 
-function TransactionDetailModal({ transaction, copied, onCopy, onClose }: { transaction: S11Transaction; copied: boolean; onCopy: () => void; onClose: () => void }) {
+function TransactionDetailModal({ transaction, filename, copied, onCopy, onClose }: { transaction: S11Transaction; filename?: string; copied: boolean; onCopy: () => void; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
       <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
@@ -451,7 +461,7 @@ function TransactionDetailModal({ transaction, copied, onCopy, onClose }: { tran
           <div className="rounded-xl border border-orange-200 bg-orange-50 px-5 py-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-sm font-bold text-orange-700">{transaction.request_type}</p><p className="mt-1 text-2xl font-black text-slate-900">{transaction.response_type || 'No Response'}</p></div><StatusBadge status={transaction.status} /></div></div>
           <DetailSection icon={<Clock3 className="h-4 w-4" />} title="时间信息"><div className="grid grid-cols-1 gap-3 md:grid-cols-3"><DetailValue label="请求时间" value={formatTimestamp(transaction.request_time)} /><DetailValue label="响应时间" value={transaction.response_time ? formatTimestamp(transaction.response_time) : '-'} /><DetailValue label="耗时" value={transaction.response_frame ? formatDuration(transaction.response_time_ms) : '-'} /></div></DetailSection>
           <DetailSection icon={<Activity className="h-4 w-4" />} title="隧道与结果"><div className="grid grid-cols-1 gap-3 md:grid-cols-2"><DetailValue label="请求 TEID" value={transaction.request_teid || '-'} /><DetailValue label="响应 TEID" value={transaction.response_teid || '-'} /><DetailValue label="Cause" value={`${transaction.cause || '-'} ${transaction.cause_name || ''}`} /><DetailValue label="重传帧" value={transaction.retransmit_frames?.length ? transaction.retransmit_frames.join(', ') : '-'} /><DetailValue label="APN" value={transaction.apn || '-'} /><DetailValue label="F-TEID IPv4" value={transaction.f_teid_ipv4 || '-'} /></div></DetailSection>
-          <FilterCopy filter={transaction.wireshark_filter} copied={copied} onCopy={onCopy} />
+          <FilterCopy filter={transaction.wireshark_filter} filename={filename} sourceFile={transaction.source_file} responseFile={transaction.response_file} copied={copied} onCopy={onCopy} />
         </div>
       </div>
     </div>
@@ -470,8 +480,8 @@ function DetailValue({ label, value }: { label: string; value: string | number }
   return <div><p className="mb-1 text-xs font-semibold text-slate-500">{label}</p><p className="break-all font-mono text-sm font-bold text-slate-900">{value}</p></div>
 }
 
-function FilterCopy({ filter, copied, onCopy }: { filter: string; copied: boolean; onCopy: () => void }) {
-  return <DetailSection icon={<Copy className="h-4 w-4" />} title="Wireshark 过滤器"><div className="flex items-center justify-between gap-3 rounded-lg bg-slate-100 px-4 py-3 font-mono text-xs text-slate-700"><span className="break-all">{filter}</span><button type="button" onClick={event => { event.preventDefault(); event.stopPropagation(); onCopy() }} className="shrink-0 rounded-md bg-white px-2 py-1 font-sans text-xs font-bold text-orange-600 shadow-sm hover:bg-orange-50 active:scale-95">{copied ? '已复制' : '复制'}</button></div></DetailSection>
+function FilterCopy({ filter, filename, sourceFile, responseFile, copied, onCopy }: { filter: string; filename?: string; sourceFile?: string; responseFile?: string; copied: boolean; onCopy: () => void }) {
+  return <DetailSection icon={<Copy className="h-4 w-4" />} title="Wireshark 过滤器"><CaptureFileHint filename={filename} sourceFile={sourceFile} responseFile={responseFile} /><div className="flex items-center justify-between gap-3 rounded-lg bg-slate-100 px-4 py-3 font-mono text-xs text-slate-700"><span className="break-all">{filter}</span><button type="button" onClick={event => { event.preventDefault(); event.stopPropagation(); onCopy() }} className="shrink-0 rounded-md bg-white px-2 py-1 font-sans text-xs font-bold text-orange-600 shadow-sm hover:bg-orange-50 active:scale-95">{copied ? '已复制' : '复制'}</button></div></DetailSection>
 }
 
 function formatDuration(value?: number) {

@@ -46,6 +46,7 @@ type Message struct {
 	TransactionCapable bool      `json:"transaction_capable"`
 	WiresharkFilter    string    `json:"wireshark_filter"`
 	StatsContribution  int       `json:"-"`
+	SourceFile         string    `json:"source_file,omitempty"`
 }
 
 type Transaction struct {
@@ -66,6 +67,8 @@ type Transaction struct {
 	StepCount       int               `json:"step_count"`
 	Steps           []TransactionStep `json:"steps"`
 	WiresharkFilter string            `json:"wireshark_filter"`
+	SourceFile      string            `json:"source_file,omitempty"`
+	ResponseFile    string            `json:"response_file,omitempty"`
 }
 
 type TransactionStep struct {
@@ -74,6 +77,7 @@ type TransactionStep struct {
 	Direction     Direction `json:"direction"`
 	ProcedureName string    `json:"procedure_name"`
 	PDUType       PDUType   `json:"pdu_type"`
+	SourceFile    string    `json:"source_file,omitempty"`
 }
 
 type AnalysisResult struct {

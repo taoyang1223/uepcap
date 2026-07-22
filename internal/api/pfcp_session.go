@@ -36,7 +36,7 @@ func (h *Handler) GetPFCPSessions(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	timeoutSeconds := req.TimeoutSeconds
-	value, err := h.analysis.getOrCompute(ctx, fmt.Sprintf("%s|pfcp-transaction-v10|timeout=%d", id, timeoutSeconds), func(ctx context.Context) (any, error) {
+	value, err := h.analysis.getOrCompute(ctx, fmt.Sprintf("%s|pfcp-transaction-v11-source|timeout=%d", id, timeoutSeconds), func(ctx context.Context) (any, error) {
 		analyzer := pfcpsession.NewAnalyzer()
 		if timeoutSeconds > 0 {
 			analyzer.SetTimeout(time.Duration(timeoutSeconds) * time.Second)
@@ -45,6 +45,7 @@ func (h *Handler) GetPFCPSessions(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
+		annotatePFCPSourceFiles(result, h.packetSourceIndexBestEffort(ctx, id, job.OriginalFiles, job.MergedPcap))
 		result.Filename = displayPcapFilename(job.OriginalFiles, job.MergedPcap)
 		return result, nil
 	})
@@ -84,7 +85,7 @@ func (h *Handler) StreamPFCPSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	timeoutSeconds := req.TimeoutSeconds
-	cacheKey := fmt.Sprintf("%s|pfcp-transaction-v10-stream|timeout=%d", id, timeoutSeconds)
+	cacheKey := fmt.Sprintf("%s|pfcp-transaction-v11-source-stream|timeout=%d", id, timeoutSeconds)
 	if value, ok := h.analysis.get(cacheKey); ok {
 		if result, ok := value.(*pfcpsession.AnalysisResult); ok {
 			sendSSEEvent(w, flusher, "done", map[string]any{
@@ -105,6 +106,9 @@ func (h *Handler) StreamPFCPSessions(w http.ResponseWriter, r *http.Request) {
 		analyzer.SetTimeout(time.Duration(timeoutSeconds) * time.Second)
 	}
 	result, err := analyzer.AnalyzeFileStream(r.Context(), job.MergedPcap, normalizedStreamBatchRows(req.BatchRows), func(progress pfcpsession.StreamProgress, result *pfcpsession.AnalysisResult) error {
+		if progress.Done {
+			annotatePFCPSourceFiles(result, h.packetSourceIndexBestEffort(r.Context(), id, job.OriginalFiles, job.MergedPcap))
+		}
 		result.Filename = displayPcapFilename(job.OriginalFiles, job.MergedPcap)
 		out := windowPFCPAnalysis(result, normalizedAnalysisLimit(req.Limit), req.ResponseTimeFilter)
 		event := "partial_result"

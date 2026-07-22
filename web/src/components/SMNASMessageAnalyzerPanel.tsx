@@ -6,6 +6,7 @@ import { readEventStream } from '../utils/eventStream'
 import { PaginationControls } from './PaginationControls'
 import { StreamProgressBar } from './StreamProgressBar'
 import type { StreamProgress } from './StreamProgressBar'
+import { CaptureFileHint } from './CaptureFileHint'
 
 interface SMNASMessageAnalyzerPanelProps {
   jobId: string
@@ -52,6 +53,7 @@ interface SMNASMessage {
   ngap_procedure_code?: string
   ngap_pdu?: string
   wireshark_filter: string
+  source_file?: string
 }
 
 interface SMNASFlowStep {
@@ -76,6 +78,8 @@ interface SMNASFlow {
   step_count: number
   steps: SMNASFlowStep[]
   wireshark_filter: string
+  source_file?: string
+  response_file?: string
 }
 
 interface SMNASAnalysisResult {
@@ -139,6 +143,16 @@ export function SMNASMessageAnalyzerPanel({ jobId, analysisRunSignal = 0 }: SMNA
   const abortControllerRef = useRef<AbortController | null>(null)
   const pausedRef = useRef(false)
   const lastAnalysisRunSignalRef = useRef(0)
+
+  useEffect(() => {
+    if (!result) return
+    setSelectedFlow(current => current
+      ? result.flows.find(flow => flow.id === current.id) ?? current
+      : null)
+    setSelectedMessage(current => current
+      ? result.messages.find(message => message.id === current.id) ?? current
+      : null)
+  }, [result])
 
   const handleAnalyze = useCallback(async () => {
     if (loading && !paused) return
@@ -426,6 +440,7 @@ export function SMNASMessageAnalyzerPanel({ jobId, analysisRunSignal = 0 }: SMNA
       {selectedFlow && (
         <SMNASFlowDetailModal
           flow={selectedFlow}
+          filename={result?.filename}
           copied={copiedId === selectedFlow.id}
           onCopy={() => handleCopy(selectedFlow.id, selectedFlow.wireshark_filter)}
           onClose={() => setSelectedFlow(null)}
@@ -435,6 +450,7 @@ export function SMNASMessageAnalyzerPanel({ jobId, analysisRunSignal = 0 }: SMNA
       {selectedMessage && (
         <SMNASMessageDetailModal
           message={selectedMessage}
+          filename={result?.filename}
           copied={copiedId === selectedMessage.id}
           onCopy={() => handleCopy(selectedMessage.id, selectedMessage.wireshark_filter)}
           onClose={() => setSelectedMessage(null)}
@@ -505,7 +521,7 @@ function FilterPill({ label }: { label: string }) {
   return <span className="rounded-full border border-cyan-200 bg-cyan-50 px-3 py-1 text-xs font-bold text-cyan-700">{label}</span>
 }
 
-function SMNASFlowDetailModal({ flow, copied, onCopy, onClose }: { flow: SMNASFlow; copied: boolean; onCopy: () => void; onClose: () => void }) {
+function SMNASFlowDetailModal({ flow, filename, copied, onCopy, onClose }: { flow: SMNASFlow; filename?: string; copied: boolean; onCopy: () => void; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
       <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
@@ -542,14 +558,14 @@ function SMNASFlowDetailModal({ flow, copied, onCopy, onClose }: { flow: SMNASFl
             </div>
           </DetailSection>
 
-          <CopyFilter filter={flow.wireshark_filter} copied={copied} onCopy={onCopy} />
+          <CopyFilter filter={flow.wireshark_filter} filename={filename} sourceFile={flow.source_file} responseFile={flow.response_file} copied={copied} onCopy={onCopy} />
         </div>
       </div>
     </div>
   )
 }
 
-function SMNASMessageDetailModal({ message, copied, onCopy, onClose }: { message: SMNASMessage; copied: boolean; onCopy: () => void; onClose: () => void }) {
+function SMNASMessageDetailModal({ message, filename, copied, onCopy, onClose }: { message: SMNASMessage; filename?: string; copied: boolean; onCopy: () => void; onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
       <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white shadow-2xl">
@@ -583,7 +599,7 @@ function SMNASMessageDetailModal({ message, copied, onCopy, onClose }: { message
             </div>
           </DetailSection>
 
-          <CopyFilter filter={message.wireshark_filter} copied={copied} onCopy={onCopy} />
+          <CopyFilter filter={message.wireshark_filter} filename={filename} sourceFile={message.source_file} copied={copied} onCopy={onCopy} />
         </div>
       </div>
     </div>
@@ -630,9 +646,10 @@ function DetailValue({ label, value, alignRight = false }: { label: string; valu
   )
 }
 
-function CopyFilter({ filter, copied, onCopy }: { filter: string; copied: boolean; onCopy: () => void }) {
+function CopyFilter({ filter, filename, sourceFile, responseFile, copied, onCopy }: { filter: string; filename?: string; sourceFile?: string; responseFile?: string; copied: boolean; onCopy: () => void }) {
   return (
     <DetailSection icon={<Copy className="h-4 w-4" />} title="Wireshark 过滤器">
+      <CaptureFileHint filename={filename} sourceFile={sourceFile} responseFile={responseFile} />
       <div className="flex items-center justify-between gap-3 rounded-lg bg-slate-100 px-4 py-3 font-mono text-xs text-slate-700">
         <span className="break-all">{filter}</span>
         <button type="button" onClick={event => { event.preventDefault(); event.stopPropagation(); onCopy() }} className="shrink-0 rounded-md bg-white px-2 py-1 font-sans text-xs font-bold text-cyan-600 shadow-sm hover:bg-cyan-50 active:scale-95">

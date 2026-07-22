@@ -33,11 +33,12 @@ func (h *Handler) GetS1APMessages(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	value, err := h.analysis.getOrCompute(ctx, id+"|s1ap-v4", func(ctx context.Context) (any, error) {
+	value, err := h.analysis.getOrCompute(ctx, id+"|s1ap-v6-source", func(ctx context.Context) (any, error) {
 		result, err := s1apanalyzer.NewAnalyzer().AnalyzeFile(ctx, job.MergedPcap)
 		if err != nil {
 			return nil, err
 		}
+		annotateS1APSourceFiles(result, h.packetSourceIndexBestEffort(ctx, id, job.OriginalFiles, job.MergedPcap))
 		result.Filename = displayPcapFilename(job.OriginalFiles, job.MergedPcap)
 		return result, nil
 	})
@@ -76,7 +77,7 @@ func (h *Handler) StreamS1APMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cacheKey := id + "|s1ap-v5-stream"
+	cacheKey := id + "|s1ap-v6-source-stream"
 	if value, ok := h.analysis.get(cacheKey); ok {
 		if result, ok := value.(*s1apanalyzer.AnalysisResult); ok {
 			sendSSEEvent(w, flusher, "done", map[string]any{
@@ -90,6 +91,9 @@ func (h *Handler) StreamS1APMessages(w http.ResponseWriter, r *http.Request) {
 
 	sendSSEEvent(w, flusher, "progress", map[string]any{"phase": "analyzing"})
 	result, err := s1apanalyzer.NewAnalyzer().AnalyzeFileStream(r.Context(), job.MergedPcap, normalizedStreamBatchRows(req.BatchRows), func(progress analysisstream.Progress, result *s1apanalyzer.AnalysisResult) error {
+		if progress.Done {
+			annotateS1APSourceFiles(result, h.packetSourceIndexBestEffort(r.Context(), id, job.OriginalFiles, job.MergedPcap))
+		}
 		result.Filename = displayPcapFilename(job.OriginalFiles, job.MergedPcap)
 		event := "partial_result"
 		if progress.Done {

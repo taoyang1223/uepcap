@@ -615,4 +615,3 @@ func TestIsPFCPSessionMessage(t *testing.T) {
 		}
 	}
 }
-

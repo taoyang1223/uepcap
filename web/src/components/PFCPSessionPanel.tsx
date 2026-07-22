@@ -4,6 +4,7 @@ import { Activity, AlertTriangle, CheckCircle2, ChevronDown, Clock3, Copy, FileT
 import { copyText } from '../utils/clipboard'
 import { readEventStream } from '../utils/eventStream'
 import { PaginationControls } from './PaginationControls'
+import { CaptureFileHint } from './CaptureFileHint'
 
 interface PFCPSessionPanelProps {
   jobId: string
@@ -67,6 +68,8 @@ interface PFCPSessionTransaction {
   retransmit_frames?: number[]
   wireshark_filter: string
   seid_filter?: string
+  source_file?: string
+  response_file?: string
 }
 
 interface PFCPSessionResult {
@@ -140,6 +143,13 @@ export function PFCPSessionPanel({ jobId, analysisRunSignal = 0 }: PFCPSessionPa
   const abortControllerRef = useRef<AbortController | null>(null)
   const pausedRef = useRef(false)
   const lastAnalysisRunSignalRef = useRef(0)
+
+  useEffect(() => {
+    if (!result) return
+    setSelectedTransaction(current => current
+      ? result.transactions.find(transaction => transaction.id === current.id) ?? current
+      : null)
+  }, [result])
 
   const handleAnalyze = useCallback(async () => {
     if (loading && !paused) return
@@ -564,6 +574,7 @@ export function PFCPSessionPanel({ jobId, analysisRunSignal = 0 }: PFCPSessionPa
       {selectedTransaction && (
         <TransactionDetailModal
           transaction={selectedTransaction}
+          filename={result?.filename}
           copiedFilter={copiedKey === `${selectedTransaction.id}:filter`}
           copiedSEIDFilter={copiedKey === `${selectedTransaction.id}:seid`}
           onCopyFilter={() => handleCopyText(`${selectedTransaction.id}:filter`, selectedTransaction.wireshark_filter)}
@@ -666,6 +677,7 @@ function ResponseMetric({ active = false, label, value, tone, onClick }: { activ
 
 function TransactionDetailModal({
   transaction,
+  filename,
   copiedFilter,
   copiedSEIDFilter,
   onCopyFilter,
@@ -673,6 +685,7 @@ function TransactionDetailModal({
   onClose,
 }: {
   transaction: PFCPSessionTransaction
+  filename?: string
   copiedFilter: boolean
   copiedSEIDFilter: boolean
   onCopyFilter: () => void
@@ -747,6 +760,7 @@ function TransactionDetailModal({
           </DetailSection>
 
           <DetailSection title="Wireshark 过滤器">
+            <CaptureFileHint filename={filename} sourceFile={transaction.source_file} responseFile={transaction.response_file} />
             <div className="flex w-full items-start gap-2 rounded-lg bg-slate-950 px-4 py-3 text-cyan-200">
               <Copy className="mt-0.5 h-4 w-4 flex-shrink-0" />
               <code className="min-w-0 flex-1 break-all text-xs leading-5">{transaction.wireshark_filter}</code>
@@ -756,6 +770,7 @@ function TransactionDetailModal({
 
           {transaction.seid_filter && (
             <DetailSection title="SEID 过滤器">
+              <CaptureFileHint filename={filename} sourceFile={transaction.source_file} responseFile={transaction.response_file} />
               <div className="flex w-full items-start gap-2 rounded-lg bg-slate-950 px-4 py-3 text-cyan-200">
                 <Copy className="mt-0.5 h-4 w-4 flex-shrink-0" />
                 <code className="min-w-0 flex-1 break-all text-xs leading-5">{transaction.seid_filter}</code>

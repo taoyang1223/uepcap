@@ -58,6 +58,8 @@ type Transaction struct {
 
 	WiresharkFilter string `json:"wireshark_filter"`
 	SEIDFilter      string `json:"seid_filter,omitempty"`
+	SourceFile      string `json:"source_file,omitempty"`
+	ResponseFile    string `json:"response_file,omitempty"`
 }
 
 type AnalysisResult struct {

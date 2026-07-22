@@ -121,6 +121,61 @@ func TestManagerRestoreJob(t *testing.T) {
 	}
 }
 
+func TestManagerRestoreJobPreservesOriginalFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, time.Hour)
+	created, err := mgr.CreateJob()
+	if err != nil {
+		t.Fatalf("CreateJob failed: %v", err)
+	}
+	jobDir := mgr.GetJobDir(created.ID)
+	mergedPcap := filepath.Join(jobDir, "merged.pcap")
+	if err := os.WriteFile(mergedPcap, []byte("pcap"), 0644); err != nil {
+		t.Fatalf("write merged pcap failed: %v", err)
+	}
+	originalFiles := []string{
+		filepath.Join(jobDir, "source-a.pcap.gz"),
+		filepath.Join(jobDir, "source-b.pcapng"),
+	}
+	mgr.SetJobMergedPcap(created.ID, mergedPcap, originalFiles)
+
+	restarted := NewManager(tmpDir, time.Hour)
+	restored, ok := restarted.RestoreJob(created.ID)
+	if !ok {
+		t.Fatal("RestoreJob should restore persisted job")
+	}
+	if len(restored.OriginalFiles) != 2 || restored.OriginalFiles[0] != originalFiles[0] || restored.OriginalFiles[1] != originalFiles[1] {
+		t.Fatalf("restored original files = %#v, want %#v", restored.OriginalFiles, originalFiles)
+	}
+}
+
+func TestManagerRestoreLegacyJobUsesUsageRecordFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	jobID := "legacy-job"
+	jobDir := filepath.Join(tmpDir, "tmp", jobID)
+	if err := os.MkdirAll(jobDir, 0755); err != nil {
+		t.Fatalf("create job dir failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(jobDir, "merged.pcap"), []byte("pcap"), 0644); err != nil {
+		t.Fatalf("write merged pcap failed: %v", err)
+	}
+	usageRecords := `[{"job_id":"legacy-job","files":[{"name":"source-a.pcap.gz"},{"name":"source-b.pcap7"}]}]`
+	if err := os.WriteFile(filepath.Join(tmpDir, "usage_records.json"), []byte(usageRecords), 0644); err != nil {
+		t.Fatalf("write usage records failed: %v", err)
+	}
+
+	restored, ok := NewManager(tmpDir, time.Hour).RestoreJob(jobID)
+	if !ok {
+		t.Fatal("RestoreJob should restore legacy job")
+	}
+	if len(restored.OriginalFiles) != 2 {
+		t.Fatalf("restored original files = %#v, want two files", restored.OriginalFiles)
+	}
+	if filepath.Base(restored.OriginalFiles[0]) != "source-a.pcap.gz" || filepath.Base(restored.OriginalFiles[1]) != "source-b.pcap7" {
+		t.Fatalf("unexpected restored original files: %#v", restored.OriginalFiles)
+	}
+}
+
 func TestManagerIMSIList(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "uepcap-test-*")
 	if err != nil {

@@ -2,7 +2,9 @@ package job
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,7 +12,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	pcappkg "gitee.com/yangdadayyds/uepcap/internal/pcap"
 )
+
+const jobManifestFilename = ".job.json"
 
 // ExportTask represents an async export task
 type ExportTask struct {
@@ -161,7 +167,8 @@ func (m *Manager) RestoreJob(id string) (*Job, bool) {
 		return job, true
 	}
 
-	mergedPath := filepath.Join(m.dataDir, "tmp", id, "merged.pcap")
+	jobDir := filepath.Join(m.dataDir, "tmp", id)
+	mergedPath := filepath.Join(jobDir, "merged.pcap")
 	info, err := os.Stat(mergedPath)
 	if err != nil || info.IsDir() {
 		return nil, false
@@ -171,7 +178,7 @@ func (m *Manager) RestoreJob(id string) (*Job, bool) {
 		ID:              id,
 		CreatedAt:       info.ModTime(),
 		MergedPcap:      mergedPath,
-		OriginalFiles:   []string{filepath.Base(mergedPath)},
+		OriginalFiles:   m.restoreOriginalFiles(id, jobDir, mergedPath),
 		Status:          "ready",
 		ExportCache:     make(map[string]string),
 		TextExportCache: make(map[string]string),
@@ -251,6 +258,80 @@ func (m *Manager) SetJobMergedPcap(id, pcapPath string, originalFiles []string) 
 	job.MergedPcap = pcapPath
 	job.OriginalFiles = originalFiles
 	job.mu.Unlock()
+
+	if err := persistJobManifest(m.GetJobDir(id), originalFiles); err != nil {
+		log.Printf("[JobManager] failed to persist source file manifest for job %s: %v", id, err)
+	}
+}
+
+type jobManifest struct {
+	OriginalFiles []string `json:"original_files"`
+}
+
+type usageRecordManifest struct {
+	JobID string `json:"job_id"`
+	Files []struct {
+		Name string `json:"name"`
+	} `json:"files"`
+}
+
+func persistJobManifest(jobDir string, originalFiles []string) error {
+	payload, err := json.Marshal(jobManifest{OriginalFiles: append([]string(nil), originalFiles...)})
+	if err != nil {
+		return err
+	}
+	temporary := filepath.Join(jobDir, jobManifestFilename+".tmp")
+	if err := os.WriteFile(temporary, payload, 0644); err != nil {
+		return err
+	}
+	return os.Rename(temporary, filepath.Join(jobDir, jobManifestFilename))
+}
+
+func (m *Manager) restoreOriginalFiles(jobID, jobDir, mergedPath string) []string {
+	if payload, err := os.ReadFile(filepath.Join(jobDir, jobManifestFilename)); err == nil {
+		var manifest jobManifest
+		if json.Unmarshal(payload, &manifest) == nil && len(manifest.OriginalFiles) > 0 {
+			return manifest.OriginalFiles
+		}
+	}
+
+	if payload, err := os.ReadFile(filepath.Join(m.dataDir, "usage_records.json")); err == nil {
+		var records []usageRecordManifest
+		if json.Unmarshal(payload, &records) == nil {
+			for _, record := range records {
+				if record.JobID != jobID {
+					continue
+				}
+				files := make([]string, 0, len(record.Files))
+				for _, file := range record.Files {
+					name := filepath.Base(file.Name)
+					if name != "" && name != "." {
+						files = append(files, filepath.Join(jobDir, name))
+					}
+				}
+				if len(files) > 0 {
+					return files
+				}
+			}
+		}
+	}
+
+	entries, err := os.ReadDir(jobDir)
+	if err == nil {
+		files := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			if entry.IsDir() || entry.Name() == filepath.Base(mergedPath) || !pcappkg.IsPcapFile(entry.Name()) {
+				continue
+			}
+			files = append(files, filepath.Join(jobDir, entry.Name()))
+		}
+		sort.Strings(files)
+		if len(files) > 0 {
+			return files
+		}
+	}
+
+	return []string{filepath.Base(mergedPath)}
 }
 
 // SetJobIMSIList sets the scanned IMSI list

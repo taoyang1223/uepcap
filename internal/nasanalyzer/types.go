@@ -38,6 +38,7 @@ type Message struct {
 	NGAPPDU            string       `json:"ngap_pdu,omitempty"`
 	ElementIDs         []string     `json:"element_ids,omitempty"`
 	WiresharkFilter    string       `json:"wireshark_filter"`
+	SourceFile         string       `json:"source_file,omitempty"`
 }
 
 type AnalysisResult struct {
@@ -117,6 +118,8 @@ type Flow struct {
 	StepCount       int        `json:"step_count"`
 	Steps           []FlowStep `json:"steps"`
 	WiresharkFilter string     `json:"wireshark_filter"`
+	SourceFile      string     `json:"source_file,omitempty"`
+	ResponseFile    string     `json:"response_file,omitempty"`
 }
 
 type FlowStep struct {
@@ -128,6 +131,7 @@ type FlowStep struct {
 	Code         string       `json:"code"`
 	ProcTransID  string       `json:"procedure_transaction_id,omitempty"`
 	PDUSessionID string       `json:"pdu_session_id,omitempty"`
+	SourceFile   string       `json:"source_file,omitempty"`
 }
 
 func MMMessageTypeName(code string) string {

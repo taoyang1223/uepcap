@@ -32,6 +32,7 @@ type Message struct {
 	FTEIDIPv4       string    `json:"f_teid_ipv4,omitempty"`
 	FTEIDIPv6       string    `json:"f_teid_ipv6,omitempty"`
 	WiresharkFilter string    `json:"wireshark_filter"`
+	SourceFile      string    `json:"source_file,omitempty"`
 }
 
 type Transaction struct {
@@ -57,6 +58,8 @@ type Transaction struct {
 	RetransmitCount  int               `json:"retransmit_count"`
 	RetransmitFrames []int             `json:"retransmit_frames,omitempty"`
 	WiresharkFilter  string            `json:"wireshark_filter"`
+	SourceFile       string            `json:"source_file,omitempty"`
+	ResponseFile     string            `json:"response_file,omitempty"`
 }
 
 type AnalysisResult struct {
