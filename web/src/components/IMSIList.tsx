@@ -1,6 +1,8 @@
 import { useDeferredValue, useState, useMemo } from 'react'
-import { Radar, Search, CheckSquare, Square, Smartphone, Check, Copy, ChevronDown } from 'lucide-react'
+import { Radar, Search, CheckSquare, Square, Smartphone, Check, Copy, ChevronDown, Download } from 'lucide-react'
 import { copyText } from '../utils/clipboard'
+
+const DEFAULT_VISIBLE_COUNT = 200
 
 interface IMSIListProps {
   imsiList: string[]
@@ -12,6 +14,7 @@ export function IMSIList({ imsiList, selectedIMSIs, onSelectionChange }: IMSILis
   const [searchTerm, setSearchTerm] = useState('')
   const [copiedId, setCopiedId] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(false)
+  const [showAll, setShowAll] = useState(false)
   const deferredSearchTerm = useDeferredValue(searchTerm.trim())
   const selectedSet = useMemo(() => new Set(selectedIMSIs), [selectedIMSIs])
 
@@ -20,7 +23,10 @@ export function IMSIList({ imsiList, selectedIMSIs, onSelectionChange }: IMSILis
     return imsiList.filter(imsi => imsi.includes(deferredSearchTerm))
   }, [imsiList, deferredSearchTerm])
 
-  const visibleList = useMemo(() => filteredList.slice(0, 200), [filteredList])
+  const visibleList = useMemo(
+    () => showAll ? filteredList : filteredList.slice(0, DEFAULT_VISIBLE_COUNT),
+    [filteredList, showAll]
+  )
   const hiddenCount = Math.max(0, filteredList.length - visibleList.length)
   const allFilteredSelected = useMemo(
     () => filteredList.length > 0 && filteredList.every(imsi => selectedSet.has(imsi)),
@@ -49,6 +55,20 @@ export function IMSIList({ imsiList, selectedIMSIs, onSelectionChange }: IMSILis
     if (!copied) return
     setCopiedId(imsi)
     setTimeout(() => setCopiedId(null), 2000)
+  }
+
+  const handleExportAll = () => {
+    if (imsiList.length === 0) return
+
+    const blob = new Blob([`${imsiList.join('\n')}\n`], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `imsi-list-${imsiList.length}.txt`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
   }
 
   const formatIMSI = (imsi: string) => {
@@ -113,6 +133,15 @@ export function IMSIList({ imsiList, selectedIMSIs, onSelectionChange }: IMSILis
             <Square className="w-4 h-4" />
           )}
           全选
+        </button>
+        <button
+          onClick={handleExportAll}
+          disabled={imsiList.length === 0}
+          className="flex items-center gap-2 px-4 py-2.5 text-sm font-medium text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+          title="导出完整 IMSI 列表（不受搜索条件影响）"
+        >
+          <Download className="w-4 h-4" />
+          导出全部
         </button>
       </div>
 
@@ -184,9 +213,21 @@ export function IMSIList({ imsiList, selectedIMSIs, onSelectionChange }: IMSILis
           })
         )}
       </div>
-      {hiddenCount > 0 && (
-        <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center text-xs font-semibold text-slate-500">
-          已显示前 {visibleList.length} 个 IMSI，还有 {hiddenCount} 个未渲染；可通过搜索快速定位。
+      {filteredList.length > DEFAULT_VISIBLE_COUNT && (
+        <div className="mt-3 flex flex-col items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-center text-xs font-semibold text-slate-500 sm:flex-row">
+          <span>
+            {showAll
+              ? `已显示全部 ${filteredList.length} 个 IMSI。`
+              : `已显示前 ${visibleList.length} 个 IMSI，还有 ${hiddenCount} 个未显示。`
+            }
+          </span>
+          <button
+            type="button"
+            onClick={() => setShowAll(value => !value)}
+            className="rounded-lg bg-white px-3 py-1.5 text-indigo-600 shadow-sm ring-1 ring-slate-200 transition-colors hover:bg-indigo-50"
+          >
+            {showAll ? `收起到前 ${DEFAULT_VISIBLE_COUNT} 个` : `显示全部 ${filteredList.length} 个`}
+          </button>
         </div>
       )}
         </>
